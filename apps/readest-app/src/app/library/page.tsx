@@ -37,7 +37,6 @@ import { useUICSS } from '@/hooks/useUICSS';
 import { useDemoBooks } from './hooks/useDemoBooks';
 import { useBooksSync } from './hooks/useBooksSync';
 import { useInboxDrainer } from '@/hooks/useInboxDrainer';
-import { useOPDSSubscriptions } from '@/hooks/useOPDSSubscriptions';
 import { useBookDataStore } from '@/store/bookDataStore';
 import { useTransferStore } from '@/store/transferStore';
 import { useScreenWakeLock } from '@/hooks/useScreenWakeLock';
@@ -64,7 +63,7 @@ import { AboutWindow } from '@/components/AboutWindow';
 import { KeyboardShortcutsHelp } from '@/components/KeyboardShortcutsHelp';
 import { BookDetailModal } from '@/components/metadata';
 import { UpdaterWindow } from '@/components/UpdaterWindow';
-import { CatalogDialog } from './components/OPDSDialog';
+
 import { MigrateDataWindow } from './components/MigrateDataWindow';
 import { BackupWindow } from './components/BackupWindow';
 import { useDragDropImport } from './hooks/useDragDropImport';
@@ -162,20 +161,17 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
   const { isTransferQueueOpen } = useTransferStore();
 
   // Library page pulls user replicas (dictionaries, custom fonts,
-  // background textures, OPDS catalogs, bundled settings). Deferred
+  // background textures, bundled settings). Deferred
   // 10s; module-scoped dedup means a later navigation to the reader
   // won't re-pull the same kind.
   useReplicaPull({
-    kinds: ['dictionary', 'font', 'texture', 'opds_catalog', 'settings'],
+    kinds: ['dictionary', 'font', 'texture', 'settings'],
   });
   // Hydrate the custom-font store from persisted settings so the Font
   // panel sees imported fonts even when opened straight from the
   // library — the replica pull above is auth-gated and the reader's
   // FoliateViewer hydration never runs without a book open.
   useCustomFonts();
-  const [showCatalogManager, setShowCatalogManager] = useState(
-    searchParams?.get('opds') === 'true',
-  );
   const [showImportFromUrl, setShowImportFromUrl] = useState(false);
   const [loading, setLoading] = useState(false);
   // Seed from the library store: if we already have books in memory (the
@@ -245,7 +241,6 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
   useTransferQueue(libraryLoaded);
 
   const { pullLibrary, pushLibrary } = useBooksSync();
-  const { checkOPDSSubscriptions } = useOPDSSubscriptions();
   useInboxDrainer();
   const { isDragging } = useDragDropImport();
 
@@ -253,11 +248,9 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
     scrollRef,
     async () => {
       await pullLibrary(false, true);
-      checkOPDSSubscriptions(true);
     },
     async () => {
       await pullLibrary(true, true);
-      checkOPDSSubscriptions(true);
     },
   );
   useScreenWakeLock(settings.screenWakeLock);
@@ -493,17 +486,6 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
       return true;
     }
     return false;
-  };
-
-  const handleShowOPDSDialog = () => {
-    setShowCatalogManager(true);
-  };
-
-  const handleDismissOPDSDialog = () => {
-    setShowCatalogManager(false);
-    const params = new URLSearchParams(searchParams?.toString());
-    params.delete('opds');
-    navigateToLibrary(router, `${params.toString()}`);
   };
 
   useEffect(() => {
@@ -1339,11 +1321,6 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
           isSelectAll={isSelectAll}
           onPullLibrary={pullLibrary}
           onImportBooksFromFiles={handleImportBooksFromFiles}
-          onImportBooksFromDirectory={
-            appService?.canReadExternalDir ? handleImportBooksFromDirectory : undefined
-          }
-          onImportBookFromUrl={isTauriAppPlatform() ? () => setShowImportFromUrl(true) : undefined}
-          onOpenCatalogManager={handleShowOPDSDialog}
           onToggleSelectMode={() => handleSetSelectMode(!isSelectMode)}
           onSelectAll={handleSelectAll}
           onDeselectAll={handleDeselectAll}
@@ -1467,7 +1444,6 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
       <MigrateDataWindow />
       <BackupWindow onPullLibrary={pullLibrary} />
       {isSettingsDialogOpen && <SettingsDialog bookKey={''} />}
-      {showCatalogManager && <CatalogDialog onClose={handleDismissOPDSDialog} />}
       {importFromFolderState && (
         <ImportFromFolderDialog
           initialDirectory={importFromFolderState.initialDirectory}

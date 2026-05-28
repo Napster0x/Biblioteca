@@ -3,7 +3,6 @@ import type { FileSystem } from '@/types/system';
 import { EXTS } from '@/libs/document';
 import { getDir, getLocalBookFilename } from '@/utils/book';
 import { isValidURL } from '@/utils/misc';
-import { isPseStreamFileName } from './opds/pseStream';
 
 export type BookContentSource =
   | { kind: 'managed'; path: string; base: 'Books'; legacy?: boolean }
@@ -53,13 +52,8 @@ export async function resolveBookContentSource(
     return { kind: 'external', path: book.filePath, base: 'None' };
   }
 
-  if (book.url) {
-    if (isPseStreamFileName(book.url)) {
-      return { kind: 'stream', path: book.url, base: 'None', scheme: 'pse' };
-    }
-    if (isValidURL(book.url)) {
-      return { kind: 'url', path: book.url, base: 'None' };
-    }
+  if (book.url && isValidURL(book.url)) {
+    return { kind: 'url', path: book.url, base: 'None' };
   }
 
   const legacyManagedSource = await resolveLegacyManagedSource(fs, book);

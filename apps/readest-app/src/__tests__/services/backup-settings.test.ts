@@ -39,15 +39,6 @@ function makeSettings(overrides: Partial<SystemSettings> = {}): SystemSettings {
     lastSyncedAtConfigs: 1235,
     lastSyncedAtNotes: 1236,
     lastSyncedAtReplicas: { book: 'hlc-1' },
-    opdsCatalogs: [
-      {
-        id: 'cat-1',
-        title: 'Cat',
-        url: 'https://example.com/opds',
-        username: 'opds-user',
-        password: 'opds-pass',
-      },
-    ],
     kosync: {
       enabled: true,
       serverUrl: 'https://kosync.example',
@@ -153,14 +144,6 @@ describe('sanitizeSettingsForBackup - credentials', () => {
     expect(rec(out.aiSettings)['openrouterApiKey']).toBeUndefined();
     // non-credential aiSettings fields (e.g. base URL) survive
     expect(rec(out.aiSettings)['openrouterBaseUrl']).toBe('https://openrouter.ai/api/v1');
-    expect(out.opdsCatalogs[0]!.username).toBeUndefined();
-    expect(out.opdsCatalogs[0]!.password).toBeUndefined();
-  });
-
-  it('keeps non-credential OPDS catalog fields when stripping credentials', () => {
-    const out = sanitizeSettingsForBackup(makeSettings());
-    expect(out.opdsCatalogs[0]!.id).toBe('cat-1');
-    expect(out.opdsCatalogs[0]!.url).toBe('https://example.com/opds');
   });
 
   it('keeps credentials when includeCredentials is true', () => {
@@ -170,8 +153,6 @@ describe('sanitizeSettingsForBackup - credentials', () => {
     expect(out.hardcover.accessToken).toBe('hc-token');
     expect(rec(out.aiSettings)['aiGatewayApiKey']).toBe('ai-secret-key');
     expect(rec(out.aiSettings)['openrouterApiKey']).toBe('or-secret-key');
-    expect(out.opdsCatalogs[0]!.username).toBe('opds-user');
-    expect(out.opdsCatalogs[0]!.password).toBe('opds-pass');
   });
 
   it('still strips blacklist fields even when credentials are included', () => {

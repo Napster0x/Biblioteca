@@ -4,7 +4,6 @@ import { useCustomTextureStore } from '@/store/customTextureStore';
 import { dictionaryAdapter, DICTIONARY_KIND } from './adapters/dictionary';
 import { fontAdapter, FONT_KIND } from './adapters/font';
 import { textureAdapter, TEXTURE_KIND } from './adapters/texture';
-import { opdsCatalogAdapter } from './adapters/opdsCatalog';
 import { settingsAdapter } from './adapters/settings';
 import { getReplicaPersistEnv } from './replicaPersist';
 import { getReplicaAdapter, registerReplicaAdapter } from './replicaRegistry';
@@ -15,8 +14,6 @@ const KNOWN_ADAPTERS: ReplicaAdapter<unknown>[] = [
   dictionaryAdapter as unknown as ReplicaAdapter<unknown>,
   fontAdapter as unknown as ReplicaAdapter<unknown>,
   textureAdapter as unknown as ReplicaAdapter<unknown>,
-  // Metadata-only — no binary download handler needed.
-  opdsCatalogAdapter as unknown as ReplicaAdapter<unknown>,
   // Bundled scalar settings — singleton row, no binary.
   settingsAdapter as unknown as ReplicaAdapter<unknown>,
 ];

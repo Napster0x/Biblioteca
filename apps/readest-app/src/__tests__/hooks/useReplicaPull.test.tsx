@@ -85,17 +85,6 @@ vi.mock('@/store/customTextureStore', () => ({
   migrateLegacyTextures: vi.fn(async () => {}),
 }));
 
-vi.mock('@/store/customOPDSStore', () => ({
-  useCustomOPDSStore: {
-    getState: () => ({
-      applyRemoteCatalog: vi.fn(),
-      softDeleteByContentId: vi.fn(),
-      loadCustomOPDSCatalogs: vi.fn(async () => {}),
-    }),
-  },
-  findOPDSCatalogByContentId: () => undefined,
-}));
-
 vi.mock('@/utils/access', () => ({
   getAccessToken: async () => 'token',
 }));

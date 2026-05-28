@@ -58,7 +58,6 @@ describe('settingsAdapter', () => {
     };
     const fields = settingsAdapter.pack(record);
     expect(fields['globalReadSettings.userHighlightColors']).toEqual(userColors);
-    expect(fields['telemetryEnabled']).toBeUndefined();
     expect(fields['screenBrightness']).toBeUndefined();
     expect(fields['localBooksDir']).toBeUndefined();
   });

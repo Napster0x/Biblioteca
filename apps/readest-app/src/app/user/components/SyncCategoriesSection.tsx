@@ -43,10 +43,6 @@ const useCategoryCopy = (): Record<SyncCategory, CategoryCopy> => {
       title: _('Backgrounds'),
       description: _('Custom background textures'),
     },
-    opds_catalog: {
-      title: _('OPDS catalogs'),
-      description: _('Saved catalog URLs and (encrypted) credentials'),
-    },
     settings: {
       title: _('App settings'),
       description: _(

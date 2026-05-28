@@ -2,7 +2,6 @@ import { CustomTheme } from '@/styles/themes';
 import { CustomFont } from '@/styles/fonts';
 import { CustomTexture } from '@/styles/textures';
 import { HighlightColor, HighlightStyle, UserHighlightColor, ViewSettings } from './book';
-import { OPDSCatalog } from './opds';
 import type { AISettings } from '@/services/ai/types';
 import type { NotebookTab } from '@/store/notebookStore';
 import type { DictionarySettings, ImportedDictionary } from '@/services/dictionaries/types';
@@ -216,7 +215,6 @@ export type SyncCategory =
   | 'dictionary'
   | 'font'
   | 'texture'
-  | 'opds_catalog'
   | 'settings'
   | 'credentials';
 
@@ -227,7 +225,6 @@ export const SYNC_CATEGORIES: readonly SyncCategory[] = [
   'dictionary',
   'font',
   'texture',
-  'opds_catalog',
   'settings',
   'credentials',
 ] as const;
@@ -283,7 +280,6 @@ export interface SystemSettings {
   autoImportBooksOnOpen: boolean;
   savedBookCoverForLockScreen: string;
   savedBookCoverForLockScreenPath: string;
-  telemetryEnabled: boolean;
   discordRichPresenceEnabled: boolean;
   libraryViewMode: LibraryViewModeType;
   librarySortBy: LibrarySortByType;
@@ -296,7 +292,6 @@ export interface SystemSettings {
   customTextures: CustomTexture[];
   customDictionaries: ImportedDictionary[];
   dictionarySettings: DictionarySettings;
-  opdsCatalogs: OPDSCatalog[];
   metadataSeriesCollapsed: boolean;
   metadataOthersCollapsed: boolean;
   metadataDescriptionCollapsed: boolean;

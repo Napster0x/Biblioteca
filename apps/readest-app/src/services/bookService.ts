@@ -26,7 +26,6 @@ import type { BookNav } from '@/services/nav';
 import { partialMD5, md5 } from '@/utils/md5';
 import { getBaseFilename, getFilename } from '@/utils/path';
 import { BookDoc, DocumentLoader } from '@/libs/document';
-import { isPseStreamFileName, openPseStreamBook, parsePseStreamFileName } from './opds/pseStream';
 import { DEFAULT_BOOK_SEARCH_CONFIG, DEFAULT_FIXED_LAYOUT_VIEW_SETTINGS } from './constants';
 import { isContentURI, isValidURL, makeSafeFilename } from '@/utils/misc';
 import { deserializeConfig, serializeConfig, serializeRawConfig } from '@/utils/serializer';
@@ -245,7 +244,6 @@ export async function importBook(
     inPlace = false,
     lookupIndex,
   } = options;
-  const isPseStream = typeof file === 'string' && isPseStreamFileName(file);
   try {
     let loadedBook: BookDoc;
     let format: BookFormat;
@@ -257,27 +255,21 @@ export async function importBook(
     }
 
     try {
-      if (isPseStream) {
-        const data = parsePseStreamFileName(file as string);
-        ({ book: loadedBook, format } = await openPseStreamBook(data));
-        filename = file as string;
+      if (typeof file === 'string') {
+        fileobj = await fs.openFile(file, 'None');
+        filename = fileobj.name || getFilename(file);
       } else {
-        if (typeof file === 'string') {
-          fileobj = await fs.openFile(file, 'None');
-          filename = fileobj.name || getFilename(file);
-        } else {
-          fileobj = file;
-          filename = file.name;
-        }
-        if (/\.txt$/i.test(filename)) {
-          const txt2epub = new TxtToEpubConverter();
-          ({ file: fileobj } = await txt2epub.convert({ file: fileobj }));
-        }
-        if (!fileobj || fileobj.size === 0) {
-          throw new Error('Invalid or empty book file');
-        }
-        ({ book: loadedBook, format } = await new DocumentLoader(fileobj).open());
+        fileobj = file;
+        filename = file.name;
       }
+      if (/\.txt$/i.test(filename)) {
+        const txt2epub = new TxtToEpubConverter();
+        ({ file: fileobj } = await txt2epub.convert({ file: fileobj }));
+      }
+      if (!fileobj || fileobj.size === 0) {
+        throw new Error('Invalid or empty book file');
+      }
+      ({ book: loadedBook, format } = await new DocumentLoader(fileobj).open());
       if (!loadedBook) {
         throw new Error('Unsupported or corrupted book file');
       }
@@ -290,7 +282,7 @@ export async function importBook(
       throw new Error(`Failed to open the book file: ${(error as Error).message || error}`);
     }
 
-    const hash = isPseStream ? md5(file as string) : await partialMD5(fileobj!);
+    const hash = await partialMD5(fileobj!);
 
     const metaHash = getMetadataHash(loadedBook.metadata);
     let existingBook = lookupIndex
@@ -464,10 +456,7 @@ export async function importBook(
     }
 
     // update file links with url or path or content uri
-    if (isPseStream) {
-      book.url = file as string;
-      if (existingBook) existingBook.url = file as string;
-    } else if (typeof file === 'string') {
+    if (typeof file === 'string') {
       if (isValidURL(file)) {
         book.url = file;
         if (existingBook) existingBook.url = file;

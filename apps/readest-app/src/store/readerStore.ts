@@ -13,11 +13,6 @@ import { Insets } from '@/types/misc';
 import { EnvConfigType } from '@/services/environment';
 import { FoliateView } from '@/types/view';
 import { DocumentLoader, TOCItem } from '@/libs/document';
-import {
-  isPseStreamFileName,
-  openPseStreamBook,
-  parsePseStreamFileName,
-} from '@/services/opds/pseStream';
 import { BOOK_NAV_VERSION, computeBookNav, hydrateBookNav, updateToc } from '@/services/nav';
 import { formatTitle, getMetadataHash, getPrimaryLanguage } from '@/utils/book';
 import { getBaseFilename } from '@/utils/path';
@@ -168,22 +163,14 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
         );
         throw new Error('Book not found');
       }
-      const isPseStream = !!book.url && isPseStreamFileName(book.url);
       let bookDoc = bookData?.bookDoc;
       let file: File | null = bookData?.file ?? null;
-      if (!bookDoc || (!isPseStream && !file) || reload) {
+      if (!bookDoc || !file || reload) {
         console.log('Loading book', key);
-        if (isPseStream) {
-          const data = parsePseStreamFileName(book.url!);
-          const doc = await openPseStreamBook(data);
-          bookDoc = doc.book;
-          file = null;
-        } else {
-          const content = (await appService.loadBookContent(book)) as BookContent;
-          file = content.file;
-          const doc = await new DocumentLoader(file).open();
-          bookDoc = doc.book;
-        }
+        const content = (await appService.loadBookContent(book)) as BookContent;
+        file = content.file;
+        const doc = await new DocumentLoader(file).open();
+        bookDoc = doc.book;
       }
       const config = await appService.loadBookConfig(book, settings);
       // Import annotations from third-party readers on first open

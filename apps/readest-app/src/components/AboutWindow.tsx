@@ -5,8 +5,7 @@ import { useTranslation } from '@/hooks/useTranslation';
 import { checkForAppUpdates, checkAppReleaseNotes } from '@/helpers/updater';
 import { parseWebViewInfo } from '@/utils/ua';
 import { getAppVersion } from '@/utils/version';
-import SupportLinks from './SupportLinks';
-import LegalLinks from './LegalLinks';
+
 import Dialog from './Dialog';
 import Link from './Link';
 
@@ -82,7 +81,7 @@ export const AboutWindow = () => {
     <Dialog
       id='about_window'
       isOpen={isOpen}
-      title={_('About Readest')}
+      title={_('About Biblioteca')}
       onClose={handleClose}
       boxClassName='sm:!w-[480px] sm:!max-w-screen-sm sm:h-auto'
     >
@@ -93,7 +92,7 @@ export const AboutWindow = () => {
               <Image src='/icon.png' alt='App Logo' className='h-20 w-20' width={64} height={64} />
             </div>
             <div className='flex select-text flex-col items-center'>
-              <h2 className='mb-2 text-2xl font-bold'>Readest</h2>
+              <h2 className='mb-2 text-2xl font-bold'>Biblioteca</h2>
               <p className='text-neutral-content text-center text-sm'>
                 {_('Version {{version}}', { version: getAppVersion() })} {`(${browserInfo})`}
               </p>
@@ -128,7 +127,7 @@ export const AboutWindow = () => {
             dir='ltr'
           >
             <p className='text-neutral-content text-sm'>
-              © {new Date().getFullYear()} Bilingify LLC. All rights reserved.
+              © {new Date().getFullYear()} Biblioteca. All rights reserved.
             </p>
 
             <p className='text-neutral-content text-xs'>
@@ -143,16 +142,9 @@ export const AboutWindow = () => {
               AGPL v3 license. Please see the license for more details.
             </p>
             <p className='text-neutral-content text-xs'>
-              Source code is available at{' '}
-              <Link href='https://github.com/readest/readest' className='text-blue-500 underline'>
-                GitHub
-              </Link>
-              .
+              Built upon Readest — an open source ebook reader.
             </p>
-
-            <LegalLinks />
           </div>
-          <SupportLinks />
         </div>
       )}
     </Dialog>

@@ -52,24 +52,6 @@ const textureFieldsSchema = z
   })
   .catchall(fieldEnvelopeWithCipher);
 
-const opdsCatalogFieldsSchema = z
-  .object({
-    name: fieldEnvelopeSchema.optional(),
-    url: fieldEnvelopeSchema.optional(),
-    description: fieldEnvelopeSchema.optional(),
-    icon: fieldEnvelopeSchema.optional(),
-    customHeaders: fieldEnvelopeSchema.optional(),
-    autoDownload: fieldEnvelopeSchema.optional(),
-    disabled: fieldEnvelopeSchema.optional(),
-    addedAt: fieldEnvelopeSchema.optional(),
-    // Encrypted-credential fields. The CRDT envelope wraps a cipher
-    // envelope as `v` when the publishing device had its CryptoSession
-    // unlocked; otherwise the field is omitted from the row.
-    username: fieldEnvelopeWithCipher.optional(),
-    password: fieldEnvelopeWithCipher.optional(),
-  })
-  .catchall(fieldEnvelopeWithCipher);
-
 // Open-shaped: the bundled `settings` row stores arbitrary scalar
 // preferences keyed by `<setting>` or `<group>.<id>` (for flat-map
 // settings like providerEnabled.<id>, syncCategories.<id>,
@@ -107,13 +89,6 @@ export const KIND_ALLOWLIST: Record<string, KindSpec> = {
     maxRowsPerUser: 200,
     fields: textureFieldsSchema,
     binary: true,
-  },
-  opds_catalog: {
-    minSchemaVersion: 1,
-    maxSchemaVersion: 1,
-    maxRowsPerUser: 50,
-    fields: opdsCatalogFieldsSchema,
-    binary: false,
   },
   settings: {
     // Singleton row per user (replica_id='singleton'). Holds scalar

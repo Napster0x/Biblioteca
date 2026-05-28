@@ -300,17 +300,6 @@ const ShareLanding = () => {
                     <IoOpenOutline className='h-5 w-5' aria-hidden='true' />
                     {_('Open in app')}
                   </a>
-                  <p className='text-base-content/60 mt-1 text-center text-xs sm:text-left'>
-                    {_("Don't have Readest?")}{' '}
-                    <a
-                      href={DOWNLOAD_READEST_URL}
-                      target='_blank'
-                      rel='noopener'
-                      className='text-primary font-medium hover:underline'
-                    >
-                      {_('Download Readest')}
-                    </a>
-                  </p>
                 </>
               )}
             </div>

@@ -200,7 +200,7 @@ const applyRow = async <T extends ReplicaLocalRecord>(
     // this path because the settings replica lands before the dict
     // replica, and a contentId may be referenced in providerEnabled
     // even though its dict row arrives tombstoned. Other kinds (font,
-    // texture, opds_catalog) self-no-op when no local exists, so the
+    // texture) self-no-op when no local exists, so the
     // unconditional call is safe.
     deps.softDeleteByContentId(row.replica_id);
     return;
@@ -211,7 +211,7 @@ const applyRow = async <T extends ReplicaLocalRecord>(
   // downloaded binaries; otherwise mint a fresh dir and apply the remote
   // record to the local store. Legacy binary-kind records (pre-replica-
   // sync) may carry no bundleDir — skip them; they aren't sync-eligible.
-  // Metadata-only kinds (no `binary` capability, e.g. opds_catalog) have
+  // Metadata-only kinds (no `binary` capability) have
   // no on-disk anchor at all, so the bundleDir requirement is dropped.
   const needsBundleDir = !!deps.adapter.binary;
   let bundleDir: string;

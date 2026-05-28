@@ -4,7 +4,6 @@ import { useRouter } from 'next/navigation';
 import { MdChevronRight } from 'react-icons/md';
 import {
   RiBookOpenLine,
-  RiRssLine,
   RiBookReadLine,
   RiBook3Line,
   RiDiscordLine,
@@ -16,9 +15,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useKeyDownActions } from '@/hooks/useKeyDownActions';
 import { useSettingsStore } from '@/store/settingsStore';
-import { useCustomOPDSStore } from '@/store/customOPDSStore';
 import { useWebDAVSyncStore } from '@/store/webdavSyncStore';
-import { CatalogManager } from '@/app/opds/components/CatalogManager';
 import { saveSysSettings } from '@/helpers/settings';
 import { navigateToLogin } from '@/utils/nav';
 import KOSyncForm from './integrations/KOSyncForm';
@@ -26,10 +23,9 @@ import ReadwiseForm from './integrations/ReadwiseForm';
 import HardcoverForm from './integrations/HardcoverForm';
 import SendToReadestForm from './integrations/SendToReadestForm';
 import WebDAVForm from './integrations/WebDAVForm';
-import SubPageHeader from './SubPageHeader';
 import { SectionTitle, SettingLabel } from './primitives';
 
-type SubPage = 'kosync' | 'webdav' | 'readwise' | 'hardcover' | 'opds' | 'send' | null;
+type SubPage = 'kosync' | 'webdav' | 'readwise' | 'hardcover' | 'send' | null;
 
 /**
  * Integrations panel — single point of discovery for external service config:
@@ -49,8 +45,6 @@ const IntegrationsPanel: React.FC = () => {
   const { envConfig, appService } = useEnv();
   const { user } = useAuth();
   const { settings, requestedSubPage, setRequestedSubPage } = useSettingsStore();
-  const opdsCatalogs = useCustomOPDSStore((s) => s.catalogs);
-  const opdsCount = opdsCatalogs.filter((c) => !c.deletedAt).length;
   // Surface a library-wide WebDAV sync that's mid-flight in the row's
   // status line. Keeps the user from feeling like the run was lost
   // when they back out of the WebDAV sub-page or close the dialog.
@@ -91,7 +85,6 @@ const IntegrationsPanel: React.FC = () => {
       requestedSubPage === 'webdav' ||
       requestedSubPage === 'readwise' ||
       requestedSubPage === 'hardcover' ||
-      requestedSubPage === 'opds' ||
       requestedSubPage === 'send'
     ) {
       setSubPage(requestedSubPage);
@@ -127,18 +120,6 @@ const IntegrationsPanel: React.FC = () => {
         <HardcoverForm onBack={() => setSubPage(null)} />
       </div>
     );
-  if (subPage === 'opds')
-    return (
-      <div className='my-4 w-full'>
-        <SubPageHeader
-          parentLabel={_('Integrations')}
-          currentLabel={_('OPDS Catalogs')}
-          description={_('Browse and download books from online catalogs.')}
-          onBack={() => setSubPage(null)}
-        />
-        <CatalogManager inSubPage />
-      </div>
-    );
   if (subPage === 'send')
     return (
       <div className='my-4 w-full'>
@@ -161,9 +142,6 @@ const IntegrationsPanel: React.FC = () => {
         ? _('Connected as {{user}}', { user: settings.webdav.username })
         : _('Connected')
       : _('Not connected');
-  const opdsStatus =
-    opdsCount > 0 ? _('{{count}} catalog', { count: opdsCount }) : _('No catalogs');
-
   return (
     <div className='my-4 w-full space-y-6'>
       <div className='w-full px-4'>
@@ -209,12 +187,6 @@ const IntegrationsPanel: React.FC = () => {
         <SectionTitle className='mb-2'>{_('Content Sources')}</SectionTitle>
         <div className='card eink-bordered border-base-200 bg-base-100 overflow-hidden border'>
           <div className='divide-base-200 divide-y'>
-            <IntegrationRow
-              icon={RiRssLine}
-              title={_('OPDS Catalogs')}
-              status={opdsStatus}
-              onClick={() => setSubPage('opds')}
-            />
             <IntegrationRow
               icon={RiSendPlaneLine}
               title={_('Send to Readest')}

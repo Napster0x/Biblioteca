@@ -69,7 +69,6 @@ import {
   READEST_UPDATER_FILE,
   READEST_CHANGELOG_FILE,
   READEST_PUBLIC_STORAGE_BASE_URL,
-  READEST_OPDS_USER_AGENT,
   SYNC_PROGRESS_INTERVAL_SEC,
   SYNC_NOTES_INTERVAL_SEC,
   SYNC_BOOKS_INTERVAL_SEC,
@@ -233,7 +232,7 @@ describe('services/constants', () => {
       expect(typeof DEFAULT_SYSTEM_SETTINGS.screenWakeLock).toBe('boolean');
       expect(typeof DEFAULT_SYSTEM_SETTINGS.openLastBooks).toBe('boolean');
       expect(typeof DEFAULT_SYSTEM_SETTINGS.autoImportBooksOnOpen).toBe('boolean');
-      expect(typeof DEFAULT_SYSTEM_SETTINGS.telemetryEnabled).toBe('boolean');
+
       expect(typeof DEFAULT_SYSTEM_SETTINGS.discordRichPresenceEnabled).toBe('boolean');
     });
 
@@ -252,7 +251,6 @@ describe('services/constants', () => {
         dictionary: true,
         font: true,
         texture: true,
-        opds_catalog: true,
         settings: true,
       });
     });
@@ -891,11 +889,6 @@ describe('services/constants', () => {
 
     it('READEST_PUBLIC_STORAGE_BASE_URL is a valid URL', () => {
       expect(READEST_PUBLIC_STORAGE_BASE_URL).toMatch(/^https:\/\//);
-    });
-
-    it('READEST_OPDS_USER_AGENT is a non-empty string', () => {
-      expect(typeof READEST_OPDS_USER_AGENT).toBe('string');
-      expect(READEST_OPDS_USER_AGENT.length).toBeGreaterThan(0);
     });
   });
 

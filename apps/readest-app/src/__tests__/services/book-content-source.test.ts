@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { exportBook, getBookFileSize, isBookAvailable } from '@/services/bookService';
+import { exportBook, getBookFileSize } from '@/services/bookService';
 import { getLocalBookFilename } from '@/utils/book';
 import type { Book } from '@/types/book';
 import type { BaseDir, FileSystem } from '@/types/system';
@@ -84,12 +84,5 @@ describe('book content source resolution', () => {
       filePath: 'None:/Users/me/Library/sample.epub',
       mimeType: 'application/epub+zip',
     });
-  });
-
-  test('isBookAvailable treats PSE streams as available content sources', async () => {
-    const book = makeBook({ format: 'CBZ', url: 'pse://encoded-stream' });
-    const fs = makeFs({});
-
-    await expect(isBookAvailable(fs, book)).resolves.toBe(true);
   });
 });

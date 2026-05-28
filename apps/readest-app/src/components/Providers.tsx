@@ -6,7 +6,7 @@ import { useEffect } from 'react';
 import { IconContext } from 'react-icons';
 import { AuthProvider } from '@/context/AuthContext';
 import { useEnv } from '@/context/EnvContext';
-import { CSPostHogProvider } from '@/context/PHContext';
+
 import { SyncProvider } from '@/context/SyncContext';
 import { initSystemThemeListener, loadDataTheme } from '@/store/themeStore';
 import { useSettingsStore } from '@/store/settingsStore';
@@ -142,29 +142,27 @@ const Providers = ({ children }: { children: React.ReactNode }) => {
   const appShellHidden = !isLockInitialized || !isUnlocked;
 
   return (
-    <CSPostHogProvider>
-      <AuthProvider>
-        <IconContext.Provider value={{ size: `${iconSize}px` }}>
-          <SyncProvider>
-            <DropdownProvider>
-              <CommandPaletteProvider>
-                <div
-                  aria-hidden={appShellHidden}
-                  style={appShellHidden ? { display: 'none' } : undefined}
-                >
-                  {children}
-                  <CommandPalette />
-                  <AtmosphereOverlay />
-                  <PassphrasePrompt />
-                </div>
-                <AppLockDialog />
-                {showAppLockScreen && <AppLockScreen />}
-              </CommandPaletteProvider>
-            </DropdownProvider>
-          </SyncProvider>
-        </IconContext.Provider>
-      </AuthProvider>
-    </CSPostHogProvider>
+    <AuthProvider>
+      <IconContext.Provider value={{ size: `${iconSize}px` }}>
+        <SyncProvider>
+          <DropdownProvider>
+            <CommandPaletteProvider>
+              <div
+                aria-hidden={appShellHidden}
+                style={appShellHidden ? { display: 'none' } : undefined}
+              >
+                {children}
+                <CommandPalette />
+                <AtmosphereOverlay />
+                <PassphrasePrompt />
+              </div>
+              <AppLockDialog />
+              {showAppLockScreen && <AppLockScreen />}
+            </CommandPaletteProvider>
+          </DropdownProvider>
+        </SyncProvider>
+      </IconContext.Provider>
+    </AuthProvider>
   );
 };
 

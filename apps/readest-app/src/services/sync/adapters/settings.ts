@@ -25,8 +25,8 @@ export const SETTINGS_REPLICA_ID = 'singleton';
  *     `screenBrightness`, `customRootDir`) — wouldn't make sense
  *     across devices.
  *   * Collection settings already synced via dedicated kinds
- *     (`customFonts`, `customTextures`, `customDictionaries`,
- *     `opdsCatalogs`). Note: `dictionarySettings` sub-fields
+ *     (`customFonts`, `customTextures`, `customDictionaries`).
+ *     Note: `dictionarySettings` sub-fields
  *     (providerOrder / providerEnabled / webSearches) ARE bundled
  *     here — see entries below.
  */

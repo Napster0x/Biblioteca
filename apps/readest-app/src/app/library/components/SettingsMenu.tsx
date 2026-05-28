@@ -7,8 +7,8 @@ import { TbSunMoon } from 'react-icons/tb';
 import { MdCloudSync, MdSync, MdSyncProblem } from 'react-icons/md';
 
 import { invoke, PermissionState } from '@tauri-apps/api/core';
-import { isTauriAppPlatform, isWebAppPlatform } from '@/services/environment';
-import { DOWNLOAD_READEST_URL } from '@/services/constants';
+import { isTauriAppPlatform } from '@/services/environment';
+
 import { setBackupDialogVisible } from '@/app/library/components/BackupWindow';
 import { useAuth } from '@/context/AuthContext';
 import { useEnv } from '@/context/EnvContext';
@@ -21,7 +21,7 @@ import { useResponsiveSize } from '@/hooks/useResponsiveSize';
 import { useTransferQueue } from '@/hooks/useTransferQueue';
 import { navigateToLogin, navigateToProfile } from '@/utils/nav';
 import { tauriHandleSetAlwaysOnTop, tauriHandleToggleFullScreen } from '@/utils/window';
-import { optInTelemetry, optOutTelemetry } from '@/utils/telemetry';
+
 import { setAboutDialogVisible } from '@/components/AboutWindow';
 import { setMigrateDataDirDialogVisible } from '@/app/library/components/MigrateDataWindow';
 import { requestStoragePermission } from '@/utils/permission';
@@ -60,7 +60,6 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onPullLibrary, setIsDropdow
   const [isAutoImportBooksOnOpen, setIsAutoImportBooksOnOpen] = useState(
     settings.autoImportBooksOnOpen,
   );
-  const [isTelemetryEnabled, setIsTelemetryEnabled] = useState(settings.telemetryEnabled);
   const [alwaysInForeground, setAlwaysInForeground] = useState(settings.alwaysInForeground);
   const [savedBookCoverForLockScreen, setSavedBookCoverForLockScreen] = useState(
     settings.savedBookCoverForLockScreen || '',
@@ -84,13 +83,8 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onPullLibrary, setIsDropdow
     setIsDropdownOpen?.(false);
   };
 
-  const showAboutReadest = () => {
+  const showAboutBiblioteca = () => {
     setAboutDialogVisible(true);
-    setIsDropdownOpen?.(false);
-  };
-
-  const downloadReadest = () => {
-    window.open(DOWNLOAD_READEST_URL, '_blank');
     setIsDropdownOpen?.(false);
   };
 
@@ -164,17 +158,6 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onPullLibrary, setIsDropdow
     const newValue = !settings.openLastBooks;
     saveSysSettings(envConfig, 'openLastBooks', newValue);
     setIsOpenLastBooks(newValue);
-  };
-
-  const toggleTelemetry = () => {
-    const newValue = !settings.telemetryEnabled;
-    saveSysSettings(envConfig, 'telemetryEnabled', newValue);
-    setIsTelemetryEnabled(newValue);
-    if (newValue) {
-      optInTelemetry();
-    } else {
-      optOutTelemetry();
-    }
   };
 
   const handleUpgrade = () => {
@@ -454,14 +437,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onPullLibrary, setIsDropdow
       {user && userProfilePlan === 'free' && (
         <MenuItem label={_('Upgrade to Readest Premium')} onClick={handleUpgrade} />
       )}
-      {isWebAppPlatform() && <MenuItem label={_('Download Readest')} onClick={downloadReadest} />}
-      <MenuItem label={_('About Readest')} onClick={showAboutReadest} />
-      <MenuItem
-        label={_('Help improve Readest')}
-        description={isTelemetryEnabled ? _('Sharing anonymized statistics') : ''}
-        toggled={isTelemetryEnabled}
-        onClick={toggleTelemetry}
-      />
+      <MenuItem label={_('About Biblioteca')} onClick={showAboutBiblioteca} />
     </Menu>
   );
 };

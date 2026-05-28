@@ -2,8 +2,7 @@ import clsx from 'clsx';
 import React, { useCallback, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { FaSearch } from 'react-icons/fa';
-import { PiPlus } from 'react-icons/pi';
-import { PiSelectionAll, PiSelectionAllFill } from 'react-icons/pi';
+import { PiPlus, PiSelectionAll, PiSelectionAllFill } from 'react-icons/pi';
 import { PiDotsThreeCircle } from 'react-icons/pi';
 import { MdOutlineMenu } from 'react-icons/md';
 import { IoMdCloseCircle } from 'react-icons/io';
@@ -19,7 +18,6 @@ import useShortcuts from '@/hooks/useShortcuts';
 import WindowButtons from '@/components/WindowButtons';
 import Dropdown from '@/components/Dropdown';
 import SettingsMenu from './SettingsMenu';
-import ImportMenu from './ImportMenu';
 import ViewMenu from './ViewMenu';
 
 interface LibraryHeaderProps {
@@ -27,9 +25,6 @@ interface LibraryHeaderProps {
   isSelectAll: boolean;
   onPullLibrary: () => void;
   onImportBooksFromFiles: () => void;
-  onImportBooksFromDirectory?: () => void;
-  onImportBookFromUrl?: () => void;
-  onOpenCatalogManager: () => void;
   onToggleSelectMode: () => void;
   onSelectAll: () => void;
   onDeselectAll: () => void;
@@ -40,9 +35,6 @@ const LibraryHeader: React.FC<LibraryHeaderProps> = ({
   isSelectAll,
   onPullLibrary,
   onImportBooksFromFiles,
-  onImportBooksFromDirectory,
-  onImportBookFromUrl,
-  onOpenCatalogManager,
   onToggleSelectMode,
   onSelectAll,
   onDeselectAll,
@@ -150,21 +142,14 @@ const LibraryHeader: React.FC<LibraryHeaderProps> = ({
               </button>
             )}
             <span className='bg-base-content/50 mx-2 h-4 w-[0.5px]'></span>
-            <Dropdown
-              label={_('Import Books')}
-              className={clsx(
-                'exclude-title-bar-mousedown dropdown-bottom dropdown-center cursor-pointer',
-              )}
-              buttonClassName='p-0 h-6 min-h-6 w-6 flex touch-target items-center justify-center !bg-transparent'
-              toggleButton={<PiPlus role='none' className='m-0.5 h-5 w-5' />}
+            <button
+              onClick={onImportBooksFromFiles}
+              aria-label={_('Import Books')}
+              title={_('Import Books')}
+              className='p-0 h-6 min-h-6 w-6 flex touch-target items-center justify-center !bg-transparent'
             >
-              <ImportMenu
-                onImportBooksFromFiles={onImportBooksFromFiles}
-                onImportBooksFromDirectory={onImportBooksFromDirectory}
-                onImportBookFromUrl={onImportBookFromUrl}
-                onOpenCatalogManager={onOpenCatalogManager}
-              />
-            </Dropdown>
+              <PiPlus role='none' className='m-0.5 h-5 w-5' />
+            </button>
             {isMobile ? null : (
               <button
                 onClick={onToggleSelectMode}

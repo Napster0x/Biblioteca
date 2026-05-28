@@ -116,7 +116,6 @@ export const DEFAULT_SYSTEM_SETTINGS: Partial<SystemSettings> = {
   openLastBooks: false,
   lastOpenBooks: [],
   autoImportBooksOnOpen: false,
-  telemetryEnabled: true,
   discordRichPresenceEnabled: false,
   libraryViewMode: 'grid',
   librarySortBy: LibrarySortByType.Updated,
@@ -158,7 +157,6 @@ export const DEFAULT_SYSTEM_SETTINGS: Partial<SystemSettings> = {
     dictionary: true,
     font: true,
     texture: true,
-    opds_catalog: true,
     settings: true,
   },
 };
@@ -787,8 +785,6 @@ export const READEST_UPDATER_FILE = `${LATEST_DOWNLOAD_BASE_URL}/latest.json`;
 export const READEST_CHANGELOG_FILE = `${LATEST_DOWNLOAD_BASE_URL}/release-notes.json`;
 
 export const READEST_PUBLIC_STORAGE_BASE_URL = 'https://storage.readest.com';
-
-export const READEST_OPDS_USER_AGENT = 'Readest/1.0 (OPDS Browser)';
 
 export const SYNC_PROGRESS_INTERVAL_SEC = 3;
 export const SYNC_NOTES_INTERVAL_SEC = 5;

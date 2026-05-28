@@ -34,7 +34,6 @@ describe('isSyncCategoryEnabled', () => {
   test('defaults to true when syncCategories map is missing', () => {
     setSettings({});
     expect(isSyncCategoryEnabled('book')).toBe(true);
-    expect(isSyncCategoryEnabled('opds_catalog')).toBe(true);
   });
 
   test('returns true when category is explicitly true', () => {
@@ -149,7 +148,7 @@ describe('isSyncCategoryEnabled', () => {
 });
 
 describe('SYNC_CATEGORIES', () => {
-  test('covers all nine user-facing categories (incl. settings + credentials)', () => {
+  test('covers all user-facing categories (incl. settings + credentials)', () => {
     expect([...SYNC_CATEGORIES].sort()).toEqual(
       [
         'book',
@@ -157,7 +156,6 @@ describe('SYNC_CATEGORIES', () => {
         'dictionary',
         'font',
         'note',
-        'opds_catalog',
         'progress',
         'settings',
         'texture',

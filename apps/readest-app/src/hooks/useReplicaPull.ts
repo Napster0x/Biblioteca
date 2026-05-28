@@ -12,13 +12,11 @@ import {
   findTextureByContentId,
   migrateLegacyTextures,
 } from '@/store/customTextureStore';
-import { useCustomOPDSStore, findOPDSCatalogByContentId } from '@/store/customOPDSStore';
 import { transferManager } from '@/services/transferManager';
 import { getReplicaSync, subscribeReplicaSyncReady } from '@/services/sync/replicaSync';
 import { dictionaryAdapter } from '@/services/sync/adapters/dictionary';
 import { fontAdapter } from '@/services/sync/adapters/font';
 import { textureAdapter } from '@/services/sync/adapters/texture';
-import { opdsCatalogAdapter } from '@/services/sync/adapters/opdsCatalog';
 import { settingsAdapter, type SettingsRemoteRecord } from '@/services/sync/adapters/settings';
 import {
   applyRemoteSettings,
@@ -43,11 +41,10 @@ import type { ReplicaSyncManager } from '@/services/sync/replicaSyncManager';
 import type { ImportedDictionary } from '@/services/dictionaries/types';
 import type { CustomFont } from '@/styles/fonts';
 import type { CustomTexture } from '@/styles/textures';
-import type { OPDSCatalog } from '@/types/opds';
 import type { Hlc, ReplicaRow } from '@/types/replica';
 import type { SystemSettings } from '@/types/settings';
 
-export type ReplicaKind = 'dictionary' | 'font' | 'texture' | 'opds_catalog' | 'settings';
+export type ReplicaKind = 'dictionary' | 'font' | 'texture' | 'settings';
 
 export interface UseReplicaPullOpts {
   /** Replica kinds this page wants pulled. */
@@ -101,7 +98,7 @@ let hasCurrentUser = false;
 // Shared promise for the boot-time settings pull. All other kinds'
 // boot pulls await this so applyRemoteSettings has a chance to seed
 // `lastPublishedFields` with server-authoritative values before
-// dict/font/texture/opds_catalog auto-saves fire — without that
+// dict/font/texture auto-saves fire — without that
 // ordering, those auto-saves diff against `undefined` on a fresh
 // boot and republish the local default (e.g.
 // `dictionarySettings.providerOrder`) with a fresh HLC, clobbering
@@ -169,7 +166,7 @@ const buildReplicaPullDeps = <T extends ReplicaLocalRecord>(
   // adapter declares a `binary` capability — replicaPullAndApply
   // short-circuits metadata-only kinds before invoking them. The
   // non-null assertion on baseDir is therefore safe in the binary
-  // path; metadata-only kinds (opds_catalog) leave config.baseDir
+  // path; metadata-only kinds leave config.baseDir
   // unset and never hit these.
   createBundleDir: async () => {
     const id = uniqueId();
@@ -249,16 +246,6 @@ const texturePullConfig: ReplicaPullConfig<CustomTexture> = {
   },
   applyRemote: (texture) => useCustomTextureStore.getState().applyRemoteTexture(texture),
   softDeleteByContentId: (id) => useCustomTextureStore.getState().softDeleteByContentId(id),
-};
-
-const opdsCatalogPullConfig: ReplicaPullConfig<OPDSCatalog> = {
-  kind: 'opds_catalog',
-  // metadata-only — no baseDir
-  adapter: opdsCatalogAdapter,
-  findByContentId: findOPDSCatalogByContentId,
-  hydrateLocalStore: (envConfig) => useCustomOPDSStore.getState().loadCustomOPDSCatalogs(envConfig),
-  applyRemote: (catalog) => useCustomOPDSStore.getState().applyRemoteCatalog(catalog),
-  softDeleteByContentId: (id) => useCustomOPDSStore.getState().softDeleteByContentId(id),
 };
 
 const settingsPullConfig = (envConfig: EnvConfigType): ReplicaPullConfig<SettingsRemoteRecord> => ({
@@ -344,18 +331,6 @@ const runPullForKind = async (
           service,
           envConfig,
           texturePullConfig,
-          pullOpts,
-          pullOverride,
-        ),
-      );
-      return;
-    case 'opds_catalog':
-      await replicaPullAndApply(
-        buildReplicaPullDeps(
-          ctx.manager,
-          service,
-          envConfig,
-          opdsCatalogPullConfig,
           pullOpts,
           pullOverride,
         ),
