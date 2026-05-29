@@ -74,8 +74,7 @@ export const eventDispatcher = new EventDispatcher();
 // unsubscribe function that cancels the subscription if the event hasn't
 // settled yet.
 //
-// Use case: boot-readiness signals like "replica-sync-ready" or
-// "transferManager-ready" where late subscribers must still observe
+// Use case: boot-readiness signals where late subscribers must still observe
 // that the milestone happened. The plain eventDispatcher fires-and-
 // forgets, so a listener that subscribes after dispatch misses it
 // forever.

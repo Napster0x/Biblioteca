@@ -11,16 +11,6 @@ vi.mock('isomorphic-ws', () => ({
   },
 }));
 
-// Stub the Supabase client so importing edgeTTS.ts (transitively via
-// @/utils/fetch -> @/utils/access) does not instantiate a real GoTrueClient.
-// Each `vi.resetModules()` would otherwise create another client and Supabase
-// logs "Multiple GoTrueClient instances detected" to stderr.
-vi.mock('@/utils/supabase', () => ({
-  supabase: { auth: { getSession: async () => ({ data: { session: null } }) } },
-  createSupabaseClient: () => ({}),
-  createSupabaseAdminClient: () => ({}),
-}));
-
 type GlobalWithWsPair = typeof globalThis & { WebSocketPair?: unknown };
 
 describe('EdgeSpeechTTS on Cloudflare Workers', () => {
@@ -95,7 +85,7 @@ describe('EdgeSpeechTTS on Cloudflare Workers', () => {
 
     // Import AFTER the mocks and globals are set up.
     const { EdgeSpeechTTS } = await import('@/libs/edgeTTS');
-    const tts = new EdgeSpeechTTS('wss');
+    const tts = new EdgeSpeechTTS();
     const response = await tts.create({
       lang: 'en-US',
       text: 'hello',
@@ -178,7 +168,7 @@ describe('EdgeSpeechTTS on Cloudflare Workers', () => {
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
     const { EdgeSpeechTTS } = await import('@/libs/edgeTTS');
-    const tts = new EdgeSpeechTTS('wss');
+    const tts = new EdgeSpeechTTS();
     const response = await tts.create({
       lang: 'en-US',
       text: 'hello',
@@ -202,7 +192,7 @@ describe('EdgeSpeechTTS on Cloudflare Workers', () => {
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
     const { EdgeSpeechTTS } = await import('@/libs/edgeTTS');
-    const tts = new EdgeSpeechTTS('wss');
+    const tts = new EdgeSpeechTTS();
     await expect(
       tts.create({
         lang: 'en-US',

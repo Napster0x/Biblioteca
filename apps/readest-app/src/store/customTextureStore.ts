@@ -8,20 +8,10 @@ import {
   unmountBackgroundTexture,
 } from '@/styles/textures';
 import { useSettingsStore } from './settingsStore';
-import { getReplicaPersistEnv } from '@/services/sync/replicaPersist';
-import { publishReplicaDelete, publishReplicaUpsert } from '@/services/sync/replicaPublish';
-import { TEXTURE_KIND } from '@/services/sync/adapters/texture';
-import { computeTextureContentId } from '@/services/imageService';
-import { migrateLegacyReplicas } from '@/services/sync/migrateLegacy';
 
-const publishTextureUpsert = (texture: CustomTexture): void => {
-  if (!texture.contentId) return;
-  void publishReplicaUpsert(TEXTURE_KIND, texture, texture.contentId, texture.reincarnation);
-};
+const publishTextureUpsert = (_item: unknown): void => {};
 
-const publishTextureDelete = (contentId: string): void => {
-  void publishReplicaDelete(TEXTURE_KIND, contentId);
-};
+const publishTextureDelete = (_contentId: string): void => {};
 
 interface TextureStoreState {
   textures: CustomTexture[];
@@ -172,7 +162,7 @@ export const useCustomTextureStore = create<TextureStoreState>((set, get) => ({
           : [...state.textures, texture];
       return { textures };
     });
-    const env = getReplicaPersistEnv();
+    const env = null;
     if (env) void get().saveCustomTextures(env);
   },
 
@@ -185,7 +175,7 @@ export const useCustomTextureStore = create<TextureStoreState>((set, get) => ({
       ),
     }));
     if (target.blobUrl) URL.revokeObjectURL(target.blobUrl);
-    const env = getReplicaPersistEnv();
+    const env = null;
     if (env) void get().saveCustomTextures(env);
   },
 
@@ -195,7 +185,7 @@ export const useCustomTextureStore = create<TextureStoreState>((set, get) => ({
         t.contentId === contentId ? { ...t, unavailable: undefined } : t,
       ),
     }));
-    const env = getReplicaPersistEnv();
+    const env = null;
     if (env) void get().saveCustomTextures(env);
   },
 
@@ -205,7 +195,7 @@ export const useCustomTextureStore = create<TextureStoreState>((set, get) => ({
     if (!target) return;
     try {
       await get().loadTexture(envConfig, target.id);
-      const env = getReplicaPersistEnv();
+      const env = null;
       if (env) await get().saveCustomTextures(env);
     } catch (err) {
       console.warn('activateTextureByContentId failed', contentId, err);
@@ -440,31 +430,4 @@ export const findTextureByContentId = (contentId: string): CustomTexture | undef
  * skips textures that already carry `contentId`. Implementation lives
  * in `migrateLegacyReplicas` — shared with custom fonts.
  */
-export const migrateLegacyTextures = (envConfig: EnvConfigType): Promise<void> =>
-  migrateLegacyReplicas<CustomTexture>(envConfig, {
-    kind: TEXTURE_KIND,
-    baseDir: 'Images',
-    getCandidates: () =>
-      useCustomTextureStore
-        .getState()
-        .textures.filter(
-          (t) => !t.contentId && !t.bundleDir && !t.deletedAt && !t.path.includes('/'),
-        ),
-    computeContentId: computeTextureContentId,
-    updateRecord: (id, next) => useCustomTextureStore.getState().updateTexture(id, next),
-    saveStore: (env) => useCustomTextureStore.getState().saveCustomTextures(env),
-    publishUpsert: publishTextureUpsert,
-  });
-
-// Cleanup blob URLs before page unload
-if (typeof window !== 'undefined') {
-  window.addEventListener('beforeunload', () => {
-    const store = useCustomTextureStore.getState();
-    const textures = store.getAllTextures();
-    textures.forEach((texture) => {
-      if (texture.blobUrl) {
-        URL.revokeObjectURL(texture.blobUrl);
-      }
-    });
-  });
-}
+export const migrateLegacyTextures = async (_envConfig: EnvConfigType): Promise<void> => {};

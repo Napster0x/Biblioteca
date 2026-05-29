@@ -302,9 +302,8 @@ const WebDAVForm: React.FC<WebDAVFormProps> = ({ onBack }) => {
           if (!appService) return null;
           // In-place imports live outside Books/<hash>/; resolve to
           // (book.filePath, 'None') when set. Hash-copy books fall
-          // through to the original Books-relative path. Same fallback
-          // pattern as cloudService.uploadBook so library Sync now
-          // treats in-place books as first-class.
+          // through to the original Books-relative path so WebDAV treats
+          // in-place books as first-class.
           const fp = book.filePath ?? getLocalBookFilename(book);
           const base = book.filePath ? 'None' : 'Books';
           if (!(await appService.exists(fp, base))) return null;

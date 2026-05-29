@@ -1,5 +1,4 @@
 import { partialMD5 } from '@/utils/md5';
-import { computeDictionaryReplicaId } from '@/services/sync/adapters/dictionary';
 
 /**
  * Compute the cross-device content-hash id for a dictionary bundle at
@@ -20,5 +19,5 @@ export const computeDictionaryContentId = async (
   filenames: string[],
 ): Promise<string> => {
   const partial = await partialMD5(primary);
-  return computeDictionaryReplicaId(partial, primary.size, filenames);
+  return `${partial}:${primary.size}:${filenames.slice().sort().join(',')}`;
 };

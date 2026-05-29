@@ -1,8 +1,6 @@
 import { getAPIBaseUrl } from '@/services/environment';
 import { stubTranslation as _ } from '@/utils/misc';
 import { ErrorCodes, TranslationProvider } from '../types';
-import { UserPlan } from '@/types/quota';
-import { getSubscriptionPlan, getTranslationQuota } from '@/utils/access';
 import { normalizeToShortLang } from '@/utils/lang';
 import { saveDailyUsage } from '../utils';
 
@@ -11,30 +9,18 @@ const DEEPL_API_ENDPOINT = getAPIBaseUrl() + '/deepl/translate';
 export const deeplProvider: TranslationProvider = {
   name: 'deepl',
   label: _('DeepL'),
-  authRequired: true,
+  authRequired: false,
   quotaExceeded: false,
   translate: async (
     text: string[],
     sourceLang: string,
     targetLang: string,
-    token?: string | null,
+    _token?: string | null,
     useCache: boolean = false,
   ): Promise<string[]> => {
-    const authRequired = deeplProvider.authRequired;
-
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
-
-    let userPlan: UserPlan = 'free';
-    if (token) {
-      userPlan = getSubscriptionPlan(token);
-      headers['Authorization'] = `Bearer ${token}`;
-    }
-
-    if (authRequired && !token) {
-      throw new Error('Authentication token is required for DeepL translation');
-    }
 
     const normalizedSourceLang = normalizeToShortLang(sourceLang).toUpperCase();
     const body = JSON.stringify({
@@ -44,7 +30,7 @@ export const deeplProvider: TranslationProvider = {
       use_cache: useCache,
     });
 
-    const quota = getTranslationQuota(userPlan);
+    const quota = Number.POSITIVE_INFINITY;
     try {
       const response = await fetch(DEEPL_API_ENDPOINT, { method: 'POST', headers, body });
 

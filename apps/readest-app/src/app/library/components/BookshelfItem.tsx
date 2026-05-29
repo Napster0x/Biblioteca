@@ -1,7 +1,6 @@
 import clsx from 'clsx';
 import { useCallback } from 'react';
 import { useEnv } from '@/context/EnvContext';
-import { useLibraryStore } from '@/store/libraryStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useAppRouter } from '@/hooks/useAppRouter';
@@ -87,15 +86,8 @@ interface BookshelfItemProps {
   coverFit: LibraryCoverFitType;
   isSelectMode: boolean;
   itemSelected: boolean;
-  transferProgress: number | null;
-  setLoading: React.Dispatch<React.SetStateAction<boolean>>;
   toggleSelection: (hash: string) => void;
   handleGroupBooks: () => void;
-  handleBookDownload: (
-    book: Book,
-    options?: { redownload?: boolean; queued?: boolean },
-  ) => Promise<boolean>;
-  handleBookUpload: (book: Book, syncBooks?: boolean) => Promise<boolean>;
   handleBookDelete: (book: Book, syncBooks?: boolean) => Promise<boolean>;
   handleSetSelectMode: (selectMode: boolean) => void;
   handleShowDetailsBook: (book: Book) => void;
@@ -109,12 +101,8 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
   coverFit,
   isSelectMode,
   itemSelected,
-  transferProgress,
-  setLoading,
   toggleSelection,
   handleGroupBooks,
-  handleBookUpload,
-  handleBookDownload,
   handleSetSelectMode,
   handleShowDetailsBook,
   handleLibraryNavigation,
@@ -122,38 +110,13 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
 }) => {
   const _ = useTranslation();
   const router = useAppRouter();
-  const { envConfig, appService } = useEnv();
+  const { appService } = useEnv();
   const { settings } = useSettingsStore();
-  const { updateBook } = useLibraryStore();
 
   const showBookDetailsModal = useCallback(async (book: Book) => {
     handleShowDetailsBook(book);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const makeBookAvailable = async (book: Book) => {
-    if (book.uploadedAt && !book.downloadedAt) {
-      if (await appService?.isBookAvailable(book)) {
-        if (!book.downloadedAt || !book.coverDownloadedAt) {
-          book.downloadedAt = Date.now();
-          book.coverDownloadedAt = Date.now();
-          await updateBook(envConfig, book);
-        }
-        return true;
-      }
-      let available = false;
-      const loadingTimeout = setTimeout(() => setLoading(true), 200);
-      try {
-        available = await handleBookDownload(book, { queued: false });
-        await updateBook(envConfig, book);
-      } finally {
-        if (loadingTimeout) clearTimeout(loadingTimeout);
-        setLoading(false);
-      }
-      return available;
-    }
-    return true;
-  };
 
   const handleBookClick = useCallback(
     async (book: Book) => {
@@ -165,12 +128,8 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
       // (or another app) may have moved, renamed, or deleted between sessions.
       // Probe the source before navigating: if it's gone, drop the stale
       // library record instead of opening the reader only to fail inside
-      // loadBookContent and bounce back with a toast. We restrict this to
-      // purely-local in-place books — cloud-synced books (`uploadedAt`) still
-      // go through `makeBookAvailable`'s on-demand download path below, and
-      // hash-copy books (no `filePath`) shouldn't lose their Books/<hash>/
-      // file under normal use, so we don't second-guess those here.
-      if (book.filePath && !book.uploadedAt && !book.deletedAt) {
+      // loadBookContent and bounce back with a toast.
+      if (book.filePath && !book.deletedAt) {
         const available = await appService?.isBookAvailable(book);
         if (!available) {
           eventDispatcher.dispatch('toast', {
@@ -183,8 +142,6 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
           return;
         }
       }
-      const available = await makeBookAvailable(book);
-      if (!available) return;
       if (appService?.hasWindow && settings.openBookInNewWindow) {
         showReaderWindow(appService, [book.hash]);
       } else {
@@ -262,26 +219,6 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
         showBookDetailsModal(book);
       },
     });
-    const downloadBookMenuItem = await MenuItem.new({
-      text: _('Download Book'),
-      action: async () => {
-        handleBookDownload(book, { queued: true });
-      },
-    });
-    const uploadBookMenuItem = await MenuItem.new({
-      text: _('Upload Book'),
-      action: async () => {
-        handleBookUpload(book);
-      },
-    });
-    const shareBookMenuItem = await MenuItem.new({
-      text: _('Share Book'),
-      action: async () => {
-        // Bookshelf.tsx hosts the dialog; we dispatch and let it route
-        // unauthenticated users into the login flow first.
-        eventDispatcher.dispatch('show-share-dialog', { book });
-      },
-    });
     const deleteBookMenuItem = await MenuItem.new({
       text: _('Delete'),
       action: async () => {
@@ -302,17 +239,6 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
     }
     menu.append(showBookDetailsMenuItem);
     menu.append(showBookInFinderMenuItem);
-    if (book.uploadedAt && !book.downloadedAt) {
-      menu.append(downloadBookMenuItem);
-    }
-    if (!book.uploadedAt && book.downloadedAt) {
-      menu.append(uploadBookMenuItem);
-    }
-    // Share is offered for any local-or-uploaded book; the dialog will trigger
-    // an upload first if the book hasn't been pushed yet.
-    if (book.downloadedAt || book.uploadedAt) {
-      menu.append(shareBookMenuItem);
-    }
     menu.append(deleteBookMenuItem);
     menu.popup();
   };
@@ -455,9 +381,6 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
               coverFit={coverFit}
               isSelectMode={isSelectMode}
               bookSelected={itemSelected}
-              transferProgress={transferProgress}
-              handleBookUpload={handleBookUpload}
-              handleBookDownload={handleBookDownload}
               showBookDetailsModal={showBookDetailsModal}
             />
           ) : (

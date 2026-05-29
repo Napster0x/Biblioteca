@@ -8,20 +8,10 @@ import {
   mountCustomFont,
 } from '@/styles/fonts';
 import { useSettingsStore } from './settingsStore';
-import { getReplicaPersistEnv } from '@/services/sync/replicaPersist';
-import { publishReplicaDelete, publishReplicaUpsert } from '@/services/sync/replicaPublish';
-import { FONT_KIND } from '@/services/sync/adapters/font';
-import { computeFontContentId } from '@/services/fontService';
-import { migrateLegacyReplicas } from '@/services/sync/migrateLegacy';
 
-const publishFontUpsert = (font: CustomFont): void => {
-  if (!font.contentId) return;
-  void publishReplicaUpsert(FONT_KIND, font, font.contentId, font.reincarnation);
-};
+const publishFontUpsert = (_item: unknown): void => {};
 
-const publishFontDelete = (contentId: string): void => {
-  void publishReplicaDelete(FONT_KIND, contentId);
-};
+const publishFontDelete = (_contentId: string): void => {};
 
 interface FontStoreState {
   fonts: CustomFont[];
@@ -165,7 +155,7 @@ export const useCustomFontStore = create<FontStoreState>((set, get) => ({
           : [...state.fonts, font];
       return { fonts };
     });
-    const env = getReplicaPersistEnv();
+    const env = null;
     if (env) void get().saveCustomFonts(env);
   },
 
@@ -178,7 +168,7 @@ export const useCustomFontStore = create<FontStoreState>((set, get) => ({
       ),
     }));
     if (target.blobUrl) URL.revokeObjectURL(target.blobUrl);
-    const env = getReplicaPersistEnv();
+    const env = null;
     if (env) void get().saveCustomFonts(env);
   },
 
@@ -188,7 +178,7 @@ export const useCustomFontStore = create<FontStoreState>((set, get) => ({
         f.contentId === contentId ? { ...f, unavailable: undefined } : f,
       ),
     }));
-    const env = getReplicaPersistEnv();
+    const env = null;
     if (env) void get().saveCustomFonts(env);
   },
 
@@ -201,7 +191,7 @@ export const useCustomFontStore = create<FontStoreState>((set, get) => ({
       if (typeof document !== 'undefined') {
         mountCustomFont(document, loaded);
       }
-      const env = getReplicaPersistEnv();
+      const env = null;
       if (env) await get().saveCustomFonts(env);
     } catch (err) {
       console.warn('activateFontByContentId failed', contentId, err);
@@ -422,28 +412,4 @@ export const findFontByContentId = (contentId: string): CustomFont | undefined =
  * skips fonts that already carry `contentId`. Implementation lives in
  * `migrateLegacyReplicas` — shared with custom textures.
  */
-export const migrateLegacyFonts = (envConfig: EnvConfigType): Promise<void> =>
-  migrateLegacyReplicas<CustomFont>(envConfig, {
-    kind: FONT_KIND,
-    baseDir: 'Fonts',
-    getCandidates: () =>
-      useCustomFontStore
-        .getState()
-        .fonts.filter((f) => !f.contentId && !f.bundleDir && !f.deletedAt && !f.path.includes('/')),
-    computeContentId: computeFontContentId,
-    updateRecord: (id, next) => useCustomFontStore.getState().updateFont(id, next),
-    saveStore: (env) => useCustomFontStore.getState().saveCustomFonts(env),
-    publishUpsert: publishFontUpsert,
-  });
-
-if (typeof window !== 'undefined') {
-  window.addEventListener('beforeunload', () => {
-    const store = useCustomFontStore.getState();
-    const fonts = store.getAllFonts();
-    fonts.forEach((font) => {
-      if (font.blobUrl) {
-        URL.revokeObjectURL(font.blobUrl);
-      }
-    });
-  });
-}
+export const migrateLegacyFonts = async (_envConfig: EnvConfigType): Promise<void> => {};

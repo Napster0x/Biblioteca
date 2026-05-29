@@ -291,10 +291,7 @@ const HeaderBar: React.FC<HeaderBarProps> = ({
             toggleButton={<PiDotsThreeVerticalBold size={iconSize16} />}
             onToggle={handleToggleDropdown}
           >
-            <ViewMenu
-              bookKey={bookKey}
-              onShowMetaHashDialog={() => setIsMetaHashDialogOpen(true)}
-            />
+            <ViewMenu bookKey={bookKey} />
           </Dropdown>
           {isMetaHashDialogOpen && (
             <ModalPortal showOverlay={false}>

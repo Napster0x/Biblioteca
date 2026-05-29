@@ -1,6 +1,6 @@
 import { getUserLocale } from '@/utils/misc';
 import { TTSClient, TTSMessageEvent } from './TTSClient';
-import { EdgeSpeechTTS, EdgeTTSPayload, EDGE_TTS_PROTOCOL } from '@/libs/edgeTTS';
+import { EdgeSpeechTTS, EdgeTTSPayload } from '@/libs/edgeTTS';
 import { TTSGranularity, TTSVoice, TTSVoicesGroup } from './types';
 import { AppService } from '@/types/system';
 import { parseSSMLMarks } from '@/utils/ssml';
@@ -32,8 +32,8 @@ export class EdgeTTSClient implements TTSClient {
     this.appService = appService;
   }
 
-  async init(protocol: EDGE_TTS_PROTOCOL = 'wss') {
-    this.#edgeTTS = new EdgeSpeechTTS(protocol);
+  async init() {
+    this.#edgeTTS = new EdgeSpeechTTS();
     this.#voices = EdgeSpeechTTS.voices;
     try {
       await this.#edgeTTS.create({
@@ -45,15 +45,7 @@ export class EdgeTTSClient implements TTSClient {
       });
       this.initialized = true;
     } catch {
-      if (protocol === 'wss') {
-        if (this.controller?.isAuthenticated) {
-          await this.init('https');
-        } else {
-          this.controller?.dispatchEvent(new CustomEvent('tts-need-auth'));
-        }
-      } else {
-        this.initialized = false;
-      }
+      this.initialized = false;
     }
     return this.initialized;
   }

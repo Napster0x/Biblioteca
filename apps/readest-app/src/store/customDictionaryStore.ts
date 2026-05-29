@@ -7,18 +7,10 @@ import type {
 } from '@/services/dictionaries/types';
 import { BUILTIN_PROVIDER_IDS, BUILTIN_WEB_SEARCH_IDS } from '@/services/dictionaries/types';
 import { useSettingsStore } from './settingsStore';
-import { publishReplicaDelete, publishReplicaUpsert } from '@/services/sync/replicaPublish';
-import { DICTIONARY_KIND } from '@/services/sync/adapters/dictionary';
-import { markExplicitProviderOrderPublish } from '@/services/sync/replicaSettingsSync';
 
-const publishDictUpsert = (dict: ImportedDictionary): void => {
-  if (!dict.contentId) return;
-  void publishReplicaUpsert(DICTIONARY_KIND, dict, dict.contentId, dict.reincarnation);
-};
+const publishDictUpsert = (_dict: ImportedDictionary): void => {};
 
-const publishDictDelete = (contentId: string): void => {
-  void publishReplicaDelete(DICTIONARY_KIND, contentId);
-};
+const publishDictDelete = (_contentId: string): void => {};
 
 /**
  * Built-in web-search ids are seeded into `providerOrder` but disabled by
@@ -160,7 +152,6 @@ function toSettingsDict(dict: ImportedDictionary): ImportedDictionary {
 // fire-and-forget saves through it so the next loadCustomDictionaries
 // reads up-to-date settings.customDictionaries instead of wiping the
 // in-memory rows.
-import { getReplicaPersistEnv } from '@/services/sync/replicaPersist';
 
 /**
  * Look up a dict by its cross-device contentId, falling back to the
@@ -237,7 +228,7 @@ export const useCustomDictionaryStore = create<DictionaryStoreState>((set, get) 
         settings: { ...state.settings, providerOrder: order, providerEnabled: enabled },
       };
     });
-    const env = getReplicaPersistEnv();
+    const env = null;
     if (env) void get().saveCustomDictionaries(env);
   },
 
@@ -250,7 +241,7 @@ export const useCustomDictionaryStore = create<DictionaryStoreState>((set, get) 
         d.contentId === contentId ? { ...d, unavailable: undefined } : d,
       ),
     }));
-    const env = getReplicaPersistEnv();
+    const env = null;
     if (env) void get().saveCustomDictionaries(env);
   },
 
@@ -288,7 +279,7 @@ export const useCustomDictionaryStore = create<DictionaryStoreState>((set, get) 
         ),
       },
     }));
-    const env = getReplicaPersistEnv();
+    const env = null;
     if (env) void get().saveCustomDictionaries(env);
   },
 
@@ -606,7 +597,6 @@ export const useCustomDictionaryStore = create<DictionaryStoreState>((set, get) 
       // Auto-saves from replica pull / download-complete leave it
       // closed so automatic local order changes never publish.
       if (opts?.publishOrderChange) {
-        markExplicitProviderOrderPublish();
       }
       setSettings(next);
       saveSettings(envConfig, next);

@@ -220,8 +220,7 @@ export const useWebDAVSync = (bookKey: string) => {
           // the HEAD probe says we actually need to upload. Used on web
           // targets where streaming PUTs aren't available.
           // In-place imports keep their bytes outside Books/<hash>/, so
-          // resolve to (book.filePath, 'None') when the field is set —
-          // mirrors the same fallback in cloudService.uploadBook so
+          // resolve to (book.filePath, 'None') when the field is set so
           // syncBooks treats in-place books as first-class.
           const fp = book.filePath ?? getLocalBookFilename(book);
           const base = book.filePath ? 'None' : 'Books';

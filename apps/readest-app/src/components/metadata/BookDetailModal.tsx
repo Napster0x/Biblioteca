@@ -7,7 +7,6 @@ import { useEnv } from '@/context/EnvContext';
 import { useThemeStore } from '@/store/themeStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useMetadataEdit } from './useMetadataEdit';
-import { DeleteAction } from '@/types/system';
 import { eventDispatcher } from '@/utils/event';
 import { isWebAppPlatform } from '@/services/environment';
 import Alert from '@/components/Alert';
@@ -21,11 +20,7 @@ interface BookDetailModalProps {
   book: Book;
   isOpen: boolean;
   onClose: () => void;
-  handleBookDownload?: (book: Book, options?: { redownload?: boolean; queued?: boolean }) => void;
-  handleBookUpload?: (book: Book) => void;
   handleBookDelete?: (book: Book) => void;
-  handleBookDeleteCloudBackup?: (book: Book) => void;
-  handleBookDeleteLocalCopy?: (book: Book) => void;
   handleBookMetadataUpdate?: (book: Book, updatedMetadata: BookMetadata) => void;
 }
 
@@ -39,17 +34,13 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
   book,
   isOpen,
   onClose,
-  handleBookDownload,
-  handleBookUpload,
   handleBookDelete,
-  handleBookDeleteCloudBackup,
-  handleBookDeleteLocalCopy,
   handleBookMetadataUpdate,
 }) => {
   const _ = useTranslation();
   const { envConfig, appService } = useEnv();
   const { safeAreaInsets } = useThemeStore();
-  const [activeDeleteAction, setActiveDeleteAction] = useState<DeleteAction | null>(null);
+  const [activeDeleteAction, setActiveDeleteAction] = useState<'delete' | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [bookMeta, setBookMeta] = useState<BookMetadata | null>(null);
@@ -74,22 +65,10 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
     resetToOriginal,
   } = useMetadataEdit(bookMeta);
 
-  const deleteConfigs: Record<DeleteAction, DeleteConfig> = {
-    both: {
-      title: _('Confirm Deletion'),
-      message: _('Are you sure to delete the selected book?'),
-      handler: handleBookDelete,
-    },
-    cloud: {
-      title: _('Confirm Deletion'),
-      message: _('Are you sure to delete the cloud backup of the selected book?'),
-      handler: handleBookDeleteCloudBackup,
-    },
-    local: {
-      title: _('Confirm Deletion'),
-      message: _('Are you sure to delete the local copy of the selected book?'),
-      handler: handleBookDeleteLocalCopy,
-    },
+  const deleteConfig: DeleteConfig = {
+    title: _('Confirm Deletion'),
+    message: _('Are you sure to delete the selected book?'),
+    handler: handleBookDelete,
   };
 
   useEffect(() => {
@@ -134,14 +113,14 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
     }
   };
 
-  const handleDeleteAction = (action: DeleteAction) => {
-    setActiveDeleteAction(action);
+  const handleDeleteAction = () => {
+    setActiveDeleteAction('delete');
   };
 
   const confirmDeleteAction = async () => {
     if (!activeDeleteAction) return;
 
-    const config = deleteConfigs[activeDeleteAction];
+    const config = deleteConfig;
     handleClose();
 
     if (config.handler) {
@@ -153,23 +132,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
     setActiveDeleteAction(null);
   };
 
-  const handleDelete = () => handleDeleteAction('both');
-  const handleDeleteCloudBackup = () => handleDeleteAction('cloud');
-  const handleDeleteLocalCopy = () => handleDeleteAction('local');
-
-  const handleRedownload = async () => {
-    handleClose();
-    if (handleBookDownload) {
-      handleBookDownload(book, { redownload: true, queued: false });
-    }
-  };
-
-  const handleReupload = async () => {
-    handleClose();
-    if (handleBookUpload) {
-      handleBookUpload(book);
-    }
-  };
+  const handleDelete = () => handleDeleteAction();
 
   const handleBookExport = async () => {
     setIsLoading(true);
@@ -185,7 +148,7 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
     }, 0);
   };
 
-  const currentDeleteConfig = activeDeleteAction ? deleteConfigs[activeDeleteAction] : null;
+  const currentDeleteConfig = activeDeleteAction ? deleteConfig : null;
 
   return (
     <>
@@ -225,12 +188,6 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
                 fileSize={fileSize}
                 onEdit={handleBookMetadataUpdate ? handleEditMetadata : undefined}
                 onDelete={handleBookDelete ? handleDelete : undefined}
-                onDeleteCloudBackup={
-                  handleBookDeleteCloudBackup ? handleDeleteCloudBackup : undefined
-                }
-                onDeleteLocalCopy={handleBookDeleteLocalCopy ? handleDeleteLocalCopy : undefined}
-                onDownload={handleBookDownload ? handleRedownload : undefined}
-                onUpload={handleBookUpload ? handleReupload : undefined}
                 onExport={handleBookExport}
               />
             )}

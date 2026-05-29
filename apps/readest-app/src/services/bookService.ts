@@ -576,15 +576,7 @@ export async function saveBookNav(fs: FileSystem, book: Book, nav: BookNav): Pro
   await fs.writeFile(getBookNavFilename(book), 'Books', JSON.stringify(nav));
 }
 
-export async function fetchBookDetails(
-  fs: FileSystem,
-  book: Book,
-  downloadBookFn: (book: Book) => Promise<void>,
-): Promise<BookDoc['metadata']> {
-  const fp = getLocalBookFilename(book);
-  if (!(await fs.exists(fp, 'Books')) && book.uploadedAt) {
-    await downloadBookFn(book);
-  }
+export async function fetchBookDetails(fs: FileSystem, book: Book): Promise<BookDoc['metadata']> {
   const { file } = await loadBookContent(fs, book);
   const bookDoc = (await new DocumentLoader(file).open()).book;
   const f = file as ClosableFile;

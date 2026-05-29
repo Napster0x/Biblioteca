@@ -36,7 +36,6 @@ use tauri::{command, Emitter, WebviewUrl, WebviewWindowBuilder, Window};
 use tauri_plugin_native_bridge::register_select_directory_callback;
 #[cfg(target_os = "android")]
 use tauri_plugin_native_bridge::{NativeBridgeExt, OpenExternalUrlRequest};
-use tauri_plugin_oauth::start;
 #[cfg(not(target_os = "android"))]
 use tauri_plugin_opener::OpenerExt;
 use transfer_file::{download_file, upload_file};
@@ -214,16 +213,6 @@ fn set_window_open_with_files(app: &AppHandle, files: Vec<PathBuf>) {
     }
 }
 
-#[command]
-async fn start_server(window: Window) -> Result<u16, String> {
-    start(move |url| {
-        // Because of the unprotected localhost port, you must verify the URL here.
-        // Preferebly send back only the token, or nothing at all if you can handle everything else in Rust.
-        let _ = window.emit("redirect_uri", url);
-    })
-    .map_err(|err| err.to_string())
-}
-
 #[tauri::command]
 fn get_environment_variable(name: &str) -> String {
     std::env::var(String::from(name)).unwrap_or(String::from(""))
@@ -257,9 +246,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_websocket::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_oauth::init())
         .invoke_handler(tauri::generate_handler![
-            start_server,
             download_file,
             upload_file,
             get_environment_variable,

@@ -11,7 +11,6 @@ import {
   MdClose,
 } from 'react-icons/md';
 import { useEnv } from '@/context/EnvContext';
-import { useAuth } from '@/context/AuthContext';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useLibraryStore } from '@/store/libraryStore';
@@ -57,7 +56,6 @@ export interface WebDAVBrowsePaneProps {
 const WebDAVBrowsePane: React.FC<WebDAVBrowsePaneProps> = ({ settings, onAppendSyncLogEntry }) => {
   const _ = useTranslation();
   const { envConfig } = useEnv();
-  const { user } = useAuth();
   const { settings: globalSettings } = useSettingsStore();
 
   // The saved root is the authoritative "you can't navigate above me"
@@ -440,7 +438,7 @@ const WebDAVBrowsePane: React.FC<WebDAVBrowsePaneProps> = ({ settings, onAppendS
       const library = libraryLoaded ? [...storeLibrary] : await appService.loadLibraryBooks();
       const imported = await ingestFile(
         { file: dst, books: library },
-        { appService, settings: globalSettings, isLoggedIn: !!user },
+        { appService, settings: globalSettings },
       );
       // ingestFile copies the bytes into Books/<hash>/, the cache
       // copy is now redundant. Best-effort delete; OS GC catches it

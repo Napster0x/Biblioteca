@@ -8,8 +8,6 @@ import {
   ValidationResult,
 } from '@/utils/validation';
 import { MetadataSource } from './SourceSelector';
-import { searchMetadata } from '@/libs/metadata';
-import { formatAuthors, formatTitle, getPrimaryLanguage } from '@/utils/book';
 
 export const useMetadataEdit = (metadata: BookMetadata | null) => {
   const [editedMeta, setEditedMeta] = useState<BookMetadata>({} as BookMetadata);
@@ -17,7 +15,7 @@ export const useMetadataEdit = (metadata: BookMetadata | null) => {
   const [lockedFields, setLockedFields] = useState<Record<string, boolean>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  const [searchLoading, setSearchLoading] = useState(false);
+  const searchLoading = false;
   const [showSourceSelection, setShowSourceSelection] = useState(false);
   const [availableSources, setAvailableSources] = useState<MetadataSource[]>([]);
 
@@ -177,28 +175,8 @@ export const useMetadataEdit = (metadata: BookMetadata | null) => {
   };
 
   const handleAutoRetrieve = async () => {
-    setSearchLoading(true);
-    try {
-      const isbnValidation = validateISBN(editedMeta.isbn || '');
-      const results = await searchMetadata({
-        title: formatTitle(editedMeta.title),
-        author: formatAuthors(editedMeta.author),
-        isbn: isbnValidation.isValid ? editedMeta.isbn : undefined,
-        language: getPrimaryLanguage(editedMeta.language),
-      });
-      const metadataSources = results.map((result) => ({
-        sourceName: result.providerName,
-        sourceLabel: result.providerLabel,
-        confidence: result.confidence,
-        data: result.metadata as BookMetadata,
-      }));
-      setAvailableSources(metadataSources);
-      setShowSourceSelection(true);
-    } catch (error) {
-      console.error('Failed to retrieve metadata:', error);
-    } finally {
-      setSearchLoading(false);
-    }
+    setAvailableSources([]);
+    setShowSourceSelection(false);
   };
 
   const handleSourceSelection = (selectedSource: MetadataSource) => {

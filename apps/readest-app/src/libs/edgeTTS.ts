@@ -3,8 +3,7 @@ import WebSocket from 'isomorphic-ws';
 import { randomMd5 } from '@/utils/misc';
 import { LRUCache } from '@/utils/lru';
 import { genSSML } from '@/utils/ssml';
-import { fetchWithAuth } from '@/utils/fetch';
-import { getAPIBaseUrl, isTauriAppPlatform } from '@/services/environment';
+import { isTauriAppPlatform } from '@/services/environment';
 
 // Cloudflare Workers expose a global `WebSocketPair` that is not available in
 // browsers or Node.js. The Node `ws` package (used transitively via
@@ -281,8 +280,6 @@ const hashPayload = (payload: EdgeTTSPayload): string => {
   return md5(base);
 };
 
-export type EDGE_TTS_PROTOCOL = 'wss' | 'https';
-
 export class EdgeSpeechTTS {
   static voices = genVoiceList(EDGE_TTS_VOICES);
   private static audioCache = new LRUCache<string, Blob>(200);
@@ -291,36 +288,6 @@ export class EdgeSpeechTTS {
       URL.revokeObjectURL(url);
     }
   });
-  private protocol: EDGE_TTS_PROTOCOL = 'wss';
-
-  constructor(protocol?: EDGE_TTS_PROTOCOL) {
-    if (protocol) {
-      this.protocol = protocol;
-    }
-  }
-
-  async #fetchEdgeSpeechHttp({ lang, text, voice, rate }: EdgeTTSPayload): Promise<Response> {
-    const url = getAPIBaseUrl() + '/tts/edge';
-
-    const response = await fetchWithAuth(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        input: text,
-        voice,
-        rate,
-        lang,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Edge TTS HTTP request failed: ${response.status} ${response.statusText}`);
-    }
-
-    return response;
-  }
 
   async #fetchEdgeSpeechWs({ lang, text, voice, rate }: EdgeTTSPayload): Promise<Response> {
     const connectId = randomMd5();
@@ -632,11 +599,7 @@ export class EdgeSpeechTTS {
   }
 
   async create(payload: EdgeTTSPayload): Promise<Response> {
-    if (this.protocol === 'https') {
-      return this.#fetchEdgeSpeechHttp(payload);
-    } else {
-      return this.#fetchEdgeSpeechWs(payload);
-    }
+    return this.#fetchEdgeSpeechWs(payload);
   }
 
   async createAudioUrl(payload: EdgeTTSPayload): Promise<string> {
