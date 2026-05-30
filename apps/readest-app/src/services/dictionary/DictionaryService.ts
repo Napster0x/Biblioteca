@@ -251,6 +251,17 @@ export class DictionaryService {
     return entryFromRow(row);
   }
 
+  async deleteEntries(ids: readonly string[]): Promise<void> {
+    if (ids.length === 0) return;
+
+    const placeholders = ids.map(() => '?').join(', ');
+    await this.db.execute(
+      `DELETE FROM dictionary_occurrences WHERE entry_id IN (${placeholders})`,
+      [...ids],
+    );
+    await this.db.execute(`DELETE FROM dictionary_entries WHERE id IN (${placeholders})`, [...ids]);
+  }
+
   private async findEntry(term: string, language: string | null): Promise<DictionaryEntry | null> {
     const rows = await this.db.select<DictionaryEntryRow>(
       `SELECT ${ENTRY_COLUMNS}

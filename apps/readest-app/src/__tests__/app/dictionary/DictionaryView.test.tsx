@@ -15,6 +15,11 @@ const mocks = vi.hoisted(() => ({
   loadEntry: vi.fn(),
   loadOccurrences: vi.fn(),
   updateEntry: vi.fn(),
+  toggleSelectedEntry: vi.fn(),
+  addEntry: vi.fn(),
+  enterSelectMode: vi.fn(),
+  cancelSelectMode: vi.fn(),
+  deleteSelectedEntries: vi.fn(),
   getDictionaryService: vi.fn(),
   appService: { platform: 'test', createDir: vi.fn(), writeFile: vi.fn(), readFile: vi.fn() },
 }));
@@ -23,6 +28,8 @@ let mockEntries: DictionaryEntry[] = [];
 let mockEntry: DictionaryEntry | null = null;
 let mockOccurrencesByEntryId: Record<string, DictionaryOccurrence[]> = {};
 let mockIsLoading = false;
+let mockIsSelectMode = false;
+let mockSelectedEntryIds: string[] = [];
 let mockViewStates: Record<string, { view?: { goTo: (cfi: string) => void } }> = {};
 
 interface MockDictionaryStoreState {
@@ -30,10 +37,17 @@ interface MockDictionaryStoreState {
   entry: DictionaryEntry | null;
   occurrencesByEntryId: Record<string, DictionaryOccurrence[]>;
   isLoading: boolean;
+  isSelectMode: boolean;
+  selectedEntryIds: string[];
   loadEntries: typeof mocks.loadEntries;
   loadEntry: typeof mocks.loadEntry;
   loadOccurrences: typeof mocks.loadOccurrences;
   updateEntry: typeof mocks.updateEntry;
+  toggleSelectedEntry: typeof mocks.toggleSelectedEntry;
+  addEntry: typeof mocks.addEntry;
+  enterSelectMode: typeof mocks.enterSelectMode;
+  cancelSelectMode: typeof mocks.cancelSelectMode;
+  deleteSelectedEntries: typeof mocks.deleteSelectedEntries;
 }
 
 vi.mock('next/navigation', () => ({
@@ -56,10 +70,17 @@ vi.mock('@/store/dictionaryStore', () => ({
       entry: mockEntry,
       occurrencesByEntryId: mockOccurrencesByEntryId,
       isLoading: mockIsLoading,
+      isSelectMode: mockIsSelectMode,
+      selectedEntryIds: mockSelectedEntryIds,
       loadEntries: mocks.loadEntries,
       loadEntry: mocks.loadEntry,
       loadOccurrences: mocks.loadOccurrences,
       updateEntry: mocks.updateEntry,
+      toggleSelectedEntry: mocks.toggleSelectedEntry,
+      addEntry: mocks.addEntry,
+      enterSelectMode: mocks.enterSelectMode,
+      cancelSelectMode: mocks.cancelSelectMode,
+      deleteSelectedEntries: mocks.deleteSelectedEntries,
     }),
 }));
 
@@ -115,6 +136,8 @@ describe('DictionaryGrid', () => {
     mockEntry = null;
     mockOccurrencesByEntryId = {};
     mockIsLoading = false;
+    mockIsSelectMode = false;
+    mockSelectedEntryIds = [];
     mockViewStates = {};
     mocks.push.mockReset();
     mocks.replace.mockReset();
@@ -123,6 +146,11 @@ describe('DictionaryGrid', () => {
     mocks.loadEntry.mockReset();
     mocks.loadOccurrences.mockReset();
     mocks.updateEntry.mockReset();
+    mocks.toggleSelectedEntry.mockReset();
+    mocks.addEntry.mockReset();
+    mocks.enterSelectMode.mockReset();
+    mocks.cancelSelectMode.mockReset();
+    mocks.deleteSelectedEntries.mockReset();
     mocks.getDictionaryService.mockReset();
     mocks.getDictionaryService.mockResolvedValue(mockService);
   });
@@ -172,12 +200,231 @@ describe('DictionaryGrid', () => {
     expect(screen.queryByText('efímero')).toBeNull();
   });
 
+  it('renders dictionary tiles as toggle buttons when select mode is active', () => {
+    mockIsSelectMode = true;
+    mockEntries = [makeEntry({ id: 'entry-1', displayTerm: 'serendipia' })];
+
+    render(<DictionaryGrid service={mockService} />);
+    const tile = screen.getByRole('button', { name: 'Seleccionar serendipia' });
+
+    fireEvent.click(tile);
+
+    expect(tile.getAttribute('aria-pressed')).toBe('false');
+    expect(screen.queryByRole('link', { name: /serendipia/i })).toBeNull();
+    expect(mocks.toggleSelectedEntry).toHaveBeenCalledWith('entry-1');
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('shows selected tiles with a non-color selected label in select mode', () => {
+    mockIsSelectMode = true;
+    mockSelectedEntryIds = ['entry-1'];
+    mockEntries = [makeEntry({ id: 'entry-1', displayTerm: 'serendipia' })];
+
+    render(<DictionaryGrid service={mockService} />);
+    const tile = screen.getByRole('button', { name: 'Deseleccionar serendipia' });
+
+    expect(tile.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('Seleccionado')).toBeTruthy();
+  });
+
   it('shows a loading message when loading before entries exist', () => {
     mockIsLoading = true;
 
     render(<DictionaryGrid service={mockService} />);
 
     expect(screen.getByText(/cargando/i)).toBeTruthy();
+  });
+
+  it('renders toolbar Add (PiPlus) and Select action buttons on the right side', () => {
+    render(<DictionaryGrid service={mockService} />);
+
+    expect(screen.getByRole('button', { name: 'Añadir palabra' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Seleccionar' })).toBeTruthy();
+  });
+
+  it('does not show book-only Group, Status, or Import actions in dictionary toolbar', () => {
+    render(<DictionaryGrid service={mockService} />);
+
+    expect(screen.queryByRole('button', { name: /agrupar|grupo/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /estado|status/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /importar/i })).toBeNull();
+  });
+
+  it('opens an Add Word dialog when + is clicked and submits with term + definition', async () => {
+    render(<DictionaryGrid service={mockService} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Añadir palabra' }));
+
+    expect(screen.getByRole('dialog', { name: 'Añadir palabra' })).toBeTruthy();
+    expect(screen.getByLabelText('Palabra')).toBeTruthy();
+    expect(screen.getByLabelText('Definición (opcional)')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Palabra'), { target: { value: 'neologismo' } });
+    fireEvent.change(screen.getByLabelText('Definición (opcional)'), {
+      target: { value: 'Palabra de nueva creación' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar' }));
+
+    await waitFor(() => {
+      expect(mocks.addEntry).toHaveBeenCalledWith(
+        { term: 'neologismo', definition: 'Palabra de nueva creación' },
+        mockService,
+      );
+    });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('rejects empty or whitespace-only term in Add Word dialog with validation message', () => {
+    render(<DictionaryGrid service={mockService} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Añadir palabra' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar' }));
+
+    expect(screen.getByText('La palabra es obligatoria')).toBeTruthy();
+    expect(mocks.addEntry).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeTruthy();
+
+    // Whitespace-only is also rejected
+    fireEvent.change(screen.getByLabelText('Palabra'), { target: { value: '   ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar' }));
+
+    expect(screen.getByText('La palabra es obligatoria')).toBeTruthy();
+    expect(mocks.addEntry).not.toHaveBeenCalled();
+  });
+
+  it('closes Add Word dialog when cancel is clicked without submitting', () => {
+    render(<DictionaryGrid service={mockService} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Añadir palabra' }));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(mocks.addEntry).not.toHaveBeenCalled();
+  });
+
+  it('shows toolbar actions alongside no-results empty state when search has no matches', () => {
+    mockEntries = [makeEntry({ id: 'entry-1', displayTerm: 'serendipia' })];
+
+    render(<DictionaryGrid service={mockService} />);
+    fireEvent.change(screen.getByLabelText('Buscar'), { target: { value: 'xyzzy' } });
+
+    expect(screen.getByText('Sin resultados')).toBeTruthy();
+    // Toolbar actions remain usable
+    expect(screen.getByRole('button', { name: 'Añadir palabra' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Seleccionar' })).toBeTruthy();
+  });
+
+  it('enters select mode when Select toolbar button is clicked and shows Cancel/Delete bar', () => {
+    mockEntries = [makeEntry({ id: 'entry-1', displayTerm: 'serendipia' })];
+
+    render(<DictionaryGrid service={mockService} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Seleccionar' }));
+
+    expect(mocks.enterSelectMode).toHaveBeenCalled();
+  });
+
+  it('shows bottom Cancel and Delete action bar when select mode is active', () => {
+    mockIsSelectMode = true;
+    mockSelectedEntryIds = ['entry-1'];
+    mockEntries = [makeEntry({ id: 'entry-1', displayTerm: 'serendipia' })];
+
+    render(<DictionaryGrid service={mockService} />);
+
+    expect(screen.getByRole('button', { name: 'Cancelar' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Borrar seleccionados' })).toBeTruthy();
+  });
+
+  it('shows disabled Delete button when select mode is active but no entries selected', () => {
+    mockIsSelectMode = true;
+    mockSelectedEntryIds = [];
+    mockEntries = [makeEntry({ id: 'entry-1', displayTerm: 'serendipia' })];
+
+    render(<DictionaryGrid service={mockService} />);
+
+    const deleteButton = screen.getByRole('button', { name: 'Borrar seleccionados' });
+    expect((deleteButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('calls cancelSelectMode when Cancel is clicked in the bottom bar', () => {
+    mockIsSelectMode = true;
+    mockSelectedEntryIds = ['entry-1'];
+    mockEntries = [makeEntry({ id: 'entry-1', displayTerm: 'serendipia' })];
+
+    render(<DictionaryGrid service={mockService} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+
+    expect(mocks.cancelSelectMode).toHaveBeenCalled();
+  });
+
+  it('shows confirmation alert and calls deleteSelectedEntries when Delete is confirmed', async () => {
+    mockIsSelectMode = true;
+    mockSelectedEntryIds = ['entry-1'];
+    mockEntries = [makeEntry({ id: 'entry-1', displayTerm: 'serendipia' })];
+
+    render(<DictionaryGrid service={mockService} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Borrar seleccionados' }));
+
+    // Confirmation dialog appears (translation mock returns key as-is)
+    expect(screen.getByText(/¿Borrar.*entrada.*seleccionada/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sí, borrar' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'No, cancelar' })).toBeTruthy();
+
+    // Confirm delete
+    fireEvent.click(screen.getByRole('button', { name: 'Sí, borrar' }));
+
+    await waitFor(() => {
+      expect(mocks.deleteSelectedEntries).toHaveBeenCalledWith(mockService);
+    });
+  });
+
+  it('cancels delete when No is clicked in confirmation alert without deleting', () => {
+    mockIsSelectMode = true;
+    mockSelectedEntryIds = ['entry-1'];
+    mockEntries = [makeEntry({ id: 'entry-1', displayTerm: 'serendipia' })];
+
+    render(<DictionaryGrid service={mockService} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Borrar seleccionados' }));
+    fireEvent.click(screen.getByRole('button', { name: 'No, cancelar' }));
+
+    expect(mocks.deleteSelectedEntries).not.toHaveBeenCalled();
+  });
+
+  it('preserves search and filter behavior alongside toolbar actions', () => {
+    mockEntries = [
+      makeEntry({ id: 'entry-1', displayTerm: 'serendipia', definition: 'Hallazgo afortunado' }),
+      makeEntry({ id: 'entry-2', displayTerm: 'efímero', definition: 'Dura poco' }),
+    ];
+
+    render(<DictionaryGrid service={mockService} />);
+
+    // Toolbar actions are present
+    expect(screen.getByRole('button', { name: 'Añadir palabra' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Seleccionar' })).toBeTruthy();
+
+    // Search still works
+    fireEvent.change(screen.getByLabelText('Buscar'), { target: { value: 'afortunado' } });
+    expect(screen.getByText('serendipia')).toBeTruthy();
+    expect(screen.queryByText('efímero')).toBeNull();
+  });
+
+  it('shows book-only actions never appear in dictionary toolbar groups', () => {
+    // Select mode does not add Group, Status, Details, or Open actions
+    mockIsSelectMode = true;
+    mockSelectedEntryIds = ['entry-1'];
+    mockEntries = [makeEntry({ id: 'entry-1', displayTerm: 'serendipia' })];
+
+    render(<DictionaryGrid service={mockService} />);
+
+    expect(screen.queryByText('Agrupar')).toBeNull();
+    expect(screen.queryByText('Estado')).toBeNull();
+    expect(screen.queryByText('Detalles')).toBeNull();
+    expect(screen.queryByText('Abrir')).toBeNull();
   });
 });
 

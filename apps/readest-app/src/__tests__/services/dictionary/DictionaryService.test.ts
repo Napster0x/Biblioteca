@@ -12,9 +12,10 @@ describe('DictionaryService', () => {
   beforeEach(async () => {
     db = await NodeDatabaseService.open(':memory:');
     await migrate(db, getMigrations('dictionary'));
+    let idCounter = 0;
     service = new DictionaryService(db, {
       now: () => 1700000000000,
-      createId: (prefix) => `${prefix}-fixed`,
+      createId: (prefix) => `${prefix}-${++idCounter}`,
     });
   });
 
@@ -82,6 +83,74 @@ describe('DictionaryService', () => {
 
     expect(entry.enrichmentStatus).toBe('none');
     expect(entry.definition).toBeUndefined();
+  });
+
+  it('creates a manual dictionary entry without creating an occurrence', async () => {
+    const entry = await service.upsertEntry({
+      term: '  Lantern  ',
+      displayTerm: 'Lantern',
+      definition: 'A portable lamp.',
+      enrichmentStatus: 'none',
+    });
+
+    expect(entry).toMatchObject({
+      term: 'lantern',
+      displayTerm: 'Lantern',
+      definition: 'A portable lamp.',
+      enrichmentStatus: 'none',
+    });
+
+    const occurrences = await db.select<{ entry_id: string }>(
+      'SELECT entry_id FROM dictionary_occurrences WHERE entry_id = ?',
+      [entry.id],
+    );
+    expect(occurrences).toEqual([]);
+  });
+
+  it('deletes selected entries and cascades their occurrences', async () => {
+    const keep = await service.upsertEntry({ term: 'anchor', language: 'en' });
+    const removeOne = await service.upsertEntry({ term: 'beacon', language: 'en' });
+    const removeTwo = await service.upsertEntry({ term: 'current', language: 'en' });
+
+    await service.createOccurrence({
+      entryId: keep.id,
+      bookHash: 'book-1',
+      cfi: '/6/2',
+      selectedText: 'anchor',
+    });
+    await service.createOccurrence({
+      entryId: removeOne.id,
+      bookHash: 'book-1',
+      cfi: '/6/4',
+      selectedText: 'beacon',
+    });
+    await service.createOccurrence({
+      entryId: removeTwo.id,
+      bookHash: 'book-2',
+      cfi: '/6/6',
+      selectedText: 'current',
+    });
+
+    await service.deleteEntries([removeOne.id, removeTwo.id]);
+
+    const entries = await db.select<{ id: string; term: string }>(
+      'SELECT id, term FROM dictionary_entries ORDER BY term ASC',
+    );
+    expect(entries).toEqual([{ id: keep.id, term: 'anchor' }]);
+
+    const occurrences = await db.select<{ entry_id: string; selected_text: string }>(
+      'SELECT entry_id, selected_text FROM dictionary_occurrences ORDER BY selected_text ASC',
+    );
+    expect(occurrences).toEqual([{ entry_id: keep.id, selected_text: 'anchor' }]);
+  });
+
+  it('ignores an empty delete request without changing entries', async () => {
+    const entry = await service.upsertEntry({ term: 'harbor', language: 'en' });
+
+    await service.deleteEntries([]);
+
+    const entries = await service.listEntries();
+    expect(entries).toEqual([entry]);
   });
 
   it('updates definition and curiosity on an existing entry via updateEntry', async () => {

@@ -1,8 +1,17 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { PiBookBookmark, PiCaretLeft, PiMagnifyingGlass, PiSpinner } from 'react-icons/pi';
+import {
+  PiBookBookmark,
+  PiCaretLeft,
+  PiMagnifyingGlass,
+  PiPlus,
+  PiSelectionAll,
+  PiSpinner,
+  PiTrash,
+  PiX,
+} from 'react-icons/pi';
 import { useTranslation } from '@/hooks/useTranslation';
 import type { DictionaryService } from '@/services/dictionary/DictionaryService';
 import { useDictionaryStore } from '@/store/dictionaryStore';
@@ -18,8 +27,22 @@ export default function DictionaryGrid({ service }: DictionaryGridProps) {
   const router = useRouter();
   const entries = useDictionaryStore((s) => s.entries);
   const isLoading = useDictionaryStore((s) => s.isLoading);
+  const isSelectMode = useDictionaryStore((s) => s.isSelectMode);
+  const selectedEntryIds = useDictionaryStore((s) => s.selectedEntryIds);
   const loadEntries = useDictionaryStore((s) => s.loadEntries);
+  const toggleSelectedEntry = useDictionaryStore((s) => s.toggleSelectedEntry);
+  const addEntry = useDictionaryStore((s) => s.addEntry);
+  const enterSelectMode = useDictionaryStore((s) => s.enterSelectMode);
+  const cancelSelectMode = useDictionaryStore((s) => s.cancelSelectMode);
+  const deleteSelectedEntries = useDictionaryStore((s) => s.deleteSelectedEntries);
+
   const [search, setSearch] = useState('');
+  const [showAddWord, setShowAddWord] = useState(false);
+  const [addWordTerm, setAddWordTerm] = useState('');
+  const [addWordDefinition, setAddWordDefinition] = useState('');
+  const [addWordError, setAddWordError] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const termInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     loadEntries(service);
@@ -34,6 +57,49 @@ export default function DictionaryGrid({ service }: DictionaryGridProps) {
         (entry.definition ?? '').toLowerCase().includes(query),
     );
   }, [entries, search]);
+
+  const handleOpenAddWord = useCallback(() => {
+    setAddWordTerm('');
+    setAddWordDefinition('');
+    setAddWordError(null);
+    setShowAddWord(true);
+  }, []);
+
+  const handleCloseAddWord = useCallback(() => {
+    setShowAddWord(false);
+    setAddWordError(null);
+  }, []);
+
+  const handleSubmitAddWord = useCallback(async () => {
+    const trimmed = addWordTerm.trim();
+    if (!trimmed) {
+      setAddWordError(_('La palabra es obligatoria'));
+      return;
+    }
+    setAddWordError(null);
+    await addEntry({ term: trimmed, definition: addWordDefinition.trim() || undefined }, service);
+    setShowAddWord(false);
+  }, [addWordTerm, addWordDefinition, addEntry, service, _]);
+
+  const handleDeleteClick = useCallback(() => {
+    setShowDeleteConfirm(true);
+  }, []);
+
+  const handleConfirmDelete = useCallback(async () => {
+    await deleteSelectedEntries(service);
+    setShowDeleteConfirm(false);
+  }, [deleteSelectedEntries, service]);
+
+  const handleCancelDelete = useCallback(() => {
+    setShowDeleteConfirm(false);
+  }, []);
+
+  // Focus the term input when the dialog opens
+  useEffect(() => {
+    if (showAddWord && termInputRef.current) {
+      termInputRef.current.focus();
+    }
+  }, [showAddWord]);
 
   if (isLoading && entries.length === 0) {
     return (
@@ -76,6 +142,27 @@ export default function DictionaryGrid({ service }: DictionaryGridProps) {
             onChange={(event) => setSearch(event.target.value)}
             aria-label={_('Buscar')}
           />
+          <div className='absolute end-2 top-1/2 flex -translate-y-1/2 items-center gap-1'>
+            <button
+              type='button'
+              onClick={handleOpenAddWord}
+              className='btn btn-ghost btn-xs eink-bordered flex h-7 w-7 items-center justify-center p-0'
+              aria-label={_('Añadir palabra')}
+              title={_('Añadir palabra')}
+            >
+              <PiPlus aria-hidden className='size-4' />
+            </button>
+            <span className='bg-base-content/30 mx-0.5 h-4 w-px' />
+            <button
+              type='button'
+              onClick={enterSelectMode}
+              className='btn btn-ghost btn-xs eink-bordered flex h-7 w-7 items-center justify-center p-0'
+              aria-label={_('Seleccionar')}
+              title={_('Seleccionar')}
+            >
+              <PiSelectionAll aria-hidden className='size-4' />
+            </button>
+          </div>
         </div>
 
         {isLoading && (
@@ -109,8 +196,151 @@ export default function DictionaryGrid({ service }: DictionaryGridProps) {
         ) : (
           <div className='grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-5'>
             {filteredEntries.map((entry) => (
-              <DictionaryTile key={entry.id} entry={entry} />
+              <DictionaryTile
+                key={entry.id}
+                entry={entry}
+                isSelectMode={isSelectMode}
+                isSelected={selectedEntryIds.includes(entry.id)}
+                onToggleSelected={toggleSelectedEntry}
+              />
             ))}
+          </div>
+        )}
+
+        {isSelectMode && (
+          <div className='fixed bottom-0 left-0 right-0 z-40 pb-4'>
+            <div className='eink-bordered bg-base-100 mx-auto flex w-fit max-w-[calc(100vw-1rem)] items-center justify-center gap-x-6 rounded-lg p-4 shadow-lg'>
+              <button
+                type='button'
+                onClick={handleDeleteClick}
+                disabled={selectedEntryIds.length === 0}
+                className='flex flex-col items-center gap-1 disabled:opacity-50'
+                aria-label={_('Borrar seleccionados')}
+              >
+                <PiTrash aria-hidden className='size-5 text-red-500' />
+                <span className='text-xs text-red-500'>{_('Borrar')}</span>
+              </button>
+              <button
+                type='button'
+                onClick={cancelSelectMode}
+                className='flex flex-col items-center gap-1'
+                aria-label={_('Cancelar')}
+              >
+                <PiX aria-hidden className='size-5' />
+                <span className='text-xs'>{_('Cancelar')}</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {showDeleteConfirm && (
+          <div
+            className='fixed inset-0 z-50 flex items-center justify-center bg-black/30'
+            role='dialog'
+            aria-label={_('Confirmar borrado')}
+            aria-modal='true'
+          >
+            <div className='eink-bordered bg-base-100 mx-4 w-full max-w-sm rounded-2xl p-6 shadow-xl'>
+              <h3 className='mb-2 text-lg font-semibold'>{_('Borrar entradas')}</h3>
+              <p className='text-base-content/70 mb-6 text-sm'>
+                {_('¿Borrar {count} entrada(s) seleccionada(s)?', {
+                  count: String(selectedEntryIds.length),
+                })}
+              </p>
+              <div className='flex justify-end gap-3'>
+                <button
+                  type='button'
+                  onClick={handleCancelDelete}
+                  className='btn btn-ghost btn-sm eink-bordered'
+                >
+                  {_('No, cancelar')}
+                </button>
+                <button
+                  type='button'
+                  onClick={handleConfirmDelete}
+                  className='btn btn-primary btn-sm'
+                >
+                  {_('Sí, borrar')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showAddWord && (
+          <div
+            className='fixed inset-0 z-50 flex items-center justify-center bg-black/30'
+            role='dialog'
+            aria-label={_('Añadir palabra')}
+            aria-modal='true'
+          >
+            <div className='eink-bordered bg-base-100 mx-4 w-full max-w-sm rounded-2xl p-6 shadow-xl'>
+              <div className='mb-4 flex items-center justify-between'>
+                <h3 className='text-lg font-semibold'>{_('Añadir palabra')}</h3>
+                <button
+                  type='button'
+                  onClick={handleCloseAddWord}
+                  className='btn btn-ghost btn-xs eink-bordered p-1'
+                  aria-label={_('Cerrar')}
+                >
+                  <PiX aria-hidden className='size-4' />
+                </button>
+              </div>
+              <div className='mb-3'>
+                <label htmlFor='add-word-term' className='mb-1 block text-sm font-medium'>
+                  {_('Palabra')}
+                </label>
+                <input
+                  ref={termInputRef}
+                  id='add-word-term'
+                  type='text'
+                  value={addWordTerm}
+                  onChange={(e) => setAddWordTerm(e.target.value)}
+                  className='eink-bordered input input-sm w-full bg-base-100'
+                  aria-label={_('Palabra')}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSubmitAddWord();
+                  }}
+                />
+                {addWordError && (
+                  <p className='mt-1 text-xs text-red-500' role='alert'>
+                    {addWordError}
+                  </p>
+                )}
+              </div>
+              <div className='mb-6'>
+                <label htmlFor='add-word-definition' className='mb-1 block text-sm font-medium'>
+                  {_('Definición (opcional)')}
+                </label>
+                <input
+                  id='add-word-definition'
+                  type='text'
+                  value={addWordDefinition}
+                  onChange={(e) => setAddWordDefinition(e.target.value)}
+                  className='eink-bordered input input-sm w-full bg-base-100'
+                  aria-label={_('Definición (opcional)')}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSubmitAddWord();
+                  }}
+                />
+              </div>
+              <div className='flex justify-end gap-3'>
+                <button
+                  type='button'
+                  onClick={handleCloseAddWord}
+                  className='btn btn-ghost btn-sm eink-bordered'
+                >
+                  {_('Cancelar')}
+                </button>
+                <button
+                  type='button'
+                  onClick={handleSubmitAddWord}
+                  className='btn btn-primary btn-sm'
+                >
+                  {_('Guardar')}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </section>
