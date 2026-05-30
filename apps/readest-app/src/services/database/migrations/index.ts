@@ -13,6 +13,63 @@ import { MigrationEntry, SchemaType } from '../migrate';
  *   2. Add a new key here with its migration array.
  */
 const migrations: Record<SchemaType, MigrationEntry[]> = {
+  dictionary: [
+    {
+      name: '2026052901_dictionary_init',
+      sql: `
+        CREATE TABLE IF NOT EXISTS dictionary_entries (
+          id TEXT PRIMARY KEY,
+          term TEXT NOT NULL,
+          display_term TEXT NOT NULL,
+          language TEXT,
+          definition TEXT,
+          enrichment_status TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionary_entries_term_language
+        ON dictionary_entries (term, IFNULL(language, ''));
+
+        CREATE TABLE IF NOT EXISTS dictionary_occurrences (
+          id TEXT PRIMARY KEY,
+          entry_id TEXT NOT NULL REFERENCES dictionary_entries(id) ON DELETE CASCADE,
+          book_hash TEXT NOT NULL,
+          book_title TEXT,
+          cfi TEXT NOT NULL,
+          section_href TEXT,
+          page INTEGER,
+          selected_text TEXT NOT NULL,
+          context_before TEXT,
+          context_after TEXT,
+          highlight_note_id TEXT,
+          created_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_dictionary_occurrences_entry
+        ON dictionary_occurrences (entry_id);
+
+        CREATE INDEX IF NOT EXISTS idx_dictionary_occurrences_book
+        ON dictionary_occurrences (book_hash);
+
+        CREATE INDEX IF NOT EXISTS idx_dictionary_occurrences_created_at
+        ON dictionary_occurrences (created_at DESC);
+      `,
+    },
+    {
+      name: '2026053001_dictionary_refine',
+      sql: `
+        ALTER TABLE dictionary_entries ADD COLUMN image_path TEXT;
+        ALTER TABLE dictionary_entries ADD COLUMN curiosity TEXT;
+      `,
+    },
+    {
+      name: '2026053002_dictionary_occurrence_book_author',
+      sql: `
+        ALTER TABLE dictionary_occurrences ADD COLUMN book_author TEXT;
+      `,
+    },
+  ],
   'hardcover-sync': [
     {
       name: '2026032901_hardcover_note_mappings',

@@ -3,6 +3,7 @@ export type AnnotationToolType =
   | 'highlight'
   | 'annotate'
   | 'search'
+  | 'dictionary-lookup'
   | 'dictionary'
   | 'translate'
   | 'tts'

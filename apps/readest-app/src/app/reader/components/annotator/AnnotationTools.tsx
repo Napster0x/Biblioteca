@@ -63,9 +63,15 @@ export const annotationToolButtons = createAnnotationToolButtons([
     quickAction: true,
   },
   {
-    type: 'dictionary',
-    label: _('Dictionary'),
+    type: 'dictionary-lookup',
+    label: _('Buscar definición'),
     tooltip: _('Look up text in dictionary after selection'),
+    Icon: TbHexagonLetterD,
+  },
+  {
+    type: 'dictionary',
+    label: _('Diccionario'),
+    tooltip: _('Save word to dictionary after selection'),
     Icon: TbHexagonLetterD,
     quickAction: true,
   },

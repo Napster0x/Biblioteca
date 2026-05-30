@@ -15,6 +15,11 @@ import {
 } from 'react-virtuoso';
 import { Book, BooksGroup, ReadingStatus } from '@/types/book';
 import {
+  DICTIONARY_SHELF_ITEM,
+  DictionaryShelfItem,
+  isDictionaryShelfItem,
+} from '@/types/dictionary';
+import {
   LibraryCoverFitType,
   LibraryGroupByType,
   LibrarySortByType,
@@ -81,6 +86,8 @@ const BOOKSHELF_GRID_CLASSES =
   'grid-cols-3 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-8 2xl:grid-cols-12';
 
 const BOOKSHELF_LIST_CLASSES = 'bookshelf-items transform-wrapper flex flex-col';
+
+type BookshelfShelfItem = Book | BooksGroup | DictionaryShelfItem;
 
 const BookshelfGridList: GridComponents<BookshelfListContext>['List'] = React.forwardRef<
   HTMLDivElement,
@@ -239,7 +246,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
     }
   }, [searchParams, groupId, currentBookshelfItems.length, updateUrlParams]);
 
-  const sortedBookshelfItems = useMemo(() => {
+  const sortedBookshelfItems = useMemo<(Book | BooksGroup)[]>(() => {
     const sortOrderMultiplier = sortOrder === 'asc' ? 1 : -1;
 
     // Separate into ungrouped books and groups
@@ -299,6 +306,11 @@ const Bookshelf: React.FC<BookshelfProps> = ({
 
     return allItems;
   }, [sortOrder, sortBy, groupBy, groupId, uiLanguage, currentBookshelfItems]);
+
+  const pinnedBookshelfItems = useMemo<BookshelfShelfItem[]>(
+    () => [DICTIONARY_SHELF_ITEM, ...sortedBookshelfItems],
+    [sortedBookshelfItems],
+  );
 
   useEffect(() => {
     if (isImportingBook.current) return;
@@ -493,11 +505,11 @@ const Bookshelf: React.FC<BookshelfProps> = ({
 
   const selectedBooks = getSelectedBooks();
   const isGridMode = viewMode === 'grid';
-  const hasItems = sortedBookshelfItems.length > 0;
+  const hasItems = pinnedBookshelfItems.length > 0;
   // In grid mode the Import-Books "+" tile is rendered as an extra grid cell
   // after all books. We represent it to Virtuoso as an extra index past the
   // last book; list mode doesn't have an import tile.
-  const gridTotalCount = hasItems ? sortedBookshelfItems.length + 1 : 0;
+  const gridTotalCount = hasItems ? pinnedBookshelfItems.length + 1 : 0;
 
   const listContext = useMemo<BookshelfListContext>(
     () => ({
@@ -509,7 +521,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
 
   const renderBookshelfItem = useCallback(
     (index: number) => {
-      if (isGridMode && index === sortedBookshelfItems.length) {
+      if (isGridMode && index === pinnedBookshelfItems.length) {
         return (
           <div
             className={clsx('bookshelf-import-item mx-0 my-2 sm:mx-4 sm:my-4')}
@@ -535,10 +547,11 @@ const Bookshelf: React.FC<BookshelfProps> = ({
           </div>
         );
       }
-      const item = sortedBookshelfItems[index];
+      const item = pinnedBookshelfItems[index];
       if (!item) return null;
       const itemSelected =
-        'hash' in item ? selectedBooks.includes(item.hash) : selectedBooks.includes(item.id);
+        !isDictionaryShelfItem(item) &&
+        ('hash' in item ? selectedBooks.includes(item.hash) : selectedBooks.includes(item.id));
       return (
         <BookshelfItem
           item={item}
@@ -558,7 +571,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
-      sortedBookshelfItems,
+      pinnedBookshelfItems,
       selectedBooks,
       isGridMode,
       viewMode,
@@ -577,14 +590,14 @@ const Bookshelf: React.FC<BookshelfProps> = ({
 
   const computeItemKey = useCallback(
     (index: number) => {
-      if (isGridMode && index === sortedBookshelfItems.length) {
+      if (isGridMode && index === pinnedBookshelfItems.length) {
         return 'library-import-tile';
       }
-      const item = sortedBookshelfItems[index];
+      const item = pinnedBookshelfItems[index];
       if (!item) return `library-item-${index}`;
-      return `library-item-${'hash' in item ? item.hash : item.id}`;
+      return `library-item-${isDictionaryShelfItem(item) ? item.id : 'hash' in item ? item.hash : item.id}`;
     },
-    [sortedBookshelfItems, isGridMode],
+    [pinnedBookshelfItems, isGridMode],
   );
 
   return (
@@ -610,7 +623,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
         {hasItems && !isGridMode && (
           <Virtuoso
             overscan={200}
-            totalCount={sortedBookshelfItems.length}
+            totalCount={pinnedBookshelfItems.length}
             components={LIST_VIRTUOSO_COMPONENTS}
             computeItemKey={computeItemKey}
             itemContent={renderBookshelfItem}

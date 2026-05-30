@@ -10,14 +10,16 @@ import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { eventDispatcher } from '@/utils/event';
 import { getOSPlatform } from '@/utils/misc';
 import { throttle } from '@/utils/throttle';
-import { navigateToReader, showReaderWindow } from '@/utils/nav';
+import { navigateToDictionary, navigateToReader, showReaderWindow } from '@/utils/nav';
 import { LibraryCoverFitType, LibraryViewModeType } from '@/types/settings';
 import { BOOK_UNGROUPED_ID, BOOK_UNGROUPED_NAME } from '@/services/constants';
 import { FILE_REVEAL_LABELS, FILE_REVEAL_PLATFORMS } from '@/utils/os';
 import { Book, BooksGroup, ReadingStatus } from '@/types/book';
+import { DictionaryShelfItem, isDictionaryShelfItem } from '@/types/dictionary';
 import { md5Fingerprint } from '@/utils/md5';
 import BookItem from './BookItem';
 import GroupItem from './GroupItem';
+import DictionaryShelfCard from './DictionaryShelfCard';
 
 export const generateBookshelfItems = (
   books: Book[],
@@ -82,7 +84,7 @@ export const generateBookshelfItems = (
 
 interface BookshelfItemProps {
   mode: LibraryViewModeType;
-  item: Book | BooksGroup;
+  item: Book | BooksGroup | DictionaryShelfItem;
   coverFit: LibraryCoverFitType;
   isSelectMode: boolean;
   itemSelected: boolean;
@@ -165,6 +167,12 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [isSelectMode, handleLibraryNavigation],
   );
+
+  const handleDictionaryClick = useCallback(() => {
+    if (!isSelectMode) {
+      navigateToDictionary(router);
+    }
+  }, [isSelectMode, router]);
 
   const bookContextMenuHandler = async (book: Book) => {
     if (!appService?.hasContextMenu) return;
@@ -283,6 +291,9 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleSelectItem = useCallback(
     throttle(() => {
+      if (isDictionaryShelfItem(item)) {
+        return;
+      }
       if (!isSelectMode) {
         handleSetSelectMode(true);
       }
@@ -302,18 +313,23 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
         handleSelectItem();
         return;
       }
-      if ('format' in item) {
+      if (isDictionaryShelfItem(item)) {
+        handleDictionaryClick();
+      } else if ('format' in item) {
         handleBookClick(item as Book);
       } else {
         handleGroupClick(item as BooksGroup);
       }
     }, 100),
-    [handleSelectItem, handleBookClick, handleGroupClick],
+    [handleSelectItem, handleBookClick, handleGroupClick, handleDictionaryClick],
   );
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleContextMenu = useCallback(
     throttle(() => {
+      if (isDictionaryShelfItem(item)) {
+        return;
+      }
       if ('format' in item) {
         bookContextMenuHandler(item as Book);
       } else {
@@ -366,7 +382,9 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
         )}
         role='button'
         tabIndex={0}
-        aria-label={'format' in item ? item.title : item.name}
+        aria-label={
+          isDictionaryShelfItem(item) ? item.title : 'format' in item ? item.title : item.name
+        }
         style={{
           transition: 'transform 0.2s',
         }}
@@ -374,7 +392,9 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
         {...handlers}
       >
         <div className='flex h-full flex-col justify-end'>
-          {'format' in item ? (
+          {isDictionaryShelfItem(item) ? (
+            <DictionaryShelfCard item={item} mode={mode} />
+          ) : 'format' in item ? (
             <BookItem
               mode={mode}
               book={item}

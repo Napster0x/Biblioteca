@@ -70,7 +70,6 @@ import {
 import Spinner from '@/components/Spinner';
 import LibraryHeader from './components/LibraryHeader';
 import Bookshelf from './components/Bookshelf';
-import LibraryEmptyState from './components/LibraryEmptyState';
 import GroupHeader from './components/GroupHeader';
 import ImportFromFolderDialog, {
   ImportFromFolderResult,
@@ -1242,42 +1241,36 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
           groupName={currentSeriesAuthorGroup.groupName}
         />
       )}
-      {showBookshelf &&
-        (libraryBooks.some((book) => !book.deletedAt) ? (
-          <div aria-label={_('Your Bookshelf')} className='flex min-h-0 flex-grow flex-col'>
-            <div
-              ref={containerRef}
-              className={clsx(
-                'scroll-container drop-zone flex min-h-0 flex-grow flex-col',
-                isDragging && 'drag-over',
-              )}
-              style={{
-                paddingRight: `${insets.right}px`,
-                paddingLeft: `${insets.left}px`,
-              }}
-            >
-              <DropIndicator />
-              <Bookshelf
-                libraryBooks={libraryBooks}
-                isSelectMode={isSelectMode}
-                isSelectAll={isSelectAll}
-                isSelectNone={isSelectNone}
-                onScrollerRef={handleScrollerRef}
-                handleImportBooks={handleImportBooksFromFiles}
-                handleBookDelete={handleBookDelete()}
-                handleSetSelectMode={handleSetSelectMode}
-                handleShowDetailsBook={handleShowDetailsBook}
-                handleLibraryNavigation={handleLibraryNavigation}
-                handlePushLibrary={pushLibrary}
-              />
-            </div>
-          </div>
-        ) : (
-          <div className='hero drop-zone h-screen items-center justify-center'>
+      {showBookshelf && (
+        <div aria-label={_('Your Bookshelf')} className='flex min-h-0 flex-grow flex-col'>
+          <div
+            ref={containerRef}
+            className={clsx(
+              'scroll-container drop-zone flex min-h-0 flex-grow flex-col',
+              isDragging && 'drag-over',
+            )}
+            style={{
+              paddingRight: `${insets.right}px`,
+              paddingLeft: `${insets.left}px`,
+            }}
+          >
             <DropIndicator />
-            <LibraryEmptyState onImport={handleImportBooksFromFiles} />
+            <Bookshelf
+              libraryBooks={libraryBooks}
+              isSelectMode={isSelectMode}
+              isSelectAll={isSelectAll}
+              isSelectNone={isSelectNone}
+              onScrollerRef={handleScrollerRef}
+              handleImportBooks={handleImportBooksFromFiles}
+              handleBookDelete={handleBookDelete()}
+              handleSetSelectMode={handleSetSelectMode}
+              handleShowDetailsBook={handleShowDetailsBook}
+              handleLibraryNavigation={handleLibraryNavigation}
+              handlePushLibrary={pushLibrary}
+            />
           </div>
-        ))}
+        </div>
+      )}
       {showDetailsBook && (
         <BookDetailModal
           isOpen={!!showDetailsBook}

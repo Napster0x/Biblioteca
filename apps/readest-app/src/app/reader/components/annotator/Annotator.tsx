@@ -15,6 +15,8 @@ import { useReaderStore } from '@/store/readerStore';
 import { useNotebookStore } from '@/store/notebookStore';
 import { useSidebarStore } from '@/store/sidebarStore';
 import { useCustomDictionaryStore } from '@/store/customDictionaryStore';
+import type { DictionaryService } from '@/services/dictionary/DictionaryService';
+import { getDictionaryService } from '@/services/dictionary/dictionaryServiceCache';
 import { isSystemDictionaryEnabled } from '@/services/dictionaries/registry';
 import { invokeSystemDictionary } from '@/services/dictionaries/systemDictionary';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -35,6 +37,7 @@ import {
 import { eventDispatcher } from '@/utils/event';
 import { findTocItemBS } from '@/services/nav';
 import { throttle } from '@/utils/throttle';
+import { normalizeDictionarySelection } from '@/utils/dictionaryText';
 import {
   cancelDeferredAction,
   createDeferredActionState,
@@ -57,6 +60,7 @@ import {
 import { annotationToolButtons } from './AnnotationTools';
 import AnnotationRangeEditor from './AnnotationRangeEditor';
 import AnnotationPopup from './AnnotationPopup';
+import CapturePopup from './CapturePopup';
 import DictionaryPopup from './DictionaryPopup';
 import DictionarySheet from './DictionarySheet';
 import TranslatorPopup from './TranslatorPopup';
@@ -64,6 +68,7 @@ import useShortcuts from '@/hooks/useShortcuts';
 import ProofreadPopup from './ProofreadPopup';
 import { setProofreadRulesVisibility } from '@/app/reader/components/ProofreadRules';
 import ExportMarkdownDialog from './ExportMarkdownDialog';
+import { createDictionaryCaptureHighlight } from '../../utils/dictionaryCapture';
 import Alert from '@/components/Alert';
 import ModalPortal from '@/components/ModalPortal';
 import { useFileSelector } from '@/hooks/useFileSelector';
@@ -109,6 +114,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
 
   const [selection, setSelection] = useState<TextSelection | null>(null);
   const [showAnnotPopup, setShowAnnotPopup] = useState(false);
+  const [showCapturePopup, setShowCapturePopup] = useState(false);
   const [showDictionaryPopup, setShowDictionaryPopup] = useState(false);
   const [showDeepLPopup, setShowDeepLPopup] = useState(false);
   const [showProofreadPopup, setShowProofreadPopup] = useState(false);
@@ -143,9 +149,14 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
   // (Android long-press selects text via selectionchange before touchend). The
   // pending action runs on touchend so popups don't open under an active touch.
   const deferredQuickActionRef = useRef(createDeferredActionState());
+  const dictServiceRef = useRef<DictionaryService | null>(null);
 
   const showingPopup =
-    showAnnotPopup || showDictionaryPopup || showDeepLPopup || showProofreadPopup;
+    showAnnotPopup ||
+    showCapturePopup ||
+    showDictionaryPopup ||
+    showDeepLPopup ||
+    showProofreadPopup;
 
   const popupPadding = useResponsiveSize(10);
   const trianglePadding = popupPadding * 2 + 6;
@@ -246,6 +257,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     throttle(() => {
       setSelection(null);
       setShowAnnotPopup(false);
+      setShowCapturePopup(false);
       setShowDictionaryPopup(false);
       setShowDeepLPopup(false);
       setShowProofreadPopup(false);
@@ -580,7 +592,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
           handleSearch();
           break;
         case 'dictionary':
-          handleDictionary();
+          void handleDictionaryCapture();
           break;
         case 'translate':
           handleTranslation();
@@ -893,7 +905,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     eventDispatcher.dispatch('search-term', { term, bookKey });
   };
 
-  const handleDictionary = () => {
+  const handleDictionaryLookup = () => {
     if (!selection || !selection.text) return;
     // System-dictionary path: when the user has opted in via Settings →
     // Languages → Dictionaries, hand the selection to the OS instead of
@@ -919,6 +931,70 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     setShowAnnotPopup(false);
     setShowDictionaryPopup(true);
   };
+
+  const handleDictionaryCapture = async () => {
+    if (!selection || !selection.text) return;
+    const normalizedSelection = normalizeDictionarySelection(selection.text);
+    if (!normalizedSelection.ok) {
+      eventDispatcher.dispatch('toast', {
+        type: 'warning',
+        message: _('Select one word to save to dictionary.'),
+        timeout: 2500,
+      });
+      return;
+    }
+    const cfi = view?.getCFI(selection.index, selection.range);
+    if (!cfi) return;
+
+    setSelection({ ...selection, cfi, page: progress.page });
+
+    if (appService && !dictServiceRef.current) {
+      dictServiceRef.current = await getDictionaryService(appService);
+    }
+
+    setShowCapturePopup(true);
+  };
+
+  const handleCreateCaptureHighlight = useCallback(
+    async (cfi: string, selectedText: string, page?: number): Promise<string> => {
+      const timestamp = Date.now();
+      const { booknotes: annotations = [] } = config;
+      const existingIndex = annotations.findIndex(
+        (annotation) =>
+          annotation.cfi === cfi &&
+          annotation.type === 'annotation' &&
+          annotation.style &&
+          !annotation.deletedAt,
+      );
+      if (existingIndex !== -1) {
+        return annotations[existingIndex]!.id;
+      }
+
+      const highlight = createDictionaryCaptureHighlight({
+        selectedText,
+        cfi,
+        page: page ?? progress.page,
+        style: settings.globalReadSettings.highlightStyle,
+        color:
+          settings.globalReadSettings.highlightStyles[settings.globalReadSettings.highlightStyle],
+        id: uniqueId(),
+        timestamp,
+      });
+
+      annotations.push(highlight);
+      const views = getViewsById(bookKey.split('-')[0]!);
+      views.forEach((view) => view?.addAnnotation(highlight));
+      setSelection({ ...selection!, cfi, annotated: true });
+
+      const updatedConfig = updateBooknotes(bookKey, annotations);
+      if (updatedConfig) {
+        saveConfig(envConfig, bookKey, updatedConfig, settings);
+      }
+
+      return highlight.id;
+    },
+    [config, bookKey, settings, progress, envConfig, selection],
+  );
 
   const handleTranslation = () => {
     if (!selection || !selection.text) return;
@@ -979,7 +1055,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
         handleTranslation();
       },
       onDictionarySelection: () => {
-        handleDictionary();
+        void handleDictionaryCapture();
       },
       onReadAloudSelection: () => {
         handleSpeakText();
@@ -1278,8 +1354,10 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
           Icon,
           onClick: handleSearch,
         };
+      case 'dictionary-lookup':
+        return { tooltipText: _(label), Icon, onClick: handleDictionaryLookup };
       case 'dictionary':
-        return { tooltipText: _(label), Icon, onClick: handleDictionary };
+        return { tooltipText: _(label), Icon, onClick: () => void handleDictionaryCapture() };
       case 'translate':
         return { tooltipText: _(label), Icon, onClick: handleTranslation };
       case 'tts':
@@ -1341,6 +1419,35 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
             />
           );
         })()}
+      {showCapturePopup &&
+        trianglePosition &&
+        dictPopupPosition &&
+        selection &&
+        selection.cfi &&
+        dictServiceRef.current &&
+        appService && (
+          <CapturePopup
+            selectedText={selection.text}
+            range={selection.range}
+            cfi={selection.cfi}
+            page={selection.page}
+            sectionHref={progress.sectionHref}
+            book={{
+              hash: bookData.book?.hash ?? bookKey.split('-')[0]!,
+              title: bookData.book?.title,
+              author: bookData.book?.author,
+              language: bookData.book?.primaryLanguage,
+            }}
+            position={dictPopupPosition}
+            trianglePosition={trianglePosition}
+            popupWidth={dictPopupWidth}
+            popupHeight={dictPopupHeight}
+            appService={appService}
+            dictionaryService={dictServiceRef.current}
+            onCreateHighlight={handleCreateCaptureHighlight}
+            onDismiss={handleDismissPopupAndSelection}
+          />
+        )}
       {showDeepLPopup && trianglePosition && translatorPopupPosition && (
         <TranslatorPopup
           text={selection?.text as string}
