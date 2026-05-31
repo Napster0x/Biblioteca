@@ -37,6 +37,7 @@ export default function DictionaryDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const startedLoadingForRef = useRef<string | null>(null);
   const imagePreviewUrlRef = useRef<string | null>(null);
   const definitionRef = useRef<HTMLParagraphElement | null>(null);
   const definitionDraftRef = useRef('');
@@ -54,13 +55,14 @@ export default function DictionaryDetailPage() {
   useEffect(() => {
     if (!appService) return;
     let cancelled = false;
+    startedLoadingForRef.current = entryId;
     getDictionaryService(appService)
       .then((svc) => {
         if (cancelled) return;
         setService(svc);
         setError(null);
-        loadEntry(entryId, svc);
         loadOccurrences(entryId, svc);
+        return loadEntry(entryId, svc);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -212,18 +214,18 @@ export default function DictionaryDetailPage() {
     );
   }
 
-  if (isLoading && !entry) {
-    return (
-      <main className='text-base-content flex min-h-dvh flex-col bg-base-200'>
-        <section className='mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center px-4 py-10 sm:px-6'>
-          <PiSpinner aria-hidden className='mb-4 size-10 animate-spin' />
-          <p className='text-base-content/60'>{_('Cargando…')}</p>
-        </section>
-      </main>
-    );
-  }
-
   if (!entry || entry.id !== entryId) {
+    // Still loading if we haven't started for this entryId, or the store says in-flight
+    if (startedLoadingForRef.current !== entryId || isLoading) {
+      return (
+        <main className='text-base-content flex min-h-dvh flex-col bg-base-200'>
+          <section className='mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center px-4 py-10 sm:px-6'>
+            <PiSpinner aria-hidden className='mb-4 size-10 animate-spin' />
+            <p className='text-base-content/60'>{_('Cargando…')}</p>
+          </section>
+        </main>
+      );
+    }
     return (
       <main className='text-base-content flex min-h-dvh flex-col bg-base-200'>
         <section className='mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-3 px-4 py-10 text-center sm:px-6'>
@@ -258,7 +260,12 @@ export default function DictionaryDetailPage() {
           <div className='pt-10 sm:pt-16'>
             <h1
               className='font-serif border-base-content/60 border-b pb-3 text-5xl font-semibold tracking-tight sm:text-6xl'
-              style={{ textShadow: '0 0 14px rgba(0, 0, 0, 0.55)' }}
+              style={{
+                color: 'white',
+                WebkitTextStroke: '2px #000',
+                paintOrder: 'stroke fill',
+                textShadow: '0 0 14px rgba(0, 0, 0, 0.55)',
+              }}
             >
               {capitalize(entry.displayTerm)}
             </h1>

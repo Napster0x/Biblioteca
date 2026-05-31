@@ -196,8 +196,8 @@ describe('DictionaryGrid', () => {
     render(<DictionaryGrid service={mockService} />);
     fireEvent.change(screen.getByLabelText('Buscar'), { target: { value: 'afortunado' } });
 
-    expect(screen.getByText('serendipia')).toBeTruthy();
-    expect(screen.queryByText('efímero')).toBeNull();
+    expect(screen.getByRole('link', { name: /serendipia/i })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: /efímero/i })).toBeNull();
   });
 
   it('renders dictionary tiles as toggle buttons when select mode is active', () => {
@@ -205,7 +205,7 @@ describe('DictionaryGrid', () => {
     mockEntries = [makeEntry({ id: 'entry-1', displayTerm: 'serendipia' })];
 
     render(<DictionaryGrid service={mockService} />);
-    const tile = screen.getByRole('button', { name: 'Seleccionar serendipia' });
+    const tile = screen.getByRole('button', { name: /seleccionar serendipia/i });
 
     fireEvent.click(tile);
 
@@ -221,7 +221,7 @@ describe('DictionaryGrid', () => {
     mockEntries = [makeEntry({ id: 'entry-1', displayTerm: 'serendipia' })];
 
     render(<DictionaryGrid service={mockService} />);
-    const tile = screen.getByRole('button', { name: 'Deseleccionar serendipia' });
+    const tile = screen.getByRole('button', { name: /deseleccionar serendipia/i });
 
     expect(tile.getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByText('Seleccionado')).toBeTruthy();
@@ -409,8 +409,8 @@ describe('DictionaryGrid', () => {
 
     // Search still works
     fireEvent.change(screen.getByLabelText('Buscar'), { target: { value: 'afortunado' } });
-    expect(screen.getByText('serendipia')).toBeTruthy();
-    expect(screen.queryByText('efímero')).toBeNull();
+    expect(screen.getByRole('link', { name: /serendipia/i })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: /efímero/i })).toBeNull();
   });
 
   it('shows book-only actions never appear in dictionary toolbar groups', () => {
@@ -468,12 +468,12 @@ describe('DictionaryPage', () => {
     expect(await screen.findByText('Diccionario')).toBeTruthy();
   });
 
-  it('shows a Volver button in the dictionary header', async () => {
+  it('uses the book icon in the dictionary header to navigate back', async () => {
     mocks.getDictionaryService.mockResolvedValue(mockService);
 
     render(<DictionaryPage />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Volver' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Volver a Biblioteca' }));
 
     expect(mocks.replace).toHaveBeenCalledWith('/library', undefined);
   });

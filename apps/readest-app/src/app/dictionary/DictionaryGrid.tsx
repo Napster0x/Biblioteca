@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   PiBookBookmark,
-  PiCaretLeft,
   PiMagnifyingGlass,
   PiPlus,
   PiSelectionAll,
@@ -15,14 +14,16 @@ import {
 import { useTranslation } from '@/hooks/useTranslation';
 import type { DictionaryService } from '@/services/dictionary/DictionaryService';
 import { useDictionaryStore } from '@/store/dictionaryStore';
+import type { AppService } from '@/types/system';
 import { navigateToLibrary } from '@/utils/nav';
 import DictionaryTile from './DictionaryTile';
 
 interface DictionaryGridProps {
   service: DictionaryService;
+  appService?: AppService;
 }
 
-export default function DictionaryGrid({ service }: DictionaryGridProps) {
+export default function DictionaryGrid({ service, appService }: DictionaryGridProps) {
   const _ = useTranslation();
   const router = useRouter();
   const entries = useDictionaryStore((s) => s.entries);
@@ -35,6 +36,52 @@ export default function DictionaryGrid({ service }: DictionaryGridProps) {
   const enterSelectMode = useDictionaryStore((s) => s.enterSelectMode);
   const cancelSelectMode = useDictionaryStore((s) => s.cancelSelectMode);
   const deleteSelectedEntries = useDictionaryStore((s) => s.deleteSelectedEntries);
+
+  const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
+  const loadedIdsRef = useRef<Set<string>>(new Set());
+  const objectUrlsRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    if (!appService) return;
+    let cancelled = false;
+
+    const loadImages = async () => {
+      const newUrls: Record<string, string> = {};
+
+      for (const entry of entries) {
+        if (!entry.imagePath || loadedIdsRef.current.has(entry.id)) continue;
+        try {
+          const content = await appService.readFile(entry.imagePath, 'Dictionaries', 'binary');
+          if (cancelled) return;
+          const blobUrl = URL.createObjectURL(new Blob([content]));
+          newUrls[entry.id] = blobUrl;
+          objectUrlsRef.current.push(blobUrl);
+          loadedIdsRef.current.add(entry.id);
+        } catch {
+          // Image not found — skip silently
+          loadedIdsRef.current.add(entry.id);
+        }
+      }
+
+      if (!cancelled && Object.keys(newUrls).length > 0) {
+        setImageUrls((prev) => ({ ...prev, ...newUrls }));
+      }
+    };
+
+    loadImages();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [appService, entries]);
+
+  // Revoke blob URLs on unmount
+  useEffect(() => {
+    return () => {
+      objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      objectUrlsRef.current = [];
+    };
+  }, []);
 
   const [search, setSearch] = useState('');
   const [showAddWord, setShowAddWord] = useState(false);
@@ -118,15 +165,13 @@ export default function DictionaryGrid({ service }: DictionaryGridProps) {
         <div className='mb-6 flex items-center gap-3'>
           <button
             type='button'
-            className='btn btn-ghost btn-sm eink-bordered gap-1'
             onClick={() => navigateToLibrary(router)}
-            aria-label={_('Volver')}
+            className='flex items-center justify-center rounded-full transition-colors hover:bg-black/10'
+            aria-label={_('Volver a Biblioteca')}
           >
-            <PiCaretLeft aria-hidden className='size-4' />
-            {_('Volver')}
+            <PiBookBookmark aria-hidden className='text-base-content/60 size-7' />
           </button>
-          <PiBookBookmark aria-hidden className='text-base-content/60 size-7' />
-          <h1 className='text-2xl font-semibold tracking-tight'>{_('Diccionario')}</h1>
+          <h1 className='font-serif text-2xl font-semibold tracking-tight'>{_('Diccionario')}</h1>
         </div>
 
         <div className='relative mb-4'>
@@ -194,11 +239,12 @@ export default function DictionaryGrid({ service }: DictionaryGridProps) {
             )}
           </div>
         ) : (
-          <div className='grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-5'>
+          <div className='grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-6'>
             {filteredEntries.map((entry) => (
               <DictionaryTile
                 key={entry.id}
                 entry={entry}
+                imageUrl={imageUrls[entry.id]}
                 isSelectMode={isSelectMode}
                 isSelected={selectedEntryIds.includes(entry.id)}
                 onToggleSelected={toggleSelectedEntry}

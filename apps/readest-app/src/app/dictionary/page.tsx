@@ -69,5 +69,5 @@ export default function DictionaryPage() {
     );
   }
 
-  return <DictionaryGrid service={service} />;
+  return <DictionaryGrid service={service} appService={appService} />;
 }
