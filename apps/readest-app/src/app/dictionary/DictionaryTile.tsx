@@ -28,6 +28,7 @@ export default function DictionaryTile({
 }: DictionaryTileProps) {
   const _ = useTranslation();
   const tileClassName = clsx(
+    '@container',
     'eink-bordered bg-base-100 group relative aspect-square overflow-hidden rounded-2xl text-left border-2 border-black hover:border-transparent transition-[border-color] duration-500 not-eink:drop-shadow-[0_0_14px_rgb(0_0_0_/_0.55)]',
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-base-content/15',
     isSelectMode && 'transition-colors duration-150 hover:bg-base-200',
@@ -106,9 +107,15 @@ function TileContent({
       )}
       <div className='absolute inset-0 flex items-center justify-center p-3 transition-transform duration-500 group-hover:scale-110'>
         <span
-          className='font-serif text-center font-bold leading-tight'
+          className='font-serif text-center font-bold leading-tight break-words'
+          data-word-sizing='cqi'
           style={{
-            fontSize: 'clamp(1rem, 4vw, 1.5rem)',
+            // cqi scales the word with the actual tile size (the tile is a CSS
+            // container), so long words shrink on small tiles. The cap keeps
+            // short words legible on big tiles, and the 1.1x hover scale still
+            // fits inside the tile. break-words handles very long words by
+            // wrapping instead of overflowing.
+            fontSize: 'min(8.5cqi, 1.4rem)',
             color: 'white',
             WebkitTextStroke: '1.8px #000',
             paintOrder: 'stroke fill',

@@ -429,6 +429,37 @@ describe('DictionaryGrid', () => {
     expect(screen.queryByText('Detalles')).toBeNull();
     expect(screen.queryByText('Abrir')).toBeNull();
   });
+
+  it('sizes the word relative to the tile so long words stay inside the mosaic (and on hover)', () => {
+    // A 24-char word that would overflow a small tile with a viewport-based clamp
+    mockEntries = [
+      makeEntry({ id: 'entry-1', displayTerm: 'electroencefalografista' }),
+      makeEntry({ id: 'entry-2', displayTerm: 'serendipia' }),
+    ];
+
+    render(<DictionaryGrid service={mockService} />);
+
+    const link = screen.getByRole('link', { name: /electroencefalografista/i });
+
+    // The tile is a CSS container so the word's font-size can adapt to it
+    // (otherwise clamp(vw, …) is independent of the actual tile size in the grid)
+    expect(link.className).toContain('@container');
+
+    // The word is sized relative to the tile (container query) so it shrinks on
+    // small tiles and the hover scale-110 still fits inside. The data attribute
+    // is the structural marker for the formula; jsdom can't parse `cqi` / `min()`
+    // so the inline font-size would otherwise round-trip to empty in tests.
+    const wordSpan = link.querySelector('span');
+    expect(wordSpan).toBeTruthy();
+    expect(wordSpan?.getAttribute('data-word-sizing')).toBe('cqi');
+
+    // Very long words break to multiple lines instead of overflowing
+    expect(wordSpan?.className).toContain('break-words');
+
+    // Short words still render and the same rules apply
+    const shortLink = screen.getByRole('link', { name: /serendipia/i });
+    expect(shortLink.className).toContain('@container');
+  });
 });
 
 describe('DictionaryPage', () => {
