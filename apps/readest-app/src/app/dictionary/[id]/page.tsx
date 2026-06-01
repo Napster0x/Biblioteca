@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { PiCaretLeft, PiImageSquare, PiSpinner, PiWarningCircle } from 'react-icons/pi';
 import { useEnv } from '@/context/EnvContext';
 import { useTranslation } from '@/hooks/useTranslation';
+import { useImagePasteOnHover } from '@/hooks/useImagePasteOnHover';
 import { getDictionaryService } from '@/services/dictionary/dictionaryServiceCache';
 import type { DictionaryService } from '@/services/dictionary/DictionaryService';
 import { useDictionaryStore } from '@/store/dictionaryStore';
@@ -134,30 +135,48 @@ export default function DictionaryDetailPage() {
     [definition, entryId, imagePath, service, updateEntry],
   );
 
-  const handleImageChange = useCallback(
-    async (event: ChangeEvent<HTMLInputElement>) => {
-      const selectedImage = event.target.files?.[0] ?? null;
-      if (!selectedImage || !appService || !service) return;
+  // Persist an image File to the entry's image directory and update the entry
+  // record. Shared by the file picker and the clipboard-paste flow so both
+  // go through the same on-disk + DB path.
+  const saveImageFromFile = useCallback(
+    async (file: File, name: string) => {
+      if (!appService || !service) return;
 
-      const ext = getFileExtension(selectedImage.name);
+      const ext = getFileExtension(name);
       const imageDir = `entries/${entryId}`;
       const nextImagePath = `${imageDir}/image.${ext}`;
 
       if (imagePreviewUrlRef.current) URL.revokeObjectURL(imagePreviewUrlRef.current);
-      const previewUrl = URL.createObjectURL(selectedImage);
+      const previewUrl = URL.createObjectURL(file);
       imagePreviewUrlRef.current = previewUrl;
       setImageUrl(previewUrl);
 
-      const bytes = await selectedImage.arrayBuffer();
+      const bytes = await file.arrayBuffer();
       await appService.createDir(imageDir, 'Dictionaries', true);
       await appService.writeFile(nextImagePath, 'Dictionaries', bytes);
 
       setImagePath(nextImagePath);
       await persistEntry({ imagePath: nextImagePath });
-      event.target.value = '';
     },
     [appService, entryId, persistEntry, service],
   );
+
+  const handleImageChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const selectedImage = event.target.files?.[0] ?? null;
+      if (!selectedImage) return;
+      await saveImageFromFile(selectedImage, selectedImage.name);
+      event.target.value = '';
+    },
+    [saveImageFromFile],
+  );
+
+  // Image pasted from the clipboard while the user is hovering the change
+  // image button. Routed through a document-level listener (see
+  // useImagePasteOnHover) because Chromium does not fire paste events on
+  // non-editable elements like `<button>`.
+  const { onMouseEnter: onImageButtonEnter, onMouseLeave: onImageButtonLeave } =
+    useImagePasteOnHover(saveImageFromFile);
 
   const handleDefinitionBlur = useCallback(async () => {
     const nextDefinition = definitionDraftRef.current;
@@ -301,6 +320,9 @@ export default function DictionaryDetailPage() {
                 : 'group flex min-h-32 w-full items-center justify-center border-2 border-black bg-transparent p-2 transition-opacity hover:opacity-85'
             }
             onClick={() => imageInputRef.current?.click()}
+            onMouseEnter={onImageButtonEnter}
+            onMouseLeave={onImageButtonLeave}
+            data-testid='dictionary-image-area'
             aria-label={imageUrl ? _('Imagen actual') : _('Sin imagen')}
           >
             {imageUrl ? (

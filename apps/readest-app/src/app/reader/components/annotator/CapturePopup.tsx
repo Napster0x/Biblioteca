@@ -10,6 +10,7 @@ import { normalizeDictionarySelection } from '@/utils/dictionaryText';
 import { extractSentenceFromContext } from '@/utils/sentenceExtraction';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useFileSelector } from '@/hooks/useFileSelector';
+import { useImagePasteOnHover } from '@/hooks/useImagePasteOnHover';
 import { eventDispatcher } from '@/utils/event';
 
 export interface CapturePopupBook {
@@ -138,6 +139,17 @@ const CapturePopup: React.FC<CapturePopupProps> = ({
       setSelectedImage({ file: sf.file, name: sf.file.name });
     }
   }, [selectFiles]);
+
+  // Paste an image from the clipboard while the user is hovering the image
+  // area. Routed through a document-level listener (see useImagePasteOnHover)
+  // because Chromium does not fire paste events on non-editable elements.
+  const handleImagePasteFromClipboard = useCallback((file: File, name: string) => {
+    setSelectedImage({ file, name });
+  }, []);
+
+  const { onMouseEnter: onImageAreaEnter, onMouseLeave: onImageAreaLeave } = useImagePasteOnHover(
+    handleImagePasteFromClipboard,
+  );
 
   const handleRemoveImage = useCallback(() => {
     setSelectedImage(null);
@@ -269,8 +281,13 @@ const CapturePopup: React.FC<CapturePopupProps> = ({
 
         {/* ── Scrollable content ── */}
         <div className='flex-1 space-y-4 overflow-y-auto px-5 py-4'>
-          {/* Image picker */}
-          <div>
+          {/* Image picker / paste target. Hovering this area enables Ctrl+V
+              image paste (handled at the document level by useImagePasteOnHover). */}
+          <div
+            onMouseEnter={onImageAreaEnter}
+            onMouseLeave={onImageAreaLeave}
+            data-testid='capture-image-area'
+          >
             {selectedImage ? (
               <div className='flex items-center justify-between gap-2 rounded-lg bg-base-content/5 px-3.5 py-2.5'>
                 <div className='flex min-w-0 items-center gap-2.5'>

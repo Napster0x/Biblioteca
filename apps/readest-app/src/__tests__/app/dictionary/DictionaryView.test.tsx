@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DictionaryService } from '@/services/dictionary/DictionaryService';
 import type { DictionaryEntry, DictionaryOccurrence } from '@/types/dictionary';
@@ -706,5 +706,153 @@ describe('DictionaryDetailPage', () => {
       '/reader?cfi=%2F6%2F2%21%2F4%2F2&ids=book-hash',
       undefined,
     );
+  });
+
+  describe('Paste image (mouse hover + Ctrl+V)', () => {
+    // Build a synthetic ClipboardEvent with a fake clipboardData.items list.
+    // jsdom's real `paste` event has no useful clipboard data, so we attach
+    // a shim that mimics the real DataTransferItemList contract used here.
+    function buildPasteEventWithItem(item: { kind: string; type: string; file: File | null }) {
+      const event = new Event('paste', { bubbles: true, cancelable: true }) as unknown as {
+        clipboardData: {
+          items: Array<{ kind: string; type: string; getAsFile: () => File | null }>;
+        };
+        preventDefault: () => void;
+      };
+      event.clipboardData = {
+        items: [
+          {
+            kind: item.kind,
+            type: item.type,
+            getAsFile: () => item.file,
+          },
+        ],
+      };
+      event.preventDefault = vi.fn();
+      return event;
+    }
+
+    // The paste listener is attached at the document level (because Chromium
+    // does not fire paste on non-editable elements like `<button>`), and is
+    // gated on hover state tracked via mouseenter/mouseleave on the button.
+    // Tests need to fire both: the mouseenter to set hover state, then the
+    // paste. Without the hover, the paste is ignored even if the clipboard
+    // has an image — this is what lets the user still paste text into the
+    // contenteditable definition below.
+    async function hoverImageArea() {
+      const button = await screen.findByTestId('dictionary-image-area');
+      fireEvent.mouseEnter(button);
+    }
+
+    it('writes a pasted image to disk and updates the entry imagePath while hovering', async () => {
+      const imageFile = new File(['png-bytes'], 'pasted.png', { type: 'image/png' });
+      Object.defineProperty(imageFile, 'arrayBuffer', {
+        value: vi.fn().mockResolvedValue(new ArrayBuffer(8)),
+      });
+      const pasteEvent = buildPasteEventWithItem({
+        kind: 'file',
+        type: 'image/png',
+        file: imageFile,
+      });
+
+      render(<DictionaryDetailPage />);
+      // The document-level paste handler is registered with the saveImageFromFile
+      // from the render that called it. We need the re-render with the loaded
+      // service to complete first, otherwise the handler's closure sees
+      // `service === null` and bails out before reaching writeFile.
+      await act(async () => {
+        await waitFor(() => expect(mocks.getDictionaryService).toHaveBeenCalled());
+      });
+      await hoverImageArea();
+      fireEvent(document.body, pasteEvent);
+
+      // Should preventDefault to stop the browser from pasting the file's
+      // text representation into the definition editor or anywhere else
+      expect(pasteEvent.preventDefault).toHaveBeenCalled();
+
+      await waitFor(() => expect(mocks.writeFile).toHaveBeenCalled());
+      expect(mocks.createDir).toHaveBeenCalledWith('entries/entry-1', 'Dictionaries', true);
+      expect(mocks.writeFile).toHaveBeenCalledWith(
+        'entries/entry-1/image.png',
+        'Dictionaries',
+        expect.any(ArrayBuffer),
+      );
+      expect(mocks.updateEntry).toHaveBeenCalledWith(
+        {
+          id: 'entry-1',
+          definition: 'Definición inicial',
+          imagePath: 'entries/entry-1/image.png',
+        },
+        mockService,
+      );
+    });
+
+    it('does NOT paste an image when the user is NOT hovering the change-image area', async () => {
+      const imageFile = new File(['png-bytes'], 'pasted.png', { type: 'image/png' });
+      const pasteEvent = buildPasteEventWithItem({
+        kind: 'file',
+        type: 'image/png',
+        file: imageFile,
+      });
+
+      render(<DictionaryDetailPage />);
+      // No hover step on purpose
+      fireEvent(document.body, pasteEvent);
+
+      // Nothing should have been written or updated
+      expect(mocks.writeFile).not.toHaveBeenCalled();
+      expect(mocks.updateEntry).not.toHaveBeenCalled();
+    });
+
+    it('does NOT intercept text pastes in the contenteditable definition', async () => {
+      const pasteEvent = buildPasteEventWithItem({
+        kind: 'string',
+        type: 'text/plain',
+        file: null,
+      });
+
+      render(<DictionaryDetailPage />);
+      await hoverImageArea();
+
+      // Fire the paste on the definition editor (its natural target). Our
+      // handler must NOT preventDefault so the default text-paste behavior
+      // is preserved when the user is editing the definition.
+      const definitionEditor = await screen.findByRole('textbox', { name: 'Editar definición' });
+      fireEvent(definitionEditor, pasteEvent);
+
+      expect(pasteEvent.preventDefault).not.toHaveBeenCalled();
+      expect(mocks.writeFile).not.toHaveBeenCalled();
+      expect(mocks.updateEntry).not.toHaveBeenCalled();
+    });
+
+    it('uses a sensible default name when the pasted file has none', async () => {
+      const namelessFile = new File(['png-bytes'], '', { type: 'image/png' });
+      Object.defineProperty(namelessFile, 'arrayBuffer', {
+        value: vi.fn().mockResolvedValue(new ArrayBuffer(8)),
+      });
+      const pasteEvent = buildPasteEventWithItem({
+        kind: 'file',
+        type: 'image/png',
+        file: namelessFile,
+      });
+
+      render(<DictionaryDetailPage />);
+      // Wait for the service-loading re-render so the document handler's
+      // saveImageFromFile closure has `service` set (see hover-then-paste
+      // test above for the full explanation).
+      await act(async () => {
+        await waitFor(() => expect(mocks.getDictionaryService).toHaveBeenCalled());
+      });
+      await hoverImageArea();
+      fireEvent(document.body, pasteEvent);
+
+      await waitFor(() => expect(mocks.writeFile).toHaveBeenCalled());
+      // Default name → image.png on disk
+      expect(mocks.writeFile).toHaveBeenCalledWith(
+        'entries/entry-1/image.png',
+        'Dictionaries',
+        expect.any(ArrayBuffer),
+      );
+    });
   });
 });

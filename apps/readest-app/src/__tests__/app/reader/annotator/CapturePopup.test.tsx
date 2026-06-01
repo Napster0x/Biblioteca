@@ -301,6 +301,190 @@ describe('CapturePopup', () => {
       });
     });
   });
+
+  describe('Paste image (mouse hover + Ctrl+V)', () => {
+    // Build a synthetic ClipboardEvent with a fake clipboardData.items list.
+    // jsdom's real `paste` event has no useful clipboard data, so we attach
+    // a shim that mimics the real DataTransferItemList contract used here.
+    function buildPasteEventWithItem(item: { kind: string; type: string; file: File | null }) {
+      const event = new Event('paste', { bubbles: true, cancelable: true }) as unknown as {
+        clipboardData: {
+          items: Array<{ kind: string; type: string; getAsFile: () => File | null }>;
+        };
+        preventDefault: () => void;
+      };
+      event.clipboardData = {
+        items: [
+          {
+            kind: item.kind,
+            type: item.type,
+            getAsFile: () => item.file,
+          },
+        ],
+      };
+      event.preventDefault = vi.fn();
+      return event;
+    }
+
+    // The paste listener is attached at the document level (because Chromium
+    // does not fire paste on non-editable elements), and is gated on hover
+    // state tracked via mouseenter/mouseleave on the image area. Tests need
+    // to fire both: the mouseenter to set hover state, then the paste.
+    function hoverImageArea() {
+      fireEvent.mouseEnter(screen.getByTestId('capture-image-area'));
+    }
+
+    it('sets the selected image when a paste event carries an image file while hovering', () => {
+      const imageFile = new File(['png-bytes'], 'pasted.png', { type: 'image/png' });
+      const pasteEvent = buildPasteEventWithItem({
+        kind: 'file',
+        type: 'image/png',
+        file: imageFile,
+      });
+
+      renderPopup();
+      hoverImageArea();
+      fireEvent(document.body, pasteEvent);
+
+      // The image is now "selected" — filename visible, Eliminar appears
+      expect(screen.getByText('pasted.png')).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Eliminar' })).toBeTruthy();
+    });
+
+    it('replaces a previously selected image when a new one is pasted', async () => {
+      // First, set up an existing image via the picker
+      const firstFile = new File(['jpeg-bytes'], 'first.jpg', { type: 'image/jpeg' });
+      mockSelectFiles.mockResolvedValue({ files: [{ file: firstFile }] });
+      renderPopup();
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Agregar Imagen' }));
+      });
+
+      // Then paste a new image while hovering
+      const secondFile = new File(['png-bytes'], 'pasted.png', { type: 'image/png' });
+      const pasteEvent = buildPasteEventWithItem({
+        kind: 'file',
+        type: 'image/png',
+        file: secondFile,
+      });
+      hoverImageArea();
+      fireEvent(document.body, pasteEvent);
+
+      // The pasted image wins
+      expect(screen.getByText('pasted.png')).toBeTruthy();
+      expect(screen.queryByText('first.jpg')).toBeNull();
+    });
+
+    it('does NOT paste an image when the user is NOT hovering the area', () => {
+      const imageFile = new File(['png-bytes'], 'pasted.png', { type: 'image/png' });
+      const pasteEvent = buildPasteEventWithItem({
+        kind: 'file',
+        type: 'image/png',
+        file: imageFile,
+      });
+
+      renderPopup();
+      // No hover — fireEvent.mouseEnter is intentionally not called
+      fireEvent(document.body, pasteEvent);
+
+      // No image was set — the Agregar Imagen button is still showing
+      expect(screen.getByRole('button', { name: 'Agregar Imagen' })).toBeTruthy();
+    });
+
+    it('does NOT intercept text pastes in the definition textarea', () => {
+      const pasteEvent = buildPasteEventWithItem({
+        kind: 'string',
+        type: 'text/plain',
+        file: null,
+      });
+
+      renderPopup();
+      hoverImageArea();
+
+      // Fire the paste on the textarea (the natural target when the user is
+      // editing the definition). Our handler must NOT preventDefault, so the
+      // default text-paste behavior is preserved.
+      const textarea = screen.getByPlaceholderText(
+        'Escribe una definición...',
+      ) as HTMLTextAreaElement;
+      fireEvent(textarea, pasteEvent);
+
+      expect(pasteEvent.preventDefault).not.toHaveBeenCalled();
+      // No image is set either
+      expect(screen.getByRole('button', { name: 'Agregar Imagen' })).toBeTruthy();
+    });
+
+    it('persists the pasted image to disk and updates the entry when Save is clicked', async () => {
+      const imageFile = new File(['png-bytes'], 'pasted.png', { type: 'image/png' });
+      Object.defineProperty(imageFile, 'arrayBuffer', {
+        value: vi.fn().mockResolvedValue(new ArrayBuffer(8)),
+      });
+      const pasteEvent = buildPasteEventWithItem({
+        kind: 'file',
+        type: 'image/png',
+        file: imageFile,
+      });
+
+      renderPopup();
+      hoverImageArea();
+      fireEvent(document.body, pasteEvent);
+
+      // The handler should have preventDefault'd to avoid the browser trying
+      // to paste the file's text representation elsewhere
+      expect(pasteEvent.preventDefault).toHaveBeenCalled();
+
+      // Save
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Guardar' }));
+      });
+
+      // Same persistence path as the picker: createDir + writeFile + updateEntry
+      expect(mockAppService.createDir).toHaveBeenCalledWith(
+        'entries/entry-1',
+        'Dictionaries',
+        true,
+      );
+      expect(mockAppService.writeFile).toHaveBeenCalledWith(
+        'entries/entry-1/image.png',
+        'Dictionaries',
+        expect.any(ArrayBuffer),
+      );
+      expect(mockDictionaryService.updateEntry).toHaveBeenCalledWith({
+        id: 'entry-1',
+        imagePath: 'entries/entry-1/image.png',
+      });
+    });
+
+    it('uses a sensible default name when the pasted file has none', async () => {
+      // The Clipboard API often hands back a File with an empty name
+      const namelessFile = new File(['png-bytes'], '', { type: 'image/png' });
+      Object.defineProperty(namelessFile, 'arrayBuffer', {
+        value: vi.fn().mockResolvedValue(new ArrayBuffer(8)),
+      });
+      const pasteEvent = buildPasteEventWithItem({
+        kind: 'file',
+        type: 'image/png',
+        file: namelessFile,
+      });
+
+      renderPopup();
+      hoverImageArea();
+      fireEvent(document.body, pasteEvent);
+
+      // The user sees a friendly name in the UI
+      expect(screen.getByText('pasted.png')).toBeTruthy();
+
+      // And the file is saved with that name on disk
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Guardar' }));
+      });
+      expect(mockAppService.writeFile).toHaveBeenCalledWith(
+        'entries/entry-1/image.png',
+        'Dictionaries',
+        expect.any(ArrayBuffer),
+      );
+    });
+  });
 });
 
 describe('extractCaptureContext', () => {
