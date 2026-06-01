@@ -14,13 +14,48 @@ const annotatorMocks = vi.hoisted(() => {
     upsertEntry: vi.fn(),
     createOccurrence: vi.fn(),
     updateEntry: vi.fn(),
+    deleteEntries: vi.fn().mockResolvedValue(undefined),
   };
+  const router = { push: vi.fn() };
+  const booknote = {
+    id: 'note-dict-1',
+    type: 'annotation' as const,
+    cfi: 'epubcfi(/6/2!/4/2)',
+    style: 'highlight' as const,
+    color: '#bae6fd',
+    text: 'serendipity',
+    note: '',
+    dictionaryEntryId: 'entry-1',
+    createdAt: 1000,
+    updatedAt: 1000,
+  };
+  const config = { booknotes: [booknote] };
+  const saveConfig = vi.fn();
+  const updateBooknotes = vi.fn((_key, notes) => ({ booknotes: notes }));
+  const addAnnotation = vi.fn();
+  const removeBookNoteOverlays = vi.fn();
+  const handleUpToPopup = vi.fn();
+  const overlayerHitTest = vi.fn();
+  const foliateHandlers: { current: Record<string, (event: Event) => void> } = { current: {} };
   return {
     appService,
     dictionaryService,
+    router,
+    config,
+    saveConfig,
+    updateBooknotes,
+    addAnnotation,
+    removeBookNoteOverlays,
+    handleUpToPopup,
+    overlayerHitTest,
+    foliateHandlers,
     getDictionaryService: vi.fn().mockResolvedValue(dictionaryService),
   };
 });
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => annotatorMocks.router,
+}));
 
 vi.mock('@/context/EnvContext', () => ({
   useEnv: () => ({ envConfig: {}, appService: annotatorMocks.appService }),
@@ -32,9 +67,9 @@ vi.mock('@/store/themeStore', () => ({
 
 vi.mock('@/store/bookDataStore', () => ({
   useBookDataStore: () => ({
-    getConfig: vi.fn().mockReturnValue({ booknotes: [] }),
-    saveConfig: vi.fn(),
-    updateBooknotes: vi.fn((_key, notes) => notes),
+    getConfig: vi.fn().mockReturnValue(annotatorMocks.config),
+    saveConfig: annotatorMocks.saveConfig,
+    updateBooknotes: annotatorMocks.updateBooknotes,
     getBookData: vi.fn().mockReturnValue({
       book: { hash: 'book-1', primaryLanguage: 'en' },
       bookDoc: { metadata: { language: 'en' } },
@@ -58,10 +93,21 @@ vi.mock('@/store/readerStore', () => ({
     getProgress: vi.fn().mockReturnValue({ page: 1, sectionHref: 'ch1.xhtml', location: {} }),
     getView: vi.fn().mockReturnValue({
       getCFI: vi.fn().mockReturnValue('epubcfi(/6/2!/4/2)'),
-      addAnnotation: vi.fn(),
+      addAnnotation: annotatorMocks.addAnnotation,
+      renderer: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        getContents: vi.fn().mockReturnValue([
+          {
+            index: 0,
+            doc: document,
+            overlayer: { hitTest: annotatorMocks.overlayerHitTest },
+          },
+        ]),
+      },
       deselect: vi.fn(),
     }),
-    getViewsById: vi.fn().mockReturnValue([]),
+    getViewsById: vi.fn().mockReturnValue([{ addAnnotation: annotatorMocks.addAnnotation }]),
     getViewSettings: vi.fn().mockReturnValue({ vertical: false }),
   }),
 }));
@@ -121,10 +167,18 @@ vi.mock('@/utils/sel', () => ({
   getTextFromRange: vi.fn().mockReturnValue(''),
 }));
 
-vi.mock('../../hooks/useFoliateEvents', () => ({ useFoliateEvents: vi.fn() }));
+vi.mock('../../hooks/useFoliateEvents', () => ({
+  useFoliateEvents: vi.fn((_view, handlers) => {
+    annotatorMocks.foliateHandlers.current = handlers;
+  }),
+}));
 vi.mock('../../hooks/useReadwiseSync', () => ({ useReadwiseSync: vi.fn() }));
 vi.mock('../../hooks/useHardcoverSync', () => ({ useHardcoverSync: vi.fn() }));
-vi.mock('@/app/reader/hooks/useFoliateEvents', () => ({ useFoliateEvents: vi.fn() }));
+vi.mock('@/app/reader/hooks/useFoliateEvents', () => ({
+  useFoliateEvents: vi.fn((_view, handlers) => {
+    annotatorMocks.foliateHandlers.current = handlers;
+  }),
+}));
 vi.mock('@/app/reader/hooks/useReadwiseSync', () => ({ useReadwiseSync: vi.fn() }));
 vi.mock('@/app/reader/hooks/useHardcoverSync', () => ({ useHardcoverSync: vi.fn() }));
 
@@ -158,7 +212,7 @@ vi.mock('../../hooks/useTextSelector', async () => {
         handlePointerUp: vi.fn(),
         handleSelectionchange: vi.fn(),
         handleShowPopup: vi.fn(),
-        handleUpToPopup: vi.fn(),
+        handleUpToPopup: annotatorMocks.handleUpToPopup,
         handleContextmenu: vi.fn(),
       };
     },
@@ -195,7 +249,7 @@ vi.mock('@/app/reader/hooks/useTextSelector', async () => {
         handlePointerUp: vi.fn(),
         handleSelectionchange: vi.fn(),
         handleShowPopup: vi.fn(),
-        handleUpToPopup: vi.fn(),
+        handleUpToPopup: annotatorMocks.handleUpToPopup,
         handleContextmenu: vi.fn(),
       };
     },
@@ -280,11 +334,16 @@ vi.mock('@/app/reader/components/annotator/CapturePopup', () => ({
 vi.mock('./TranslatorPopup', () => ({ default: () => null }));
 vi.mock('./ProofreadPopup', () => ({ default: () => null }));
 vi.mock('./AnnotationRangeEditor', () => ({ default: () => null }));
+vi.mock('@/app/reader/components/annotator/AnnotationRangeEditor', () => ({ default: () => null }));
 vi.mock('./ExportMarkdownDialog', () => ({ default: () => null }));
 
 vi.mock('../../utils/annotatorUtil', () => ({
   getHighlightColorHex: vi.fn().mockReturnValue('#ffff00'),
-  removeBookNoteOverlays: vi.fn(),
+  removeBookNoteOverlays: annotatorMocks.removeBookNoteOverlays,
+}));
+vi.mock('@/app/reader/utils/annotatorUtil', () => ({
+  getHighlightColorHex: vi.fn().mockReturnValue('#ffff00'),
+  removeBookNoteOverlays: annotatorMocks.removeBookNoteOverlays,
 }));
 
 vi.mock('../../utils/deferredAction', () => ({
@@ -322,6 +381,14 @@ afterEach(() => {
   cleanup();
   document.body.innerHTML = '';
   vi.clearAllMocks();
+  annotatorMocks.config.booknotes = [
+    {
+      ...annotatorMocks.config.booknotes[0]!,
+      deletedAt: undefined,
+      dictionaryEntryId: 'entry-1',
+    },
+  ];
+  annotatorMocks.overlayerHitTest.mockReset();
 });
 
 describe('Annotator dictionary capture wiring', () => {
@@ -341,6 +408,145 @@ describe('Annotator dictionary capture wiring', () => {
   });
 });
 
+describe('Annotator dictionary highlight interaction', () => {
+  it('routes dictionary highlights to the entry detail without opening annotation UI', async () => {
+    render(<Annotator bookKey='book-1' />);
+
+    annotatorMocks.foliateHandlers.current.onShowAnnotation?.(
+      new CustomEvent('show-annotation', {
+        detail: {
+          value: 'epubcfi(/6/2!/4/2)',
+          index: 0,
+          range: new Range(),
+          rect: { left: 20, top: 40, right: 80, bottom: 60 },
+        },
+      }),
+    );
+
+    expect(annotatorMocks.router.push).toHaveBeenCalledWith('/dictionary/entry-1');
+    expect(screen.queryByTestId('annotation-popup')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Remove dictionary highlight' })).toBeNull();
+  });
+
+  it('keeps normal highlights on the existing annotation popup path', async () => {
+    annotatorMocks.config.booknotes = [
+      { ...annotatorMocks.config.booknotes[0]!, dictionaryEntryId: undefined },
+    ];
+    render(<Annotator bookKey='book-1' />);
+
+    annotatorMocks.foliateHandlers.current.onShowAnnotation?.(
+      new CustomEvent('show-annotation', {
+        detail: {
+          value: 'epubcfi(/6/2!/4/2)',
+          index: 0,
+          range: new Range(),
+        },
+      }),
+    );
+
+    expect(annotatorMocks.router.push).not.toHaveBeenCalled();
+    expect(annotatorMocks.handleUpToPopup).toHaveBeenCalled();
+  });
+
+  it('shows a close button on dictionary highlight hover and deletes note plus entry without navigation', async () => {
+    render(<Annotator bookKey='book-1' />);
+    annotatorMocks.overlayerHitTest.mockReturnValue([
+      'epubcfi(/6/2!/4/2)',
+      new Range(),
+      { left: 20, top: 40, right: 80, bottom: 60 },
+    ]);
+
+    annotatorMocks.foliateHandlers.current.onLoad?.(
+      new CustomEvent('load', {
+        detail: {
+          doc: document,
+          index: 0,
+        },
+      }),
+    );
+    fireEvent.mouseMove(document, { clientX: 50, clientY: 50 });
+
+    const removeButton = await screen.findByRole('button', {
+      name: 'Remove dictionary highlight',
+    });
+    expect(annotatorMocks.router.push).not.toHaveBeenCalled();
+    fireEvent.click(removeButton);
+    expect(screen.getByRole('dialog', { name: 'Confirmar borrado de Diccionario' })).toBeTruthy();
+    expect(screen.getByText('Serendipity')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Sí, borrar' }));
+
+    await waitFor(() => {
+      expect(annotatorMocks.config.booknotes[0]!.deletedAt).toEqual(expect.any(Number));
+      expect(annotatorMocks.removeBookNoteOverlays).toHaveBeenCalledWith(
+        expect.anything(),
+        annotatorMocks.config.booknotes[0],
+      );
+      expect(annotatorMocks.dictionaryService.deleteEntries).toHaveBeenCalledWith(['entry-1']);
+    });
+    expect(annotatorMocks.saveConfig).toHaveBeenCalled();
+    expect(annotatorMocks.router.push).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Remove dictionary highlight' })).toBeNull();
+  });
+
+  it('resets the cursor when the mouse leaves a dictionary highlight onto a non-dictionary value', async () => {
+    render(<Annotator bookKey='book-1' />);
+
+    annotatorMocks.overlayerHitTest.mockReturnValue([
+      'epubcfi(/6/2!/4/2)',
+      new Range(),
+      { left: 20, top: 40, right: 80, bottom: 60 },
+    ]);
+
+    annotatorMocks.foliateHandlers.current.onLoad?.(
+      new CustomEvent('load', {
+        detail: { doc: document, index: 0 },
+      }),
+    );
+
+    fireEvent.mouseMove(document, { clientX: 50, clientY: 50 });
+    await screen.findByRole('button', { name: 'Remove dictionary highlight' });
+    expect(document.body.style.cursor).toBe('pointer');
+
+    // Move onto a hit that resolves to no annotation (no value at all)
+    annotatorMocks.overlayerHitTest.mockReturnValue([] as unknown as never[]);
+    fireEvent.mouseMove(document, { clientX: 200, clientY: 200 });
+
+    expect(document.body.style.cursor).toBe('');
+    expect(screen.queryByRole('button', { name: 'Remove dictionary highlight' })).toBeNull();
+  });
+
+  it('resets the cursor when the mouse moves from a dictionary highlight onto a non-dictionary annotation', async () => {
+    render(<Annotator bookKey='book-1' />);
+
+    annotatorMocks.overlayerHitTest.mockReturnValue([
+      'epubcfi(/6/2!/4/2)',
+      new Range(),
+      { left: 20, top: 40, right: 80, bottom: 60 },
+    ]);
+
+    annotatorMocks.foliateHandlers.current.onLoad?.(
+      new CustomEvent('load', {
+        detail: { doc: document, index: 0 },
+      }),
+    );
+
+    fireEvent.mouseMove(document, { clientX: 50, clientY: 50 });
+    await screen.findByRole('button', { name: 'Remove dictionary highlight' });
+    expect(document.body.style.cursor).toBe('pointer');
+
+    // Now hover over a CFI that does not belong to any active annotation
+    annotatorMocks.overlayerHitTest.mockReturnValue([
+      'epubcfi(/6/2!/4/10)',
+      new Range(),
+      { left: 200, top: 200, right: 260, bottom: 220 },
+    ]);
+    fireEvent.mouseMove(document, { clientX: 230, clientY: 210 });
+
+    expect(document.body.style.cursor).toBe('');
+    expect(screen.queryByRole('button', { name: 'Remove dictionary highlight' })).toBeNull();
+  });
+});
+
 describe('createDictionaryCaptureHighlight', () => {
   it('creates a BookNote highlight with correct fields', () => {
     const highlight = createDictionaryCaptureHighlight({
@@ -349,6 +555,7 @@ describe('createDictionaryCaptureHighlight', () => {
       page: 12,
       style: 'highlight',
       color: 'yellow',
+      dictionaryEntryId: 'entry-test-1',
       id: 'note-test-1',
       timestamp: 1000,
     });
@@ -359,6 +566,7 @@ describe('createDictionaryCaptureHighlight', () => {
       cfi: 'epubcfi(/6/2!/4/2)',
       style: 'highlight',
       color: 'yellow',
+      dictionaryEntryId: 'entry-test-1',
       text: 'serendipity',
       note: '',
       page: 12,
@@ -374,6 +582,7 @@ describe('createDictionaryCaptureHighlight', () => {
       page: 9,
       style: 'underline',
       color: 'blue',
+      dictionaryEntryId: 'entry-hyphen-1',
       id: 'note-hyphen-1',
       timestamp: 2000,
     });

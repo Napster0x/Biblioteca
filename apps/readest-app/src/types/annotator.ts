@@ -7,4 +7,5 @@ export type AnnotationToolType =
   | 'dictionary'
   | 'translate'
   | 'tts'
-  | 'proofread';
+  | 'proofread'
+  | 'placeholder-c';

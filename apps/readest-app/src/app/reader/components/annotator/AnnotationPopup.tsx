@@ -17,6 +17,7 @@ interface AnnotationPopupProps {
     onClick: () => void;
     disabled?: boolean;
     visible?: boolean;
+    iconClassName?: string;
   }>;
   notes: BookNote[];
   position: Position;
@@ -70,7 +71,7 @@ const AnnotationPopup: React.FC<AnnotationPopupProps> = ({
         <div className={clsx('flex h-full gap-4', isVertical ? 'flex-row' : 'flex-col')}>
           <div
             className={clsx(
-              'selection-buttons flex h-full w-full items-center justify-between p-2',
+              'selection-buttons flex h-full w-full items-center justify-center gap-2 p-2',
               isVertical ? 'flex-col overflow-y-auto' : 'flex-row overflow-x-auto',
               notes.length > 0 && 'hidden',
             )}
@@ -86,6 +87,7 @@ const AnnotationPopup: React.FC<AnnotationPopupProps> = ({
                   Icon={button.Icon}
                   onClick={button.onClick}
                   disabled={button.disabled}
+                  iconClassName={button.iconClassName}
                 />
               );
             })}

@@ -11,6 +11,7 @@ import { useDictionaryStore } from '@/store/dictionaryStore';
 import { useReaderStore } from '@/store/readerStore';
 import type { DictionaryOccurrence } from '@/types/dictionary';
 import { navigateToReader } from '@/utils/nav';
+import { extractSentenceFromContext } from '@/utils/sentenceExtraction';
 
 const EMPTY_OCCURRENCES: DictionaryOccurrence[] = [];
 
@@ -180,7 +181,6 @@ export default function DictionaryDetailPage() {
         const [bookKey, state] = openEntry;
         state.view?.goTo(occurrence.cfi);
         setPreviewMode(bookKey, true);
-        return;
       }
       const queryParams = `cfi=${encodeURIComponent(occurrence.cfi)}`;
       navigateToReader(router, [occurrence.bookHash], queryParams);
@@ -193,6 +193,13 @@ export default function DictionaryDetailPage() {
     ? primaryOccurrence.bookAuthor
       ? `~ "${primaryOccurrence.bookTitle}" de ${primaryOccurrence.bookAuthor}`
       : `~ "${primaryOccurrence.bookTitle}"`
+    : null;
+  const primaryQuote = primaryOccurrence
+    ? extractSentenceFromContext({
+        before: primaryOccurrence.contextBefore ?? '',
+        word: primaryOccurrence.selectedText,
+        after: primaryOccurrence.contextAfter ?? '',
+      })
     : null;
 
   if (error) {
@@ -333,11 +340,11 @@ export default function DictionaryDetailPage() {
               className='font-serif line-clamp-3 text-base font-light italic leading-relaxed tracking-[0.01em]'
               data-testid='dictionary-quote-text'
             >
-              {primaryOccurrence.contextBefore && <span>{primaryOccurrence.contextBefore} </span>}
+              {primaryQuote?.sentenceBefore && <span>{primaryQuote.sentenceBefore} </span>}
               <mark className='bg-transparent px-0.5 font-semibold text-base-content'>
-                {primaryOccurrence.selectedText}
+                {primaryQuote?.sentenceWord ?? primaryOccurrence.selectedText}
               </mark>
-              {primaryOccurrence.contextAfter && <span> {primaryOccurrence.contextAfter}</span>}
+              {primaryQuote?.sentenceAfter && <span> {primaryQuote.sentenceAfter}</span>}
             </blockquote>
             {primaryBookLabel && (
               <p className='font-serif text-base-content/70 mt-2 text-sm italic'>

@@ -33,6 +33,7 @@ export interface CreateDictionaryCaptureHighlightInput {
   page?: number;
   style: HighlightStyle;
   color: HighlightColor;
+  dictionaryEntryId?: string;
   id: string;
   timestamp: number;
 }
@@ -60,6 +61,7 @@ export function createDictionaryCaptureHighlight(
     cfi: input.cfi,
     style: input.style,
     color: input.color,
+    dictionaryEntryId: input.dictionaryEntryId,
     text: input.selectedText,
     note: '',
     page: input.page,

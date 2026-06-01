@@ -100,9 +100,6 @@ const SidebarContent: React.FC<{
               {targetTab === 'annotations' && (
                 <BooknoteView type='annotation' toc={bookDoc.toc ?? []} bookKey={sideBarBookKey} />
               )}
-              {targetTab === 'bookmarks' && (
-                <BooknoteView type='bookmark' toc={bookDoc.toc ?? []} bookKey={sideBarBookKey} />
-              )}
             </div>
           </OverlayScrollbarsComponent>
         )}

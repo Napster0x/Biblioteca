@@ -7,6 +7,7 @@ import { Position } from '@/utils/sel';
 import type { AppService, BaseDir } from '@/types/system';
 import type { DictionaryService } from '@/services/dictionary/DictionaryService';
 import { normalizeDictionarySelection } from '@/utils/dictionaryText';
+import { extractSentenceFromContext } from '@/utils/sentenceExtraction';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useFileSelector } from '@/hooks/useFileSelector';
 import { eventDispatcher } from '@/utils/event';
@@ -31,7 +32,12 @@ export interface CapturePopupProps {
   popupHeight: number;
   appService: AppService;
   dictionaryService: DictionaryService;
-  onCreateHighlight: (cfi: string, selectedText: string, page?: number) => Promise<string>;
+  onCreateHighlight: (
+    cfi: string,
+    selectedText: string,
+    page: number | undefined,
+    dictionaryEntryId: string,
+  ) => Promise<string>;
   onDismiss: () => void;
 }
 
@@ -41,10 +47,17 @@ interface SelectedImage {
 }
 
 /**
- * Extract surrounding context strings from a DOM Range.
- * Returns trimmed text before and after the selected word boundary.
+ * Extract the full sentence containing the selected word from a DOM Range.
+ * Captures a wider window (300 chars on each side) and then narrows down
+ * to the sentence boundaries so that the saved context represents the
+ * whole sentence rather than a fixed character window.
  */
-export function extractCaptureContext(range: Range): {
+const CAPTURE_WINDOW_SIZE = 300;
+
+export function extractCaptureContext(
+  range: Range,
+  selectedText: string,
+): {
   contextBefore: string;
   contextAfter: string;
 } {
@@ -56,18 +69,30 @@ export function extractCaptureContext(range: Range): {
 
   if (startNode.nodeType === Node.TEXT_NODE) {
     const text = startNode.textContent ?? '';
-    contextBefore = text.slice(Math.max(0, range.startOffset - 60), range.startOffset);
+    contextBefore = text.slice(
+      Math.max(0, range.startOffset - CAPTURE_WINDOW_SIZE),
+      range.startOffset,
+    );
   }
 
   if (endNode.nodeType === Node.TEXT_NODE && endNode === startNode) {
     const text = endNode.textContent ?? '';
-    contextAfter = text.slice(range.endOffset, range.endOffset + 60);
+    contextAfter = text.slice(
+      range.endOffset,
+      Math.min(text.length, range.endOffset + CAPTURE_WINDOW_SIZE),
+    );
   } else if (endNode.nodeType === Node.TEXT_NODE) {
     const text = endNode.textContent ?? '';
-    contextAfter = text.slice(0, 60);
+    contextAfter = text.slice(0, CAPTURE_WINDOW_SIZE);
   }
 
-  return { contextBefore, contextAfter };
+  const { sentenceBefore, sentenceAfter } = extractSentenceFromContext({
+    before: contextBefore,
+    word: selectedText,
+    after: contextAfter,
+  });
+
+  return { contextBefore: sentenceBefore, contextAfter: sentenceAfter };
 }
 
 function getFileExtension(filename: string): string {
@@ -98,6 +123,8 @@ const CapturePopup: React.FC<CapturePopupProps> = ({
   const [selectedImage, setSelectedImage] = useState<SelectedImage | null>(null);
   const [saving, setSaving] = useState(false);
   const dismissedRef = useRef(false);
+
+  const displayWord = selectedText.charAt(0).toUpperCase() + selectedText.slice(1);
 
   const handleSelectImage = useCallback(async () => {
     const result = await selectFiles({
@@ -139,19 +166,19 @@ const CapturePopup: React.FC<CapturePopupProps> = ({
         return;
       }
 
-      // 2. Extract context from the Range
-      const { contextBefore, contextAfter } = extractCaptureContext(range);
+      // 2. Extract the full sentence containing the selection
+      const { contextBefore, contextAfter } = extractCaptureContext(range, selectedText);
 
-      // 3. Create the highlight in the book (returns the highlight note ID)
-      const highlightNoteId = await onCreateHighlight(cfi, selectedText, page);
-
-      // 4. Upsert the dictionary entry with manual definition (no enrichment)
+      // 3. Upsert the dictionary entry with manual definition (no enrichment)
       const entry = await dictionaryService.upsertEntry({
         term: normalized.term,
         displayTerm: normalized.displayTerm,
         language: book.language,
         definition: definition || undefined,
       });
+
+      // 4. Create the highlight in the book, linked to the saved entry.
+      const highlightNoteId = await onCreateHighlight(cfi, selectedText, page, entry.id);
 
       // 5. Create the occurrence with context
       await dictionaryService.createOccurrence({
@@ -229,54 +256,86 @@ const CapturePopup: React.FC<CapturePopupProps> = ({
       className='select-text'
       onDismiss={handleCancel}
     >
-      <div className='flex h-full flex-col overflow-hidden rounded-lg p-4'>
-        {/* Word display */}
-        <h2 className='text-lg font-semibold truncate mb-3'>{selectedText}</h2>
+      <div className='flex h-full flex-col overflow-hidden'>
+        {/* ── Word header ── */}
+        <div className='border-b border-base-content/15 px-5 py-4'>
+          <p className='mb-0.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-base-content/40'>
+            {_('Diccionario')}
+          </p>
+          <h2 className='text-2xl font-bold capitalize tracking-tight text-base-content'>
+            {displayWord}
+          </h2>
+        </div>
 
-        {/* Image picker */}
-        <div className='mb-3'>
-          {selectedImage ? (
-            <div className='flex items-center gap-2'>
-              <span className='text-sm truncate flex-1'>{selectedImage.name}</span>
+        {/* ── Scrollable content ── */}
+        <div className='flex-1 space-y-4 overflow-y-auto px-5 py-4'>
+          {/* Image picker */}
+          <div>
+            {selectedImage ? (
+              <div className='flex items-center justify-between gap-2 rounded-lg bg-base-content/5 px-3.5 py-2.5'>
+                <div className='flex min-w-0 items-center gap-2.5'>
+                  <span className='truncate text-sm text-base-content/70'>
+                    {selectedImage.name}
+                  </span>
+                </div>
+                <button
+                  type='button'
+                  className='shrink-0 text-xs font-medium text-red-400 hover:text-red-300'
+                  onClick={handleRemoveImage}
+                >
+                  {_('Eliminar')}
+                </button>
+              </div>
+            ) : (
               <button
                 type='button'
-                className='text-sm text-error hover:underline'
-                onClick={handleRemoveImage}
+                className='flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-base-content/20 px-4 py-3 text-sm text-base-content/40 hover:border-base-content/30 hover:text-base-content/60 transition-colors'
+                onClick={handleSelectImage}
               >
-                {_('Remove')}
+                {/* Inline SVG image icon */}
+                <svg
+                  xmlns='http://www.w3.org/2000/svg'
+                  className='h-4 w-4'
+                  viewBox='0 0 24 24'
+                  fill='none'
+                  stroke='currentColor'
+                  strokeWidth='2'
+                  strokeLinecap='round'
+                  strokeLinejoin='round'
+                >
+                  <rect x='3' y='3' width='18' height='18' rx='2' ry='2' />
+                  <circle cx='8.5' cy='8.5' r='1.5' />
+                  <polyline points='21 15 16 10 5 21' />
+                </svg>
+                {_('Agregar Imagen')}
               </button>
-            </div>
-          ) : (
-            <button
-              type='button'
-              className='btn btn-outline btn-sm w-full'
-              onClick={handleSelectImage}
-              aria-label={_('Select Image')}
-            >
-              {_('Select Image')}
-            </button>
-          )}
+            )}
+          </div>
+
+          {/* Definition */}
+          <div>
+            <label className='mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.2em] text-base-content/40'>
+              {_('Definición')}
+            </label>
+            <textarea
+              className='textarea textarea-bordered w-full resize-none text-sm focus:outline-none'
+              rows={3}
+              placeholder={_('Escribe una definición...')}
+              value={definition}
+              onChange={(e) => setDefinition(e.target.value)}
+            />
+          </div>
         </div>
 
-        {/* Definition textarea */}
-        <div className='flex-1 mb-3'>
-          <textarea
-            className='textarea textarea-bordered w-full h-24 resize-none'
-            placeholder={_('Write a definition...')}
-            value={definition}
-            onChange={(e) => setDefinition(e.target.value)}
-          />
-        </div>
-
-        {/* Action buttons */}
-        <div className='flex justify-end gap-2'>
+        {/* ── Footer actions ── */}
+        <div className='flex items-center justify-end gap-2 border-t border-base-content/15 px-5 py-3'>
           <button
             type='button'
             className='btn btn-ghost btn-sm'
             onClick={handleCancel}
             disabled={saving}
           >
-            {_('Cancel')}
+            {_('Cancelar')}
           </button>
           <button
             type='button'
@@ -284,7 +343,7 @@ const CapturePopup: React.FC<CapturePopupProps> = ({
             onClick={handleSave}
             disabled={saving}
           >
-            {saving ? _('Saving...') : _('Save')}
+            {saving ? _('Guardando...') : _('Guardar')}
           </button>
         </div>
       </div>

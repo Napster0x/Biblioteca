@@ -12,20 +12,29 @@ import {
   PiX,
 } from 'react-icons/pi';
 import { useTranslation } from '@/hooks/useTranslation';
+import { useEnv } from '@/context/EnvContext';
 import type { DictionaryService } from '@/services/dictionary/DictionaryService';
 import { useDictionaryStore } from '@/store/dictionaryStore';
+import { useBookDataStore } from '@/store/bookDataStore';
+import { useLibraryStore } from '@/store/libraryStore';
+import { useSettingsStore } from '@/store/settingsStore';
+import type { BookConfig, BookNote } from '@/types/book';
+import type { EnvConfigType } from '@/services/environment';
+import type { SystemSettings } from '@/types/settings';
 import type { AppService } from '@/types/system';
 import { navigateToLibrary } from '@/utils/nav';
 import DictionaryTile from './DictionaryTile';
 
 interface DictionaryGridProps {
   service: DictionaryService;
-  appService?: AppService;
+  appService?: AppService | null;
 }
 
 export default function DictionaryGrid({ service, appService }: DictionaryGridProps) {
   const _ = useTranslation();
+  const { envConfig } = useEnv();
   const router = useRouter();
+  const { settings } = useSettingsStore();
   const entries = useDictionaryStore((s) => s.entries);
   const isLoading = useDictionaryStore((s) => s.isLoading);
   const isSelectMode = useDictionaryStore((s) => s.isSelectMode);
@@ -133,9 +142,16 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
   }, []);
 
   const handleConfirmDelete = useCallback(async () => {
+    await softDeleteDictionaryHighlights(
+      selectedEntryIds,
+      service,
+      appService,
+      envConfig,
+      settings,
+    );
     await deleteSelectedEntries(service);
     setShowDeleteConfirm(false);
-  }, [deleteSelectedEntries, service]);
+  }, [appService, deleteSelectedEntries, envConfig, selectedEntryIds, service, settings]);
 
   const handleCancelDelete = useCallback(() => {
     setShowDeleteConfirm(false);
@@ -392,4 +408,76 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
       </section>
     </main>
   );
+}
+
+async function softDeleteDictionaryHighlights(
+  entryIds: readonly string[],
+  service: DictionaryService,
+  appService: AppService | null | undefined,
+  envConfig: EnvConfigType,
+  settings: SystemSettings,
+): Promise<void> {
+  if (entryIds.length === 0) return;
+
+  const entryIdsSet = new Set(entryIds);
+  const highlightsByBook = new Map<string, Set<string>>();
+
+  for (const entryId of entryIds) {
+    const occurrences = await service.listOccurrences(entryId);
+    for (const occurrence of occurrences) {
+      if (!occurrence.highlightNoteId) continue;
+      const highlightIds = highlightsByBook.get(occurrence.bookHash) ?? new Set<string>();
+      highlightIds.add(occurrence.highlightNoteId);
+      highlightsByBook.set(occurrence.bookHash, highlightIds);
+    }
+  }
+
+  const bookDataStore = useBookDataStore.getState();
+  const libraryStore = useLibraryStore.getState();
+  const now = Date.now();
+
+  for (const [bookHash, highlightIds] of highlightsByBook) {
+    const loadedBookData = bookDataStore.getBookData(bookHash);
+    const book = loadedBookData?.book ?? libraryStore.getBookByHash(bookHash);
+    const config =
+      loadedBookData?.config ??
+      (book && appService ? await appService.loadBookConfig(book, settings) : null);
+    if (!book || !config?.booknotes) continue;
+
+    const { booknotes, changed } = markDictionaryHighlightsDeleted(
+      config.booknotes,
+      highlightIds,
+      entryIdsSet,
+      now,
+    );
+    if (!changed) continue;
+
+    if (loadedBookData) {
+      const updatedConfig = bookDataStore.updateBooknotes(bookHash, booknotes);
+      if (updatedConfig)
+        await bookDataStore.saveConfig(envConfig, bookHash, updatedConfig, settings);
+    } else if (appService) {
+      const updatedConfig: BookConfig = { ...config, booknotes, updatedAt: now };
+      await appService.saveBookConfig(book, updatedConfig, settings);
+    }
+  }
+}
+
+function markDictionaryHighlightsDeleted(
+  booknotes: BookNote[],
+  highlightIds: ReadonlySet<string>,
+  entryIds: ReadonlySet<string>,
+  deletedAt: number,
+): { booknotes: BookNote[]; changed: boolean } {
+  let changed = false;
+  const nextBooknotes = booknotes.map((note) => {
+    if (note.deletedAt) return note;
+    const matchesHighlight = highlightIds.has(note.id);
+    const matchesEntry = !!note.dictionaryEntryId && entryIds.has(note.dictionaryEntryId);
+    if (!matchesHighlight && !matchesEntry) return note;
+    changed = true;
+    return { ...note, deletedAt };
+  });
+
+  return { booknotes: nextBooknotes, changed };
 }

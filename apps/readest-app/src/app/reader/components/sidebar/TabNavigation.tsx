@@ -1,6 +1,5 @@
 import clsx from 'clsx';
 import React from 'react';
-import { MdBookmarkBorder } from 'react-icons/md';
 import { IoIosList } from 'react-icons/io';
 import { PiNotePencil } from 'react-icons/pi';
 import { LuMessageSquare } from 'react-icons/lu';
@@ -18,7 +17,7 @@ const TabNavigation: React.FC<{
   const { settings } = useSettingsStore();
   const aiEnabled = settings?.aiSettings?.enabled ?? false;
 
-  const tabs = ['toc', 'annotations', 'bookmarks', ...(aiEnabled ? ['history'] : [])];
+  const tabs = ['toc', 'annotations', ...(aiEnabled ? ['history'] : [])];
 
   const getTabLabel = (tab: string) => {
     switch (tab) {
@@ -26,8 +25,6 @@ const TabNavigation: React.FC<{
         return _('TOC');
       case 'annotations':
         return _('Annotate');
-      case 'bookmarks':
-        return _('Bookmark');
       case 'history':
         return _('Chat');
       default:
@@ -67,8 +64,6 @@ const TabNavigation: React.FC<{
               <IoIosList className='mx-auto' />
             ) : tab === 'annotations' ? (
               <PiNotePencil className='mx-auto' />
-            ) : tab === 'bookmarks' ? (
-              <MdBookmarkBorder className='mx-auto' />
             ) : (
               <LuMessageSquare className='mx-auto' />
             )}

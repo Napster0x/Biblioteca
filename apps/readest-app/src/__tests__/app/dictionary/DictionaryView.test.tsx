@@ -101,7 +101,9 @@ import DictionaryGrid from '@/app/dictionary/DictionaryGrid';
 import DictionaryDetailPage from '@/app/dictionary/[id]/page';
 import DictionaryPage from '@/app/dictionary/page';
 
-const mockService = {} as unknown as DictionaryService;
+const mockService = {
+  listOccurrences: vi.fn().mockResolvedValue([]),
+} as unknown as DictionaryService;
 
 function makeEntry(overrides: Partial<DictionaryEntry> = {}): DictionaryEntry {
   return {
@@ -151,6 +153,7 @@ describe('DictionaryGrid', () => {
     mocks.enterSelectMode.mockReset();
     mocks.cancelSelectMode.mockReset();
     mocks.deleteSelectedEntries.mockReset();
+    vi.mocked(mockService.listOccurrences).mockResolvedValue([]);
     mocks.getDictionaryService.mockReset();
     mocks.getDictionaryService.mockResolvedValue(mockService);
   });
@@ -541,6 +544,27 @@ describe('DictionaryDetailPage', () => {
     expect(screen.getByText('~ "El libro de los casos"')).toBeTruthy();
   });
 
+  it('renders only the sentence containing the word when context spans multiple sentences', async () => {
+    mockOccurrencesByEntryId = {
+      'entry-1': [
+        makeOccurrence({
+          selectedText: 'serendipia',
+          contextBefore: 'Llovía fuerte. El sol salió y',
+          contextAfter: 'llenó el aire. Los pájaros cantaban.',
+        }),
+      ],
+    };
+
+    render(<DictionaryDetailPage />);
+
+    const quote = await screen.findByTestId('dictionary-quote-text');
+    // Only the sentence containing the word is shown, not the surrounding ones
+    expect(quote.textContent).toBe('El sol salió y serendipia llenó el aire.');
+    expect(quote.textContent).not.toContain('Llovía fuerte');
+    expect(quote.textContent).not.toContain('Los pájaros cantaban');
+    expect(screen.getByText('serendipia').tagName).toBe('MARK');
+  });
+
   it('shows the book author in the quote source when available', async () => {
     mockOccurrencesByEntryId = {
       'entry-1': [makeOccurrence({ bookAuthor: 'Autora de prueba' })],
@@ -640,13 +664,16 @@ describe('DictionaryDetailPage', () => {
     inputClickSpy.mockRestore();
   });
 
-  it('clicks the quote card to go to the quote CFI when the book is already open', async () => {
+  it('clicks the quote card to go to the quote CFI and return to the reader when the book is already open', async () => {
     mockViewStates = { 'book-hash-main': { view: { goTo: mocks.goTo } } };
 
     render(<DictionaryDetailPage />);
     fireEvent.click(await screen.findByTestId('dictionary-quote-card'));
 
     expect(mocks.goTo).toHaveBeenCalledWith('/6/2!/4/2');
-    expect(mocks.push).not.toHaveBeenCalled();
+    expect(mocks.push).toHaveBeenCalledWith(
+      '/reader?cfi=%2F6%2F2%21%2F4%2F2&ids=book-hash',
+      undefined,
+    );
   });
 });

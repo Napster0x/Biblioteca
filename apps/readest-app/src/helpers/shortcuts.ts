@@ -38,41 +38,6 @@ const DEFAULT_SHORTCUTS = {
     description: _('Toggle Select Mode'),
     section: 'General',
   },
-  onToggleBookmark: {
-    keys: ['ctrl+b', 'cmd+b'],
-    description: _('Toggle Bookmark'),
-    section: 'General',
-  },
-  onToggleTTS: {
-    keys: ['t'],
-    description: _('Toggle Text to Speech'),
-    section: 'Text to Speech',
-  },
-  onTTSPlayPause: {
-    keys: [' '],
-    description: _('Play / Pause TTS'),
-    section: '',
-  },
-  onTTSGoNextSentence: {
-    keys: ['ctrl+]', 'cmd+]'],
-    description: _('Next Sentence'),
-    section: 'Text to Speech',
-  },
-  onTTSGoPreviousSentence: {
-    keys: ['ctrl+[', 'cmd+['],
-    description: _('Previous Sentence'),
-    section: 'Text to Speech',
-  },
-  onTTSGoNextParagraph: {
-    keys: ['ctrl+shift+}', 'cmd+shift+}'],
-    description: _('Next Paragraph'),
-    section: 'Text to Speech',
-  },
-  onTTSGoPreviousParagraph: {
-    keys: ['ctrl+shift+{', 'cmd+shift+{'],
-    description: _('Previous Paragraph'),
-    section: 'Text to Speech',
-  },
   onToggleParagraphMode: {
     keys: ['shift+p'],
     description: _('Toggle Paragraph Mode'),

@@ -138,6 +138,8 @@ export interface BookNote {
   text?: string;
   style?: HighlightStyle;
   color?: HighlightColor;
+  /** Present only for reader highlights owned by a saved dictionary entry. */
+  dictionaryEntryId?: string;
   note: string;
   /**
    * If true, this annotation should be applied to every occurrence of `text`

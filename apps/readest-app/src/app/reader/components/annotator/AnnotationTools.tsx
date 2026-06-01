@@ -1,12 +1,7 @@
 import { IconType } from 'react-icons';
 import { FiSearch } from 'react-icons/fi';
-import { FiCopy } from 'react-icons/fi';
 import { PiHighlighterFill } from 'react-icons/pi';
-import { BsPencilSquare } from 'react-icons/bs';
-import { BsTranslate } from 'react-icons/bs';
-import { TbHexagonLetterD } from 'react-icons/tb';
-import { FaHeadphones } from 'react-icons/fa6';
-import { IoIosBuild } from 'react-icons/io';
+import { TbHexagonLetterA, TbHexagonLetterC, TbHexagonLetterD } from 'react-icons/tb';
 import { AnnotationToolType } from '@/types/annotator';
 import { stubTranslation as _ } from '@/utils/misc';
 
@@ -18,29 +13,29 @@ type AnnotationToolButton = {
   quickAction?: boolean;
 };
 
-function createAnnotationToolButtons<T extends AnnotationToolType>(
-  buttons: AnnotationToolType extends T
-    ? {
-        [K in T]: {
-          type: K;
-          label: string;
-          tooltip: string;
-          Icon: IconType;
-          quickAction?: boolean;
-        };
-      }[T][]
-    : never,
-): AnnotationToolButton[] {
+function createAnnotationToolButtons(buttons: AnnotationToolButton[]): AnnotationToolButton[] {
   return buttons;
 }
 
-export const annotationToolButtons = createAnnotationToolButtons([
+export const annotationToolButtons: AnnotationToolButton[] = createAnnotationToolButtons([
   {
-    type: 'copy',
-    label: _('Copy'),
-    tooltip: _('Copy text after selection'),
-    Icon: FiCopy,
+    type: 'dictionary',
+    label: _('Diccionario'),
+    tooltip: _('Save word to dictionary after selection'),
+    Icon: TbHexagonLetterD,
     quickAction: true,
+  },
+  {
+    type: 'placeholder-c',
+    label: _('Placeholder C'),
+    tooltip: _(''),
+    Icon: TbHexagonLetterC,
+  },
+  {
+    type: 'annotate',
+    label: _('Annotate'),
+    tooltip: _('Annotate text after selection'),
+    Icon: TbHexagonLetterA,
   },
   {
     type: 'highlight',
@@ -50,50 +45,11 @@ export const annotationToolButtons = createAnnotationToolButtons([
     quickAction: true,
   },
   {
-    type: 'annotate',
-    label: _('Annotate'),
-    tooltip: _('Annotate text after selection'),
-    Icon: BsPencilSquare,
-  },
-  {
     type: 'search',
     label: _('Search'),
     tooltip: _('Search text after selection'),
     Icon: FiSearch,
     quickAction: true,
-  },
-  {
-    type: 'dictionary-lookup',
-    label: _('Buscar definición'),
-    tooltip: _('Look up text in dictionary after selection'),
-    Icon: TbHexagonLetterD,
-  },
-  {
-    type: 'dictionary',
-    label: _('Diccionario'),
-    tooltip: _('Save word to dictionary after selection'),
-    Icon: TbHexagonLetterD,
-    quickAction: true,
-  },
-  {
-    type: 'translate',
-    label: _('Translate'),
-    tooltip: _('Translate text after selection'),
-    Icon: BsTranslate,
-    quickAction: true,
-  },
-  {
-    type: 'tts',
-    label: _('Speak'),
-    tooltip: _('Read text aloud after selection'),
-    Icon: FaHeadphones,
-    quickAction: true,
-  },
-  {
-    type: 'proofread',
-    label: _('Proofread'),
-    tooltip: _('Proofread text after selection'),
-    Icon: IoIosBuild,
   },
 ]);
 

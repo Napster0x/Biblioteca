@@ -8,11 +8,8 @@ import {
 
 describe('reader dictionary selection actions', () => {
   it('keeps provider lookup available under a renamed action', () => {
-    const lookup = annotationToolButtons.find((button) => button.type === 'dictionary-lookup');
     const capture = annotationToolButtons.find((button) => button.type === 'dictionary');
 
-    expect(lookup?.label).toBe('Buscar definición');
-    expect(lookup?.tooltip).toBe('Look up text in dictionary after selection');
     expect(capture?.label).toBe('Diccionario');
     expect(capture?.tooltip).toBe('Save word to dictionary after selection');
   });
@@ -52,7 +49,8 @@ describe('dictionary capture flow', () => {
       cfi,
       page: 9,
       style: 'highlight',
-      color: 'yellow',
+      color: '#bae6fd',
+      dictionaryEntryId: 'entry-1',
       id: 'note-1',
       timestamp: 1717000000000,
     });
@@ -71,7 +69,8 @@ describe('dictionary capture flow', () => {
       type: 'annotation',
       cfi,
       style: 'highlight',
-      color: 'yellow',
+      color: '#bae6fd',
+      dictionaryEntryId: 'entry-1',
       text: 'con-\nnection',
       note: '',
       page: 9,

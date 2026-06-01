@@ -7,6 +7,7 @@ interface AnnotationToolButtonProps {
   disabled?: boolean;
   Icon: React.ElementType;
   onClick: () => void;
+  iconClassName?: string;
 }
 
 const AnnotationToolButton: React.FC<AnnotationToolButtonProps> = ({
@@ -15,6 +16,7 @@ const AnnotationToolButton: React.FC<AnnotationToolButtonProps> = ({
   disabled,
   Icon,
   onClick,
+  iconClassName,
 }) => {
   const [buttonClicked, setButtonClicked] = useState(false);
   const handleClick = () => {
@@ -37,7 +39,7 @@ const AnnotationToolButton: React.FC<AnnotationToolButtonProps> = ({
         )}
         disabled={disabled}
       >
-        <Icon />
+        <Icon className={iconClassName} />
       </button>
     </div>
   );

@@ -120,30 +120,30 @@ describe('CapturePopup', () => {
   describe('render', () => {
     it('displays the selected word at the top of the popup', () => {
       renderPopup();
-      expect(screen.getByText('serendipity')).toBeTruthy();
+      expect(screen.getByText(/Serendipity/i)).toBeTruthy();
     });
 
     it('renders a definition textarea', () => {
       renderPopup();
-      expect(screen.getByPlaceholderText('Write a definition...')).toBeTruthy();
+      expect(screen.getByPlaceholderText('Escribe una definición...')).toBeTruthy();
     });
 
     it('renders Save and Cancel buttons', () => {
       renderPopup();
-      expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
-      expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Guardar' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Cancelar' })).toBeTruthy();
     });
 
     it('renders an image picker button', () => {
       renderPopup();
-      expect(screen.getByRole('button', { name: 'Select Image' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Agregar Imagen' })).toBeTruthy();
     });
   });
 
   describe('Cancel', () => {
     it('calls onDismiss and does NOT call service methods when Cancel is clicked', () => {
       renderPopup();
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
       expect(mockOnDismiss).toHaveBeenCalledTimes(1);
       expect(mockDictionaryService.upsertEntry).not.toHaveBeenCalled();
       expect(mockDictionaryService.createOccurrence).not.toHaveBeenCalled();
@@ -161,7 +161,7 @@ describe('CapturePopup', () => {
       renderPopup();
 
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Guardar' }));
       });
 
       // Entry upserted without definition
@@ -192,18 +192,17 @@ describe('CapturePopup', () => {
       renderPopup();
 
       // Type a definition
-      const textarea = screen.getByPlaceholderText('Write a definition...') as HTMLTextAreaElement;
+      const textarea = screen.getByPlaceholderText(
+        'Escribe una definición...',
+      ) as HTMLTextAreaElement;
       fireEvent.change(textarea, {
         target: { value: 'The occurrence of happy accidents.' },
       });
 
       // Click Save
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Guardar' }));
       });
-
-      // Should create highlight first
-      expect(mockOnCreateHighlight).toHaveBeenCalledWith('epubcfi(/6/2!/4/2)', 'serendipity', 12);
 
       // Should upsert entry with the definition
       expect(mockDictionaryService.upsertEntry).toHaveBeenCalledWith({
@@ -213,7 +212,18 @@ describe('CapturePopup', () => {
         definition: 'The occurrence of happy accidents.',
       });
 
-      // Should create occurrence with context
+      // Should create highlight after entry upsert, linked to that entry
+      expect(mockOnCreateHighlight).toHaveBeenCalledWith(
+        'epubcfi(/6/2!/4/2)',
+        'serendipity',
+        12,
+        'entry-1',
+      );
+      expect(mockDictionaryService.upsertEntry.mock.invocationCallOrder[0]).toBeLessThan(
+        mockOnCreateHighlight.mock.invocationCallOrder[0],
+      );
+
+      // Should create occurrence with context trimmed (extracted from the surrounding text)
       expect(mockDictionaryService.createOccurrence).toHaveBeenCalledWith({
         entryId: 'entry-1',
         bookHash: 'book-1',
@@ -223,8 +233,8 @@ describe('CapturePopup', () => {
         sectionHref: 'chapter.xhtml',
         page: 12,
         selectedText: 'serendipity',
-        contextBefore: 'the word ',
-        contextAfter: ' is great',
+        contextBefore: 'the word',
+        contextAfter: 'is great',
         highlightNoteId: 'highlight-1',
       });
 
@@ -250,14 +260,16 @@ describe('CapturePopup', () => {
       renderPopup();
 
       // Type a definition
-      const textarea = screen.getByPlaceholderText('Write a definition...') as HTMLTextAreaElement;
+      const textarea = screen.getByPlaceholderText(
+        'Escribe una definición...',
+      ) as HTMLTextAreaElement;
       fireEvent.change(textarea, {
         target: { value: 'A happy accident.' },
       });
 
       // Click the image picker button
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Select Image' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Agregar Imagen' }));
       });
       expect(mockSelectFiles).toHaveBeenCalledWith({
         type: 'images',
@@ -267,7 +279,7 @@ describe('CapturePopup', () => {
 
       // Now click Save
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Guardar' }));
       });
 
       // Should write the image file
@@ -292,33 +304,33 @@ describe('CapturePopup', () => {
 });
 
 describe('extractCaptureContext', () => {
-  it('extracts context before and after the selected word in a text node', () => {
+  it('extracts context before and after the selected word in a text node, trimmed', () => {
     const text = makeTextNode('the old lighthouse stood there for years');
     // 'the old lighthouse stood there for years'
     //  0-7: 'the old '
     //  8-17: 'lighthouse' (10 chars)
     const range = makeRange(text, 8, 18); // selects 'lighthouse'
-    const { contextBefore, contextAfter } = extractCaptureContext(range);
+    const { contextBefore, contextAfter } = extractCaptureContext(range, 'lighthouse');
 
-    expect(contextBefore).toBe('the old ');
-    expect(contextAfter).toBe(' stood there for years');
+    expect(contextBefore).toBe('the old');
+    expect(contextAfter).toBe('stood there for years');
   });
 
   it('handles selection at the start of text node', () => {
     const text = makeTextNode('lighthouse stood tall');
     const range = makeRange(text, 0, 10); // 'lighthouse'
-    const { contextBefore, contextAfter } = extractCaptureContext(range);
+    const { contextBefore, contextAfter } = extractCaptureContext(range, 'lighthouse');
 
     expect(contextBefore).toBe('');
-    expect(contextAfter).toBe(' stood tall');
+    expect(contextAfter).toBe('stood tall');
   });
 
   it('handles selection at the end of text node', () => {
     const text = makeTextNode('the old lighthouse');
     const range = makeRange(text, 8, 18); // 'lighthouse'
-    const { contextBefore, contextAfter } = extractCaptureContext(range);
+    const { contextBefore, contextAfter } = extractCaptureContext(range, 'lighthouse');
 
-    expect(contextBefore).toBe('the old ');
+    expect(contextBefore).toBe('the old');
     expect(contextAfter).toBe('');
   });
 
@@ -328,39 +340,34 @@ describe('extractCaptureContext', () => {
     document.body.appendChild(container);
     const range = new Range();
     range.selectNodeContents(container); // container is an Element, not a Text node
-    const { contextBefore, contextAfter } = extractCaptureContext(range);
+    const { contextBefore, contextAfter } = extractCaptureContext(range, 'hello');
     document.body.removeChild(container);
 
     expect(contextBefore).toBe('');
     expect(contextAfter).toBe('');
   });
 
-  it('truncates context beyond 60 characters', () => {
-    const longText =
-      'this is a very long sentence that goes on and on and on and on and on ' +
-      'without ever stopping because it just keeps going forever ' +
-      'theword right here in the middle of this mess';
-    const text = makeTextNode(longText);
-    // Find the start of 'theword' in the concatenated string
-    const idx = longText.indexOf('theword');
-    const range = makeRange(text, idx, idx + 7);
-    const { contextBefore, contextAfter } = extractCaptureContext(range);
+  it('captures a wide window and extracts the full sentence when the context has multiple sentences', () => {
+    const text = makeTextNode(
+      'The rain stopped. The sun came out and everything felt different. The birds sang.',
+    );
+    // Find 'everything' and select it
+    const idx = text.textContent!.indexOf('everything');
+    const range = makeRange(text, idx, idx + 'everything'.length);
+    const { contextBefore, contextAfter } = extractCaptureContext(range, 'everything');
 
-    expect(contextBefore.length).toBeLessThanOrEqual(60);
-    expect(contextAfter.length).toBeLessThanOrEqual(60);
-    // contextBefore should be the 60 chars preceding 'theword'
-    expect(contextBefore).toBe(longText.slice(idx - 60, idx));
-    // contextAfter should be the 60 chars after 'theword'
-    expect(contextAfter).toBe(longText.slice(idx + 7, idx + 7 + 60));
-    // Verify it actually IS truncated (not the full text)
-    expect(contextBefore).not.toContain('this is a very');
-    expect(contextAfter).toContain('right here');
+    // Only the sentence containing the word is captured, trimmed
+    expect(contextBefore).toBe('The sun came out and');
+    expect(contextAfter).toBe('felt different.');
+    // The earlier and later sentences must NOT leak into the context
+    expect(contextBefore).not.toContain('The rain stopped');
+    expect(contextAfter).not.toContain('The birds sang');
   });
 
   it('handles selection across the entire text node', () => {
     const text = makeTextNode('hello');
     const range = makeRange(text, 0, 5);
-    const { contextBefore, contextAfter } = extractCaptureContext(range);
+    const { contextBefore, contextAfter } = extractCaptureContext(range, 'hello');
 
     expect(contextBefore).toBe('');
     expect(contextAfter).toBe('');
