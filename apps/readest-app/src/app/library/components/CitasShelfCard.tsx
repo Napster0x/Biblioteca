@@ -1,6 +1,7 @@
 import clsx from 'clsx';
 import { PiBookBookmark } from 'react-icons/pi';
 
+import { useTranslation } from '@/hooks/useTranslation';
 import type { CitasShelfItem } from '@/types/citas';
 import type { LibraryViewModeType } from '@/types/settings';
 
@@ -10,6 +11,8 @@ interface CitasShelfCardProps {
 }
 
 const CitasShelfCard = ({ item, mode }: CitasShelfCardProps) => {
+  const _ = useTranslation();
+
   return (
     <div
       role='none'
@@ -48,9 +51,7 @@ const CitasShelfCard = ({ item, mode }: CitasShelfCardProps) => {
             {item.title}
           </h4>
           {mode === 'list' && (
-            <p className='text-neutral-content line-clamp-1 text-sm'>
-              Citas guardadas desde tus lecturas
-            </p>
+            <p className='text-neutral-content line-clamp-1 text-sm'>{_('Saved passages')}</p>
           )}
         </div>
         {mode === 'grid' && <div className='placeholder' style={{ height: 15 }} />}

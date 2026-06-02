@@ -6,16 +6,26 @@ import Bookshelf from '@/app/library/components/Bookshelf';
 import { DEFAULT_SYSTEM_SETTINGS } from '@/services/constants';
 import type { Book } from '@/types/book';
 
-const { pushMock, navigateToReaderMock, menuNewMock, menuItemNewMock } = vi.hoisted(() => ({
+const {
+  pushMock,
+  navigateToReaderMock,
+  menuNewMock,
+  menuItemNewMock,
+  loadBookConfigMock,
+  saveBookConfigMock,
+} = vi.hoisted(() => ({
   pushMock: vi.fn(),
   navigateToReaderMock: vi.fn(),
   menuNewMock: vi.fn(async () => ({ append: vi.fn(), popup: vi.fn() })),
   menuItemNewMock: vi.fn(async () => ({})),
+  loadBookConfigMock: vi.fn(),
+  saveBookConfigMock: vi.fn(),
 }));
 
 let searchParams = new URLSearchParams();
 let selectedBooks: string[] = [];
 let hasContextMenu = false;
+let libraryViewMode = 'grid';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock, replace: vi.fn() }),
@@ -47,6 +57,8 @@ vi.mock('@/context/EnvContext', () => ({
       isMobileApp: false,
       isAndroidApp: false,
       isBookAvailable: vi.fn(async () => true),
+      loadBookConfig: loadBookConfigMock,
+      saveBookConfig: saveBookConfigMock,
     },
   }),
 }));
@@ -113,7 +125,7 @@ vi.mock('@/store/settingsStore', () => ({
   useSettingsStore: () => ({
     settings: {
       ...DEFAULT_SYSTEM_SETTINGS,
-      libraryViewMode: 'grid',
+      libraryViewMode,
       librarySortBy: 'title',
       librarySortAscending: true,
       libraryGroupBy: 'none',
@@ -185,9 +197,12 @@ afterEach(() => {
   navigateToReaderMock.mockReset();
   menuNewMock.mockClear();
   menuItemNewMock.mockClear();
+  loadBookConfigMock.mockReset();
+  saveBookConfigMock.mockReset();
   searchParams = new URLSearchParams();
   selectedBooks = [];
   hasContextMenu = false;
+  libraryViewMode = 'grid';
 });
 
 describe('Bookshelf Citas entry', () => {
@@ -229,6 +244,17 @@ describe('Bookshelf Citas entry', () => {
 
     expect(pushMock).toHaveBeenCalledWith('/citas');
     expect(navigateToReaderMock).not.toHaveBeenCalled();
+    expect(loadBookConfigMock).not.toHaveBeenCalled();
+    expect(saveBookConfigMock).not.toHaveBeenCalled();
+  });
+
+  it('renders the Citas list subtitle through the flat i18n key', () => {
+    libraryViewMode = 'list';
+
+    renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
+
+    expect(screen.getByText('Saved passages')).toBeTruthy();
+    expect(screen.queryByText('Citas guardadas desde tus lecturas')).toBeNull();
   });
 
   it('ignores selection attempts on Citas', () => {

@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { NodeDatabaseService } from '@/services/database/nodeDatabaseService';
 import { migrate } from '@/services/database/migrate';
@@ -19,6 +21,13 @@ describe('CitasService', () => {
       createId: () => `cite-${++idCounter}`,
       sha256: createDeterministicSha256(),
     });
+  });
+
+  it('stays browser-safe by not importing Node-only crypto APIs', async () => {
+    const source = await readFile('src/services/citas/CitasService.ts', 'utf8');
+
+    expect(source).not.toContain('node:crypto');
+    expect(source).not.toContain('createHash');
   });
 
   afterEach(async () => {
@@ -58,7 +67,7 @@ describe('CitasService', () => {
     expect(created.createdAt).toBe(1700000000000);
     expect(created.contentHash).toMatch(/^[a-f0-9]{64}$/);
     // Deterministic hash: sha256("hello world\0before\0after"), as produced
-    // by both the inline test SHA-256 (below) and Node's crypto.createHash.
+    // by both the inline test SHA-256 (below) and Web Crypto SHA-256.
     // Cross-checked with: echo -n "hello world\0before\0after" | sha256sum
     expect(created.contentHash).toBe(
       'a1a940e0c770b8b88209553e9175c242057683f66209f57dcbb5a5ac98e919c3',
@@ -372,9 +381,9 @@ describe('CitasService', () => {
 
 /**
  * Returns a deterministic SHA-256 implementation for testing. The
- * production CitasService uses Node's `crypto.createHash` by default
- * (FIPS 180-4 SHA-256), but we override the helper in tests so the
- * assertions are stable across Node versions and jsdom setups.
+ * production CitasService uses Web Crypto by default (FIPS 180-4
+ * SHA-256), but we override the helper in tests so the assertions are
+ * stable across Node versions and jsdom setups.
  */
 function createDeterministicSha256(): (input: string) => string {
   return (input: string) => {

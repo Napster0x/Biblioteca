@@ -1,11 +1,11 @@
-import { createHash } from 'node:crypto';
-
 import type { DatabaseService } from '@/types/database';
 import type { AppService } from '@/types/system';
 import { createCitasId, type Cite, type CiteInput, type CiteUpdate } from '@/types/citas';
 
 const DB_SCHEMA = 'citas';
 const DB_PATH = 'citas.db';
+
+type Sha256 = (input: string) => string | Promise<string>;
 
 /**
  * Raw row shape as stored in the `quotes` table. Snake_case mirrors the
@@ -53,15 +53,15 @@ export interface CitasServiceOptions {
   /**
    * Override the SHA-256 helper. Tests pass a pure-JS implementation
    * so assertions don't depend on the host's `crypto.subtle` support.
-   * Production callers can rely on the default (Node `crypto.createHash`).
+   * Production callers can rely on the browser/WebView-safe Web Crypto default.
    */
-  sha256?: (input: string) => string;
+  sha256?: Sha256;
 }
 
 export class CitasService {
   private now: () => number;
   private createId: () => string;
-  private sha256: (input: string) => string;
+  private sha256: Sha256;
 
   constructor(
     private readonly db: DatabaseService,
@@ -122,7 +122,7 @@ export class CitasService {
   async createQuote(input: CiteInput): Promise<Cite> {
     const id = this.createId();
     const createdAt = this.now();
-    const contentHash = computeContentHash(this.sha256, input);
+    const contentHash = await computeContentHash(this.sha256, input);
 
     await this.db.execute(
       `INSERT INTO quotes
@@ -181,7 +181,7 @@ export class CitasService {
     // Recompute the content hash from the merged state. The UNIQUE
     // constraint on (book_hash, content_hash) means the hash must
     // reflect the visible content of the quote at all times.
-    const contentHash = computeContentHashFromParts(
+    const contentHash = await computeContentHashFromParts(
       this.sha256,
       nextText,
       nextContextBefore,
@@ -275,20 +275,26 @@ function quoteFromRow(row: QuoteRow): Cite {
  * that a plain `||` would introduce (e.g. `(text="a", ctxBefore="bc")`
  * vs `(text="ab", ctxBefore="c")`).
  */
-function computeContentHash(sha256: (input: string) => string, input: CiteInput): string {
+async function computeContentHash(sha256: Sha256, input: CiteInput): Promise<string> {
   return computeContentHashFromParts(sha256, input.text, input.contextBefore, input.contextAfter);
 }
 
-function computeContentHashFromParts(
-  sha256: (input: string) => string,
+async function computeContentHashFromParts(
+  sha256: Sha256,
   text: string,
   contextBefore: string | null,
   contextAfter: string | null,
-): string {
+): Promise<string> {
   return sha256(`${text}\0${contextBefore ?? ''}\0${contextAfter ?? ''}`);
 }
 
-/** Node-backed default; keeps PR-2 self-contained without a web polyfill. */
-function defaultSha256(input: string): string {
-  return createHash('sha256').update(input, 'utf8').digest('hex');
+/** Browser/WebView-safe SHA-256 default for client-imported Citas modules. */
+async function defaultSha256(input: string): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new Error('Web Crypto SHA-256 is not available in this runtime');
+  }
+
+  const digest = await subtle.digest('SHA-256', new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
