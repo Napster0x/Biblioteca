@@ -88,6 +88,45 @@ const migrations: Record<SchemaType, MigrationEntry[]> = {
       `,
     },
   ],
+  // Citas — saved quotes from the reader (Fase 1: shell + data model only;
+  // capture from the reader and per-cite detail view are deferred to Fase 2/3).
+  // content_hash = sha256(text || \0 || context_before || \0 || context_after)
+  // (computed by CitasService.createQuote). cfi is intentionally OUTSIDE the
+  // UNIQUE constraint because the CFI can rotate between sessions — dedupe is
+  // semantic, not positional (decision #313). book_hash has no FK because
+  // books live as JSON in the filesystem, not in SQL.
+  citas: [
+    {
+      name: '2026060201_citas_init',
+      sql: `
+        CREATE TABLE IF NOT EXISTS quotes (
+          id              TEXT PRIMARY KEY,
+          book_hash       TEXT NOT NULL,
+          book_title      TEXT,
+          book_author     TEXT,
+          cfi             TEXT,
+          section_href    TEXT,
+          page            INTEGER,
+          text            TEXT NOT NULL,
+          context_before  TEXT,
+          context_after   TEXT,
+          content_hash    TEXT NOT NULL,
+          created_at      INTEGER NOT NULL,
+          updated_at      INTEGER,
+          CONSTRAINT uq_quotes_book_content UNIQUE (book_hash, content_hash)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_quotes_book_hash
+          ON quotes (book_hash);
+
+        CREATE INDEX IF NOT EXISTS idx_quotes_created_at
+          ON quotes (created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_quotes_content_hash
+          ON quotes (content_hash);
+      `,
+    },
+  ],
   // The embeddings table is created lazily by BookIndexer because its
   // vector32(<dim>) column needs the active embedding model's dim, which
   // isn't known at migration time. Tantivy FTS lives on the chunks.text

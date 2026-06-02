@@ -61,5 +61,20 @@
   "Are you sure to clear all {{count}} highlights and notes?_one": "Are you sure to clear all {{count}} highlight and note?",
   "Are you sure to clear all {{count}} highlights and notes?_other": "Are you sure to clear all {{count}} highlights and notes?",
   "Imported {{count}} annotations_one": "Imported {{count}} annotation",
-  "Imported {{count}} annotations_other": "Imported {{count}} annotations"
+  "Imported {{count}} annotations_other": "Imported {{count}} annotations",
+  "Citas": "Citas",
+  "Search…": "Search…",
+  "Search": "Search",
+  "Back to Library": "Back to Library",
+  "Your quotes collection is empty": "Your quotes collection is empty",
+  "Quotes are created when you save a passage from the reader.": "Quotes are created when you save a passage from the reader.",
+  "No results": "No results",
+  "Select": "Select",
+  "Cancel": "Cancel",
+  "Delete": "Delete",
+  "Delete selected": "Delete selected",
+  "Initializing quotes…": "Initializing quotes…",
+  "Could not open Citas": "Could not open Citas",
+  "Retry": "Retry",
+  "Quote: {{text}}": "Quote: {{text}}"
 }

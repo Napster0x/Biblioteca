@@ -1677,5 +1677,21 @@
   "{{count}} dictionary is unsupported and disabled_one": "{{count}} diccionario no es compatible y está deshabilitado",
   "{{count}} dictionary is unsupported and disabled_many": "{{count}} diccionarios no son compatibles y están deshabilitados",
   "{{count}} dictionary is unsupported and disabled_other": "{{count}} diccionarios no son compatibles y están deshabilitados",
-  "No new dictionaries were imported": "No se importaron diccionarios nuevos"
+  "No new dictionaries were imported": "No se importaron diccionarios nuevos",
+  "Citas": "Citas",
+  "Saved passages": "Pasajes guardados",
+  "Search…": "Buscar…",
+  "Search": "Buscar",
+  "Back to Library": "Volver a Biblioteca",
+  "Your quotes collection is empty": "Tu colección de citas está vacía",
+  "Quotes are created when you save a passage from the reader.": "Las citas se crean al guardar un fragmento del lector.",
+  "No results": "Sin resultados",
+  "Select": "Seleccionar",
+  "Cancel": "Cancelar",
+  "Delete quote": "Borrar",
+  "Delete selected": "Borrar seleccionados",
+  "Initializing quotes…": "Inicializando citas…",
+  "Could not open Citas": "No se pudo abrir Citas",
+  "Retry": "Reintentar",
+  "Quote: {{text}}": "Cita: {{text}}"
 }
