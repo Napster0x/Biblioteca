@@ -139,6 +139,17 @@ export const navigateToDictionary = (
   }
 };
 
+export const navigateToCitas = (
+  router: ReturnType<typeof useRouter>,
+  navOptions?: { scroll?: boolean },
+) => {
+  if (navOptions) {
+    router.push('/citas', navOptions);
+  } else {
+    router.push('/citas');
+  }
+};
+
 // Recovery action when a reader has nothing to display — e.g. all books were
 // closed, or a book failed to load in a freshly-opened reader window.
 // In a dedicated reader window we close the window itself, ensuring the main

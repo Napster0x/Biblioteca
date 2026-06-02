@@ -70,7 +70,8 @@ vi.mock('@/store/citasStore', () => ({
 }));
 
 vi.mock('@/hooks/useTranslation', () => ({
-  useTranslation: () => (key: string) => key,
+  useTranslation: () => (key: string, options?: Record<string, string>) =>
+    key.replace('{{text}}', options?.['text'] ?? ''),
 }));
 
 import CitasGrid from '@/app/citas/CitasGrid';
@@ -169,6 +170,30 @@ describe('CitasGrid', () => {
     fireEvent.change(searchInput, { target: { value: 'Borges' } });
 
     expect(searchInput.value).toBe('Borges');
+  });
+
+  it('renders loaded quotes as CitasTile cards with accessible quote labels', () => {
+    mockQuotes = [makeQuote()];
+
+    render(<CitasGrid service={mockService} />);
+
+    expect(
+      screen.getByRole('link', { name: 'Quote: El universo es una vasta biblioteca.' }),
+    ).toBeTruthy();
+    expect(screen.getByText('El universo es una vasta biblioteca.')).toBeTruthy();
+  });
+
+  it('wires CitasTile selection clicks through the citas store in select mode', () => {
+    mockQuotes = [makeQuote()];
+    mockIsSelectMode = true;
+
+    render(<CitasGrid service={mockService} />);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Select Quote: El universo es una vasta biblioteca.' }),
+    );
+
+    expect(mocks.toggleSelectedQuote).toHaveBeenCalledWith('cite-1');
   });
 
   it('searches quotes through the store action when the user types', () => {

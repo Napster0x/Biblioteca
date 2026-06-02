@@ -7,6 +7,7 @@ import { useTranslation } from '@/hooks/useTranslation';
 import type { CitasService } from '@/services/citas/CitasService';
 import { useCitasStore } from '@/store/citasStore';
 import { navigateToLibrary } from '@/utils/nav';
+import CitasTile from './CitasTile';
 
 interface CitasGridProps {
   service: CitasService;
@@ -131,11 +132,10 @@ export default function CitasGrid({ service }: CitasGridProps) {
             )}
           </div>
         ) : (
-          // Tiles are rendered by CitasTile (PR-6). PR-5 ships the chrome only;
-          // the grid is structurally complete and the empty-state branch is
-          // what exercises the layout until the tile lands.
           <div className='grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-6'>
-            {/* Tile rendering intentionally omitted in PR-5. */}
+            {filteredQuotes.map((quote) => (
+              <CitasTile key={quote.id} quote={quote} />
+            ))}
           </div>
         )}
 

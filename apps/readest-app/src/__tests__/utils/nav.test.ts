@@ -37,6 +37,7 @@ import {
   navigateToReader,
   navigateToLogin,
   navigateToProfile,
+  navigateToCitas,
   navigateToLibrary,
   navigateToResetPassword,
   navigateToUpdatePassword,
@@ -195,6 +196,22 @@ describe('navigateToProfile', () => {
     navigateToProfile(router);
 
     expect(router.push).toHaveBeenCalledWith('/user');
+  });
+});
+
+describe('navigateToCitas', () => {
+  test('pushes /citas without nav options by default', () => {
+    const router = mockRouter();
+    navigateToCitas(router);
+
+    expect(router.push).toHaveBeenCalledWith('/citas');
+  });
+
+  test('passes navOptions through when provided', () => {
+    const router = mockRouter();
+    navigateToCitas(router, { scroll: false });
+
+    expect(router.push).toHaveBeenCalledWith('/citas', { scroll: false });
   });
 });
 
