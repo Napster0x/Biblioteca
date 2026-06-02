@@ -14,6 +14,7 @@ import {
   type ListProps,
 } from 'react-virtuoso';
 import { Book, BooksGroup, ReadingStatus } from '@/types/book';
+import { CITAS_SHELF_ITEM, CitasShelfItem, isCitasShelfItem } from '@/types/citas';
 import {
   DICTIONARY_SHELF_ITEM,
   DictionaryShelfItem,
@@ -87,7 +88,7 @@ const BOOKSHELF_GRID_CLASSES =
 
 const BOOKSHELF_LIST_CLASSES = 'bookshelf-items transform-wrapper flex flex-col';
 
-type BookshelfShelfItem = Book | BooksGroup | DictionaryShelfItem;
+type BookshelfShelfItem = Book | BooksGroup | DictionaryShelfItem | CitasShelfItem;
 
 const BookshelfGridList: GridComponents<BookshelfListContext>['List'] = React.forwardRef<
   HTMLDivElement,
@@ -308,7 +309,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
   }, [sortOrder, sortBy, groupBy, groupId, uiLanguage, currentBookshelfItems]);
 
   const pinnedBookshelfItems = useMemo<BookshelfShelfItem[]>(
-    () => [DICTIONARY_SHELF_ITEM, ...sortedBookshelfItems],
+    () => [DICTIONARY_SHELF_ITEM, CITAS_SHELF_ITEM, ...sortedBookshelfItems],
     [sortedBookshelfItems],
   );
 
@@ -551,6 +552,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
       if (!item) return null;
       const itemSelected =
         !isDictionaryShelfItem(item) &&
+        !isCitasShelfItem(item) &&
         ('hash' in item ? selectedBooks.includes(item.hash) : selectedBooks.includes(item.id));
       return (
         <BookshelfItem
@@ -595,7 +597,13 @@ const Bookshelf: React.FC<BookshelfProps> = ({
       }
       const item = pinnedBookshelfItems[index];
       if (!item) return `library-item-${index}`;
-      return `library-item-${isDictionaryShelfItem(item) ? item.id : 'hash' in item ? item.hash : item.id}`;
+      return `library-item-${
+        isDictionaryShelfItem(item) || isCitasShelfItem(item)
+          ? item.id
+          : 'hash' in item
+            ? item.hash
+            : item.id
+      }`;
     },
     [pinnedBookshelfItems, isGridMode],
   );

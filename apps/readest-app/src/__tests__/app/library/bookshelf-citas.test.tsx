@@ -6,13 +6,16 @@ import Bookshelf from '@/app/library/components/Bookshelf';
 import { DEFAULT_SYSTEM_SETTINGS } from '@/services/constants';
 import type { Book } from '@/types/book';
 
-const { pushMock, navigateToReaderMock } = vi.hoisted(() => ({
+const { pushMock, navigateToReaderMock, menuNewMock, menuItemNewMock } = vi.hoisted(() => ({
   pushMock: vi.fn(),
   navigateToReaderMock: vi.fn(),
+  menuNewMock: vi.fn(async () => ({ append: vi.fn(), popup: vi.fn() })),
+  menuItemNewMock: vi.fn(async () => ({})),
 }));
 
 let searchParams = new URLSearchParams();
 let selectedBooks: string[] = [];
+let hasContextMenu = false;
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock, replace: vi.fn() }),
@@ -40,7 +43,7 @@ vi.mock('@/context/EnvContext', () => ({
     envConfig: {},
     appService: {
       hasWindow: false,
-      hasContextMenu: false,
+      hasContextMenu,
       isMobileApp: false,
       isAndroidApp: false,
       isBookAvailable: vi.fn(async () => true),
@@ -93,6 +96,15 @@ vi.mock('react-virtuoso', () => ({
   ),
 }));
 
+vi.mock('@tauri-apps/api/menu', () => ({
+  Menu: { new: menuNewMock },
+  MenuItem: { new: menuItemNewMock },
+}));
+
+vi.mock('@tauri-apps/plugin-opener', () => ({
+  revealItemInDir: vi.fn(),
+}));
+
 vi.mock('@/store/themeStore', () => ({
   useThemeStore: () => ({ safeAreaInsets: { bottom: 0 } }),
 }));
@@ -127,7 +139,7 @@ vi.mock('@/store/libraryStore', () => ({
         ? selectedBooks.filter((selectedId) => selectedId !== id)
         : [...selectedBooks, id];
     },
-    getGroupName: (id: string) => (id === 'fiction' ? 'Fiction' : ''),
+    getGroupName: vi.fn(() => ''),
   }),
 }));
 
@@ -144,11 +156,11 @@ const makeBook = (overrides: Partial<Book>): Book => ({
   deletedAt: overrides.deletedAt,
 });
 
-const renderBookshelf = (books: Book[]) =>
+const renderBookshelf = (books: Book[], isSelectMode = false) =>
   render(
     <Bookshelf
       libraryBooks={books}
-      isSelectMode={false}
+      isSelectMode={isSelectMode}
       isSelectAll={false}
       isSelectNone={false}
       onScrollerRef={vi.fn()}
@@ -161,37 +173,30 @@ const renderBookshelf = (books: Book[]) =>
     />,
   );
 
+const bookshelfLabels = () =>
+  screen
+    .getAllByRole('button')
+    .map((button) => button.getAttribute('aria-label'))
+    .filter((label) => label !== 'Show Book Details');
+
 afterEach(() => {
   cleanup();
   pushMock.mockReset();
   navigateToReaderMock.mockReset();
+  menuNewMock.mockClear();
+  menuItemNewMock.mockClear();
   searchParams = new URLSearchParams();
   selectedBooks = [];
+  hasContextMenu = false;
 });
 
-describe('Bookshelf dictionary entry', () => {
-  it('pins Diccionario before sorted books while search filters the real books', () => {
-    searchParams = new URLSearchParams('q=alpha&sort=title&order=asc');
+describe('Bookshelf Citas entry', () => {
+  it('pins Citas second while real books follow both false books', () => {
+    searchParams = new URLSearchParams('sort=title&order=asc');
 
     renderBookshelf([
       makeBook({ hash: 'zeta', title: 'Zeta handbook', updatedAt: 1 }),
       makeBook({ hash: 'alpha', title: 'Alpha field notes', updatedAt: 2 }),
-    ]);
-
-    const itemLabels = screen
-      .getAllByRole('button')
-      .map((button) => button.getAttribute('aria-label'))
-      .filter((label) => label !== 'Show Book Details');
-    expect(itemLabels).toEqual(['Diccionario', 'Citas', 'Alpha field notes', 'Import Books']);
-    expect(screen.queryByRole('button', { name: 'Zeta handbook' })).toBeNull();
-  });
-
-  it('keeps Diccionario first when library grouping shows groups', () => {
-    searchParams = new URLSearchParams('groupBy=group');
-
-    renderBookshelf([
-      makeBook({ hash: 'one', title: 'One', groupName: 'Fiction', updatedAt: 2 }),
-      makeBook({ hash: 'two', title: 'Two', groupName: 'Fiction/Sub', updatedAt: 3 }),
     ]);
 
     const grid = screen.getByTestId('virtuoso-grid');
@@ -199,27 +204,49 @@ describe('Bookshelf dictionary entry', () => {
       .getAllByRole('button')
       .map((button) => button.getAttribute('aria-label'))
       .filter((label) => label !== 'Show Book Details');
-    expect(itemLabels.slice(0, 3)).toEqual(['Diccionario', 'Citas', 'Fiction']);
+    expect(itemLabels).toEqual([
+      'Diccionario',
+      'Citas',
+      'Alpha field notes',
+      'Zeta handbook',
+      'Import Books',
+    ]);
   });
 
-  it('keeps Diccionario visible when search filters out every book', () => {
+  it('keeps Citas visible in second position when search filters out every book', () => {
     searchParams = new URLSearchParams('q=missing');
 
     renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
 
-    const itemLabels = screen
-      .getAllByRole('button')
-      .map((button) => button.getAttribute('aria-label'));
-    expect(itemLabels).toEqual(['Diccionario', 'Citas', 'Import Books']);
+    expect(bookshelfLabels()).toEqual(['Diccionario', 'Citas', 'Import Books']);
     expect(screen.queryByRole('button', { name: 'Alpha field notes' })).toBeNull();
   });
 
-  it('opens the dictionary route without invoking reader navigation', () => {
+  it('opens /citas without invoking reader navigation', () => {
     renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Diccionario' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Citas' }));
 
-    expect(pushMock).toHaveBeenCalledWith('/dictionary');
+    expect(pushMock).toHaveBeenCalledWith('/citas');
     expect(navigateToReaderMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores selection attempts on Citas', () => {
+    renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })], true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Citas' }));
+
+    expect(selectedBooks).toEqual([]);
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores the context menu for Citas', () => {
+    hasContextMenu = true;
+    renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Citas' }));
+
+    expect(menuNewMock).not.toHaveBeenCalled();
+    expect(menuItemNewMock).not.toHaveBeenCalled();
   });
 });
