@@ -54,6 +54,8 @@ const annotatorMocks = vi.hoisted(() => {
   const removeBookNoteOverlays = vi.fn();
   const handleUpToPopup = vi.fn();
   const overlayerHitTest = vi.fn();
+  const deleteCitasQuotes = vi.fn().mockResolvedValue(undefined);
+  const citasQuotes: (typeof quote)[] = [];
   const foliateHandlers: { current: Record<string, (event: Event) => void> } = { current: {} };
   return {
     appService,
@@ -67,12 +69,24 @@ const annotatorMocks = vi.hoisted(() => {
     removeBookNoteOverlays,
     handleUpToPopup,
     overlayerHitTest,
+    deleteCitasQuotes,
+    citasQuotes,
     foliateHandlers,
     getDictionaryService: vi.fn().mockResolvedValue(dictionaryService),
     quote,
     citasService,
     createQuoteInStore,
     getCitasService: vi.fn().mockResolvedValue(citasService),
+  };
+});
+
+vi.mock('@/app/reader/utils/citasCapture', async () => {
+  const actual = await vi.importActual<typeof import('@/app/reader/utils/citasCapture')>(
+    '@/app/reader/utils/citasCapture',
+  );
+  return {
+    ...actual,
+    softDeleteCitasHighlights: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -164,7 +178,11 @@ vi.mock('@/services/citas/citasServiceCache', () => ({
 
 vi.mock('@/store/citasStore', () => ({
   useCitasStore: {
-    getState: () => ({ createQuote: annotatorMocks.createQuoteInStore }),
+    getState: () => ({
+      createQuote: annotatorMocks.createQuoteInStore,
+      deleteQuotes: annotatorMocks.deleteCitasQuotes,
+      quotes: annotatorMocks.citasQuotes,
+    }),
   },
 }));
 
@@ -427,6 +445,8 @@ afterEach(() => {
   annotatorMocks.getCitasService.mockResolvedValue(annotatorMocks.citasService);
   annotatorMocks.citasService.createQuote.mockResolvedValue(annotatorMocks.quote);
   annotatorMocks.createQuoteInStore.mockResolvedValue(annotatorMocks.quote);
+  annotatorMocks.deleteCitasQuotes.mockResolvedValue(undefined);
+  annotatorMocks.citasQuotes.length = 0;
 });
 
 describe('Annotator dictionary capture wiring', () => {
@@ -542,7 +562,7 @@ describe('Annotator Citas quote capture wiring', () => {
     });
   });
 
-  it('does not add hover delete, navigation, or cascade behavior for quote highlights', async () => {
+  it('shows a quote × button on hover over a citeId highlight and routes clicks to normal annotation popup', async () => {
     annotatorMocks.config.booknotes = [
       {
         ...annotatorMocks.config.booknotes[0]!,
@@ -565,6 +585,18 @@ describe('Annotator Citas quote capture wiring', () => {
       }),
     );
     fireEvent.mouseMove(document, { clientX: 50, clientY: 50 });
+
+    // Quote × appears on hover
+    const removeButton = await screen.findByRole('button', {
+      name: 'Remove quote highlight',
+    });
+    expect(removeButton).toBeTruthy();
+    expect(document.body.style.cursor).toBe('pointer');
+
+    // Dictionary × does NOT appear
+    expect(screen.queryByRole('button', { name: 'Remove dictionary highlight' })).toBeNull();
+
+    // onShowAnnotation still routes to normal annotation popup in Phase 3
     annotatorMocks.foliateHandlers.current.onShowAnnotation?.(
       new CustomEvent('show-annotation', {
         detail: {
@@ -575,12 +607,113 @@ describe('Annotator Citas quote capture wiring', () => {
       }),
     );
 
-    expect(screen.queryByRole('button', { name: 'Remove dictionary highlight' })).toBeNull();
-    expect(document.body.style.cursor).toBe('');
     expect(annotatorMocks.router.push).not.toHaveBeenCalled();
     expect(annotatorMocks.dictionaryService.deleteEntries).not.toHaveBeenCalled();
     expect(annotatorMocks.removeBookNoteOverlays).not.toHaveBeenCalled();
     expect(annotatorMocks.handleUpToPopup).toHaveBeenCalled();
+  });
+});
+
+describe('Annotator quote highlight hover × + delete modal', () => {
+  it('opens the delete modal when the quote × is clicked', async () => {
+    annotatorMocks.config.booknotes = [
+      {
+        ...annotatorMocks.config.booknotes[0]!,
+        id: 'note-quote-2',
+        dictionaryEntryId: undefined,
+        citeId: 'cite-99',
+        color: '#fecaca',
+      },
+    ];
+    render(<Annotator bookKey='book-1' />);
+    annotatorMocks.overlayerHitTest.mockReturnValue([
+      'epubcfi(/6/2!/4/2)',
+      new Range(),
+      { left: 20, top: 40, right: 80, bottom: 60 },
+    ]);
+
+    annotatorMocks.foliateHandlers.current.onLoad?.(
+      new CustomEvent('load', { detail: { doc: document, index: 0 } }),
+    );
+    fireEvent.mouseMove(document, { clientX: 50, clientY: 50 });
+
+    const removeButton = await screen.findByRole('button', {
+      name: 'Remove quote highlight',
+    });
+    fireEvent.click(removeButton);
+
+    expect(screen.getByRole('dialog', { name: 'Confirmar borrado de Cita' })).toBeTruthy();
+    expect(screen.getByText('¿Estás seguro de que quieres borrar esta cita?')).toBeTruthy();
+  });
+
+  it('confirming delete removes the highlight and calls deleteQuotes on citasStore', async () => {
+    annotatorMocks.config.booknotes = [
+      {
+        ...annotatorMocks.config.booknotes[0]!,
+        id: 'note-quote-3',
+        dictionaryEntryId: undefined,
+        citeId: 'cite-42',
+        color: '#fecaca',
+      },
+    ];
+    render(<Annotator bookKey='book-1' />);
+    annotatorMocks.overlayerHitTest.mockReturnValue([
+      'epubcfi(/6/2!/4/2)',
+      new Range(),
+      { left: 20, top: 40, right: 80, bottom: 60 },
+    ]);
+
+    annotatorMocks.foliateHandlers.current.onLoad?.(
+      new CustomEvent('load', { detail: { doc: document, index: 0 } }),
+    );
+    fireEvent.mouseMove(document, { clientX: 50, clientY: 50 });
+
+    const removeButton = await screen.findByRole('button', {
+      name: 'Remove quote highlight',
+    });
+    fireEvent.click(removeButton);
+    fireEvent.click(screen.getByRole('button', { name: 'Sí, borrar' }));
+
+    await waitFor(() => {
+      expect(annotatorMocks.config.booknotes[0]!.deletedAt).toEqual(expect.any(Number));
+      expect(annotatorMocks.removeBookNoteOverlays).toHaveBeenCalledWith(
+        expect.anything(),
+        annotatorMocks.config.booknotes[0],
+      );
+      expect(annotatorMocks.deleteCitasQuotes).toHaveBeenCalledWith(
+        ['cite-42'],
+        expect.any(Object),
+      );
+    });
+    expect(annotatorMocks.saveConfig).toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Remove quote highlight' })).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('does not show the quote × for highlights without citeId', async () => {
+    annotatorMocks.config.booknotes = [
+      {
+        ...annotatorMocks.config.booknotes[0]!,
+        id: 'note-plain-1',
+        dictionaryEntryId: undefined,
+        citeId: undefined,
+        color: '#fef08a',
+      },
+    ];
+    render(<Annotator bookKey='book-1' />);
+    annotatorMocks.overlayerHitTest.mockReturnValue([
+      'epubcfi(/6/2!/4/2)',
+      new Range(),
+      { left: 20, top: 40, right: 80, bottom: 60 },
+    ]);
+
+    annotatorMocks.foliateHandlers.current.onLoad?.(
+      new CustomEvent('load', { detail: { doc: document, index: 0 } }),
+    );
+    fireEvent.mouseMove(document, { clientX: 50, clientY: 50 });
+
+    expect(screen.queryByRole('button', { name: 'Remove quote highlight' })).toBeNull();
+    expect(document.body.style.cursor).toBe('');
   });
 });
 

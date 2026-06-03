@@ -64,7 +64,11 @@ import ProofreadPopup from './ProofreadPopup';
 import { setProofreadRulesVisibility } from '@/app/reader/components/ProofreadRules';
 import ExportMarkdownDialog from './ExportMarkdownDialog';
 import { createDictionaryCaptureHighlight } from '../../utils/dictionaryCapture';
-import { captureQuoteFromSelection, resolveCitasHighlightColor } from '../../utils/citasCapture';
+import {
+  captureQuoteFromSelection,
+  resolveCitasHighlightColor,
+  softDeleteCitasHighlights,
+} from '../../utils/citasCapture';
 import Alert from '@/components/Alert';
 import ModalPortal from '@/components/ModalPortal';
 import { useFileSelector } from '@/hooks/useFileSelector';
@@ -84,6 +88,17 @@ interface PendingDictionaryDelete {
   noteId: string;
   entryId: string;
   word: string;
+}
+
+interface HoveredQuoteAnnotation {
+  noteId: string;
+  citeId: string;
+  rect: Pick<DOMRect, 'left' | 'top' | 'right' | 'bottom'>;
+}
+
+interface PendingQuoteDelete {
+  noteId: string;
+  citeId: string;
 }
 
 const dictionaryHighlightCloseButtonSize = 12;
@@ -152,6 +167,9 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     useState<HoveredDictionaryAnnotation | null>(null);
   const [pendingDictionaryDelete, setPendingDictionaryDelete] =
     useState<PendingDictionaryDelete | null>(null);
+  const [hoveredQuoteAnnotation, setHoveredQuoteAnnotation] =
+    useState<HoveredQuoteAnnotation | null>(null);
+  const [pendingQuoteDelete, setPendingQuoteDelete] = useState<PendingQuoteDelete | null>(null);
 
   const [selectedStyle, setSelectedStyle] = useState<HighlightStyle>(
     settings.globalReadSettings.highlightStyle,
@@ -369,6 +387,44 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     [bookKey, findAnnotationByValue, view],
   );
 
+  const handleQuoteHighlightHover = useCallback(
+    (doc: Document, index: number, event: MouseEvent) => {
+      const content = view?.renderer
+        ?.getContents?.()
+        ?.find(
+          (item: { index?: number; doc?: Document }) => item.index === index && item.doc === doc,
+        );
+      const [value, , rect] = content?.overlayer?.hitTest?.(event) ?? [];
+      if (!value || typeof value !== 'string' || value.startsWith('search#') || !rect) {
+        setHoveredQuoteAnnotation(null);
+        return;
+      }
+
+      const annotation = findAnnotationByValue(value);
+      if (!annotation?.citeId) {
+        setHoveredQuoteAnnotation(null);
+        return;
+      }
+
+      const frameRect = doc.defaultView?.frameElement?.getBoundingClientRect();
+      const offsetLeft = frameRect?.left ?? 0;
+      const offsetTop = frameRect?.top ?? 0;
+
+      doc.body.style.cursor = 'pointer';
+      setHoveredQuoteAnnotation({
+        noteId: annotation.id,
+        citeId: annotation.citeId,
+        rect: {
+          left: offsetLeft + rect.left,
+          top: offsetTop + rect.top,
+          right: offsetLeft + rect.right,
+          bottom: offsetTop + rect.bottom,
+        },
+      });
+    },
+    [bookKey, findAnnotationByValue, view],
+  );
+
   const onLoad = (event: Event) => {
     const detail = (event as CustomEvent).detail;
     const { doc, index } = detail;
@@ -420,6 +476,8 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
       handleDictionaryHighlightHover.bind(null, doc, index),
     );
     detail.doc?.addEventListener('mouseleave', () => setHoveredDictionaryAnnotation(null));
+    detail.doc?.addEventListener('mousemove', handleQuoteHighlightHover.bind(null, doc, index));
+    detail.doc?.addEventListener('mouseleave', () => setHoveredQuoteAnnotation(null));
     detail.doc?.addEventListener('pointercancel', handlePointerCancel.bind(null, doc, index));
     detail.doc?.addEventListener('pointerup', handlePointerUp.bind(null, doc, index));
     detail.doc?.addEventListener('selectionchange', handleSelectionchange.bind(null, doc, index));
@@ -1201,6 +1259,76 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
 
   const handleCancelDictionaryDelete = useCallback(() => setPendingDictionaryDelete(null), []);
 
+  const handleRemoveQuoteHighlight = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!hoveredQuoteAnnotation) return;
+
+      const latestConfig = getConfig(bookKey);
+      if (!latestConfig) return;
+      const { booknotes: storedNotes = [] } = latestConfig;
+      const note = storedNotes.find((note) => note.id === hoveredQuoteAnnotation.noteId);
+      if (!note || note.deletedAt) return;
+
+      setPendingQuoteDelete({
+        noteId: hoveredQuoteAnnotation.noteId,
+        citeId: hoveredQuoteAnnotation.citeId,
+      });
+    },
+    [bookKey, getConfig, hoveredQuoteAnnotation],
+  );
+
+  const handleConfirmQuoteDelete = useCallback(async () => {
+    if (!pendingQuoteDelete) return;
+
+    const latestConfig = getConfig(bookKey);
+    if (!latestConfig) return;
+    const { booknotes: storedNotes = [] } = latestConfig;
+    const note = storedNotes.find((note) => note.id === pendingQuoteDelete.noteId);
+    if (!note || note.deletedAt) return;
+
+    note.deletedAt = Date.now();
+    const views = getViewsById(bookKey.split('-')[0]!);
+    views.forEach((view) => removeBookNoteOverlays(view, note));
+    setHoveredQuoteAnnotation(null);
+    setPendingQuoteDelete(null);
+
+    try {
+      if (appService) {
+        const quotes = useCitasStore.getState().quotes;
+        await softDeleteCitasHighlights(
+          quotes,
+          [pendingQuoteDelete.citeId],
+          appService,
+          envConfig,
+          settings,
+        );
+        const citasService = await getCitasService(appService);
+        await useCitasStore.getState().deleteQuotes([pendingQuoteDelete.citeId], citasService);
+      }
+    } catch (err) {
+      console.warn('Failed to persist quote deletion:', err);
+    }
+
+    const updatedConfig = updateBooknotes(bookKey, storedNotes);
+    if (updatedConfig) {
+      saveConfig(envConfig, bookKey, updatedConfig, settings);
+    }
+  }, [
+    appService,
+    bookKey,
+    envConfig,
+    getConfig,
+    getViewsById,
+    pendingQuoteDelete,
+    saveConfig,
+    settings,
+    updateBooknotes,
+  ]);
+
+  const handleCancelQuoteDelete = useCallback(() => setPendingQuoteDelete(null), []);
+
   const handleTranslation = () => {
     if (!selection || !selection.text) return;
     setShowAnnotPopup(false);
@@ -1582,6 +1710,23 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
           ×
         </button>
       )}
+      {hoveredQuoteAnnotation && (
+        <button
+          type='button'
+          aria-label={_('Remove quote highlight')}
+          className='fixed z-50 flex h-3 w-3 items-center justify-center bg-transparent p-0 text-[11px] font-bold leading-none text-red-500 hover:text-red-600'
+          style={{
+            left: hoveredQuoteAnnotation.rect.right - dictionaryHighlightCloseButtonSize / 2 + 1.5,
+            top: Math.max(
+              0,
+              hoveredQuoteAnnotation.rect.top - dictionaryHighlightCloseButtonSize / 2,
+            ),
+          }}
+          onClick={handleRemoveQuoteHighlight}
+        >
+          ×
+        </button>
+      )}
       {pendingDictionaryDelete && (
         <ModalPortal>
           <div
@@ -1621,6 +1766,45 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
                 type='button'
                 className='btn btn-error btn-sm text-white'
                 onClick={handleConfirmDictionaryDelete}
+              >
+                {_('Sí, borrar')}
+              </button>
+            </div>
+          </div>
+        </ModalPortal>
+      )}
+      {pendingQuoteDelete && (
+        <ModalPortal>
+          <div
+            role='dialog'
+            aria-modal='true'
+            aria-label={_('Confirmar borrado de Cita')}
+            className='eink-bordered bg-base-100 mx-4 w-full max-w-sm rounded-2xl p-5 shadow-2xl'
+          >
+            <div className='mb-4 flex items-start gap-3'>
+              <div className='flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-500/10 text-red-500'>
+                <RiDeleteBinLine aria-hidden className='size-5' />
+              </div>
+              <div className='min-w-0'>
+                <h3 className='text-base font-semibold'>{_('Borrar cita')}</h3>
+                <p className='text-base-content/65 mt-1 text-sm leading-relaxed'>
+                  {_('¿Estás seguro de que quieres borrar esta cita?')}
+                </p>
+              </div>
+            </div>
+
+            <div className='flex justify-end gap-2'>
+              <button
+                type='button'
+                className='btn btn-ghost btn-sm eink-bordered'
+                onClick={handleCancelQuoteDelete}
+              >
+                {_('Cancelar')}
+              </button>
+              <button
+                type='button'
+                className='btn btn-error btn-sm text-white'
+                onClick={handleConfirmQuoteDelete}
               >
                 {_('Sí, borrar')}
               </button>
