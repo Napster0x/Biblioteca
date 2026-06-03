@@ -52,6 +52,33 @@ describe('citas capture client graph', () => {
     expect(helper).not.toMatch(/from ['"]node:/);
     expect(helper).not.toMatch(/from ['"](?:fs|path|crypto)['"]/);
   });
+
+  it('keeps the reader Citas path and service path browser-safe', () => {
+    const files = [
+      'src/app/reader/components/annotator/Annotator.tsx',
+      'src/app/reader/utils/citasCapture.ts',
+      'src/services/citas/citasServiceCache.ts',
+      'src/services/citas/CitasService.ts',
+    ];
+
+    for (const file of files) {
+      const source = readFileSync(resolve(process.cwd(), file), 'utf8');
+
+      expect(source, file).not.toMatch(/from ['"]node:/);
+      expect(source, file).not.toMatch(/from ['"](?:fs|path|crypto)['"]/);
+    }
+  });
+
+  it('does not add Phase 2 out-of-scope quote behavior', () => {
+    const annotator = readFileSync(
+      resolve(process.cwd(), 'src/app/reader/components/annotator/Annotator.tsx'),
+      'utf8',
+    );
+
+    expect(annotator).not.toMatch(/citeId[\s\S]{0,120}(delete|deletedAt|removeBookNoteOverlays)/i);
+    expect(annotator).not.toMatch(/(blink|parpadeo|flash)/i);
+    expect(annotator).not.toMatch(/citeId[\s\S]{0,120}router\.push/i);
+  });
 });
 
 describe('captureQuoteFromSelection', () => {

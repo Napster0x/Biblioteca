@@ -75,6 +75,7 @@ describe('dictionary capture flow', () => {
       note: '',
       page: 9,
     });
+    expect(highlight).not.toHaveProperty('citeId');
     expect(result).toEqual({ ok: true, entryId: 'entry-1', occurrenceId: 'occurrence-1' });
     expect(service.upsertEntry).toHaveBeenCalledWith({
       term: 'connection',

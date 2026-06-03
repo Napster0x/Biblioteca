@@ -509,6 +509,11 @@ describe('Annotator Citas quote capture wiring', () => {
       expect(annotatorMocks.addAnnotation).not.toHaveBeenCalledWith(
         expect.objectContaining({ citeId: expect.any(String) }),
       );
+      expect(annotatorMocks.updateBooknotes).not.toHaveBeenCalledWith(
+        'book-1',
+        expect.arrayContaining([expect.objectContaining({ citeId: expect.any(String) })]),
+      );
+      expect(annotatorMocks.saveConfig).not.toHaveBeenCalled();
     });
   });
 
@@ -529,8 +534,53 @@ describe('Annotator Citas quote capture wiring', () => {
       expect(annotatorMocks.addAnnotation).not.toHaveBeenCalledWith(
         expect.objectContaining({ citeId: expect.any(String) }),
       );
+      expect(annotatorMocks.updateBooknotes).not.toHaveBeenCalledWith(
+        'book-1',
+        expect.arrayContaining([expect.objectContaining({ citeId: expect.any(String) })]),
+      );
       expect(annotatorMocks.saveConfig).not.toHaveBeenCalled();
     });
+  });
+
+  it('does not add hover delete, navigation, or cascade behavior for quote highlights', async () => {
+    annotatorMocks.config.booknotes = [
+      {
+        ...annotatorMocks.config.booknotes[0]!,
+        id: 'note-quote-1',
+        dictionaryEntryId: undefined,
+        citeId: 'cite-1',
+        color: '#fecaca',
+      },
+    ];
+    render(<Annotator bookKey='book-1' />);
+    annotatorMocks.overlayerHitTest.mockReturnValue([
+      'epubcfi(/6/2!/4/2)',
+      new Range(),
+      { left: 20, top: 40, right: 80, bottom: 60 },
+    ]);
+
+    annotatorMocks.foliateHandlers.current.onLoad?.(
+      new CustomEvent('load', {
+        detail: { doc: document, index: 0 },
+      }),
+    );
+    fireEvent.mouseMove(document, { clientX: 50, clientY: 50 });
+    annotatorMocks.foliateHandlers.current.onShowAnnotation?.(
+      new CustomEvent('show-annotation', {
+        detail: {
+          value: 'epubcfi(/6/2!/4/2)',
+          index: 0,
+          range: new Range(),
+        },
+      }),
+    );
+
+    expect(screen.queryByRole('button', { name: 'Remove dictionary highlight' })).toBeNull();
+    expect(document.body.style.cursor).toBe('');
+    expect(annotatorMocks.router.push).not.toHaveBeenCalled();
+    expect(annotatorMocks.dictionaryService.deleteEntries).not.toHaveBeenCalled();
+    expect(annotatorMocks.removeBookNoteOverlays).not.toHaveBeenCalled();
+    expect(annotatorMocks.handleUpToPopup).toHaveBeenCalled();
   });
 });
 
