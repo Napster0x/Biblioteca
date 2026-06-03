@@ -140,6 +140,8 @@ export interface BookNote {
   color?: HighlightColor;
   /** Present only for reader highlights owned by a saved dictionary entry. */
   dictionaryEntryId?: string;
+  /** Present only for reader highlights owned by a saved Citas quote. */
+  citeId?: string;
   note: string;
   /**
    * If true, this annotation should be applied to every occurrence of `text`

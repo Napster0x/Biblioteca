@@ -25,6 +25,7 @@
   background-color: transparent;
 
   --scroll-bg-color: theme('colors.base-200');
+  --citas-highlight: #fecaca;
   --safe-area-inset-top: env(safe-area-inset-top);
   --safe-area-inset-right: env(safe-area-inset-right);
   --safe-area-inset-bottom: env(safe-area-inset-bottom);

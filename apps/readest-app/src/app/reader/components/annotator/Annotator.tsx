@@ -1474,7 +1474,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
           onClick: () => void handleDictionaryCapture(),
           iconClassName: 'text-sky-200',
         };
-      case 'placeholder-c':
+      case 'quote':
         return {
           tooltipText: 'C',
           Icon,

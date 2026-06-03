@@ -26,10 +26,11 @@ export const annotationToolButtons: AnnotationToolButton[] = createAnnotationToo
     quickAction: true,
   },
   {
-    type: 'placeholder-c',
-    label: _('Placeholder C'),
-    tooltip: _(''),
+    type: 'quote',
+    label: _('Citas'),
+    tooltip: _('Save selected text as a quote'),
     Icon: TbHexagonLetterC,
+    quickAction: true,
   },
   {
     type: 'annotate',
