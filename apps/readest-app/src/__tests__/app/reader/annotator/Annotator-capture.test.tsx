@@ -16,6 +16,23 @@ const annotatorMocks = vi.hoisted(() => {
     updateEntry: vi.fn(),
     deleteEntries: vi.fn().mockResolvedValue(undefined),
   };
+  const quote = {
+    id: 'cite-1',
+    bookHash: 'book-1',
+    bookTitle: 'Test Book',
+    bookAuthor: 'Test Author',
+    cfi: 'epubcfi(/6/2!/4/2)',
+    sectionHref: 'ch1.xhtml',
+    page: 1,
+    text: 'serendipity',
+    contextBefore: null,
+    contextAfter: null,
+    contentHash: 'hash-1',
+    createdAt: 1000,
+    updatedAt: null,
+  };
+  const citasService = { createQuote: vi.fn().mockResolvedValue(quote) };
+  const createQuoteInStore = vi.fn().mockResolvedValue(quote);
   const router = { push: vi.fn() };
   const booknote = {
     id: 'note-dict-1',
@@ -33,6 +50,7 @@ const annotatorMocks = vi.hoisted(() => {
   const saveConfig = vi.fn();
   const updateBooknotes = vi.fn((_key, notes) => ({ booknotes: notes }));
   const addAnnotation = vi.fn();
+  const getCFI = vi.fn().mockReturnValue('epubcfi(/6/2!/4/2)');
   const removeBookNoteOverlays = vi.fn();
   const handleUpToPopup = vi.fn();
   const overlayerHitTest = vi.fn();
@@ -45,11 +63,16 @@ const annotatorMocks = vi.hoisted(() => {
     saveConfig,
     updateBooknotes,
     addAnnotation,
+    getCFI,
     removeBookNoteOverlays,
     handleUpToPopup,
     overlayerHitTest,
     foliateHandlers,
     getDictionaryService: vi.fn().mockResolvedValue(dictionaryService),
+    quote,
+    citasService,
+    createQuoteInStore,
+    getCitasService: vi.fn().mockResolvedValue(citasService),
   };
 });
 
@@ -71,7 +94,7 @@ vi.mock('@/store/bookDataStore', () => ({
     saveConfig: annotatorMocks.saveConfig,
     updateBooknotes: annotatorMocks.updateBooknotes,
     getBookData: vi.fn().mockReturnValue({
-      book: { hash: 'book-1', primaryLanguage: 'en' },
+      book: { hash: 'book-1', title: 'Test Book', author: 'Test Author', primaryLanguage: 'en' },
       bookDoc: { metadata: { language: 'en' } },
     }),
   }),
@@ -92,7 +115,7 @@ vi.mock('@/store/readerStore', () => ({
   useReaderStore: () => ({
     getProgress: vi.fn().mockReturnValue({ page: 1, sectionHref: 'ch1.xhtml', location: {} }),
     getView: vi.fn().mockReturnValue({
-      getCFI: vi.fn().mockReturnValue('epubcfi(/6/2!/4/2)'),
+      getCFI: annotatorMocks.getCFI,
       addAnnotation: annotatorMocks.addAnnotation,
       renderer: {
         addEventListener: vi.fn(),
@@ -133,6 +156,16 @@ vi.mock('@/store/deviceStore', () => ({
 
 vi.mock('@/services/dictionary/dictionaryServiceCache', () => ({
   getDictionaryService: annotatorMocks.getDictionaryService,
+}));
+
+vi.mock('@/services/citas/citasServiceCache', () => ({
+  getCitasService: annotatorMocks.getCitasService,
+}));
+
+vi.mock('@/store/citasStore', () => ({
+  useCitasStore: {
+    getState: () => ({ createQuote: annotatorMocks.createQuoteInStore }),
+  },
 }));
 
 vi.mock('@/services/dictionaries/registry', () => ({
@@ -389,6 +422,11 @@ afterEach(() => {
     },
   ];
   annotatorMocks.overlayerHitTest.mockReset();
+  annotatorMocks.getCFI.mockReset();
+  annotatorMocks.getCFI.mockReturnValue('epubcfi(/6/2!/4/2)');
+  annotatorMocks.getCitasService.mockResolvedValue(annotatorMocks.citasService);
+  annotatorMocks.citasService.createQuote.mockResolvedValue(annotatorMocks.quote);
+  annotatorMocks.createQuoteInStore.mockResolvedValue(annotatorMocks.quote);
 });
 
 describe('Annotator dictionary capture wiring', () => {
@@ -405,6 +443,94 @@ describe('Annotator dictionary capture wiring', () => {
       expect(screen.getByTestId('capture-popup').textContent).toBe('Capture serendipity');
     });
     expect(annotatorMocks.getDictionaryService).toHaveBeenCalledWith(annotatorMocks.appService);
+  });
+});
+
+describe('Annotator Citas quote capture wiring', () => {
+  it('persists a Cite and draws a cite-linked quote highlight when the C action is clicked', async () => {
+    document.documentElement.style.setProperty('--citas-highlight', '#fecaca');
+    const gridCell = document.createElement('div');
+    gridCell.id = 'gridcell-book-1';
+    document.body.appendChild(gridCell);
+
+    render(<Annotator bookKey='book-1' />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'C' }));
+
+    await waitFor(() => {
+      expect(annotatorMocks.getCitasService).toHaveBeenCalledWith(annotatorMocks.appService);
+      expect(annotatorMocks.createQuoteInStore).toHaveBeenCalledWith(
+        {
+          bookHash: 'book-1',
+          bookTitle: 'Test Book',
+          bookAuthor: 'Test Author',
+          cfi: 'epubcfi(/6/2!/4/2)',
+          sectionHref: 'ch1.xhtml',
+          page: 1,
+          text: 'serendipity',
+          contextBefore: null,
+          contextAfter: null,
+        },
+        annotatorMocks.citasService,
+      );
+      expect(annotatorMocks.addAnnotation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'annotation',
+          cfi: 'epubcfi(/6/2!/4/2)',
+          style: 'highlight',
+          color: '#fecaca',
+          citeId: 'cite-1',
+          text: 'serendipity',
+        }),
+      );
+      expect(annotatorMocks.updateBooknotes).toHaveBeenCalledWith(
+        'book-1',
+        expect.arrayContaining([expect.objectContaining({ citeId: 'cite-1', color: '#fecaca' })]),
+      );
+      expect(annotatorMocks.saveConfig).toHaveBeenCalled();
+    });
+    expect(screen.queryByTestId('capture-popup')).toBeNull();
+    document.documentElement.style.removeProperty('--citas-highlight');
+  });
+
+  it('aborts without persistence or highlight when the selection has no CFI', async () => {
+    const gridCell = document.createElement('div');
+    gridCell.id = 'gridcell-book-1';
+    document.body.appendChild(gridCell);
+    annotatorMocks.getCFI.mockReturnValueOnce('');
+
+    render(<Annotator bookKey='book-1' />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'C' }));
+
+    await waitFor(() => {
+      expect(annotatorMocks.getCitasService).not.toHaveBeenCalled();
+      expect(annotatorMocks.createQuoteInStore).not.toHaveBeenCalled();
+      expect(annotatorMocks.addAnnotation).not.toHaveBeenCalledWith(
+        expect.objectContaining({ citeId: expect.any(String) }),
+      );
+    });
+  });
+
+  it('does not draw an orphan quote highlight when Citas persistence reports a duplicate', async () => {
+    const gridCell = document.createElement('div');
+    gridCell.id = 'gridcell-book-1';
+    document.body.appendChild(gridCell);
+    annotatorMocks.createQuoteInStore.mockRejectedValueOnce(
+      new Error('UNIQUE constraint failed: quotes.book_hash, quotes.content_hash'),
+    );
+
+    render(<Annotator bookKey='book-1' />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'C' }));
+
+    await waitFor(() => {
+      expect(annotatorMocks.createQuoteInStore).toHaveBeenCalled();
+      expect(annotatorMocks.addAnnotation).not.toHaveBeenCalledWith(
+        expect.objectContaining({ citeId: expect.any(String) }),
+      );
+      expect(annotatorMocks.saveConfig).not.toHaveBeenCalled();
+    });
   });
 });
 

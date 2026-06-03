@@ -18,6 +18,8 @@ import { useSidebarStore } from '@/store/sidebarStore';
 import { useCustomDictionaryStore } from '@/store/customDictionaryStore';
 import type { DictionaryService } from '@/services/dictionary/DictionaryService';
 import { getDictionaryService } from '@/services/dictionary/dictionaryServiceCache';
+import { getCitasService } from '@/services/citas/citasServiceCache';
+import { useCitasStore } from '@/store/citasStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useResponsiveSize } from '@/hooks/useResponsiveSize';
 import { useDeviceControlStore } from '@/store/deviceStore';
@@ -62,6 +64,7 @@ import ProofreadPopup from './ProofreadPopup';
 import { setProofreadRulesVisibility } from '@/app/reader/components/ProofreadRules';
 import ExportMarkdownDialog from './ExportMarkdownDialog';
 import { createDictionaryCaptureHighlight } from '../../utils/dictionaryCapture';
+import { captureQuoteFromSelection, resolveCitasHighlightColor } from '../../utils/citasCapture';
 import Alert from '@/components/Alert';
 import ModalPortal from '@/components/ModalPortal';
 import { useFileSelector } from '@/hooks/useFileSelector';
@@ -162,6 +165,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
   // pending action runs on touchend so popups don't open under an active touch.
   const deferredQuickActionRef = useRef(createDeferredActionState());
   const dictServiceRef = useRef<DictionaryService | null>(null);
+  const isCapturingQuoteRef = useRef(false);
 
   const showingPopup =
     showAnnotPopup ||
@@ -671,6 +675,9 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
         case 'dictionary':
           void handleDictionaryCapture();
           break;
+        case 'quote':
+          void handleQuoteCapture();
+          break;
         case 'translate':
           handleTranslation();
           break;
@@ -1004,6 +1011,75 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     setShowAnnotPopup(false);
     setSelection({ ...selection, cfi, page: progress.page });
     setShowCapturePopup(true);
+  };
+
+  const handleQuoteCapture = async () => {
+    if (!selection || !selection.text || !appService || isCapturingQuoteRef.current) return;
+
+    const cfi = view?.getCFI(selection.index, selection.range);
+    if (!cfi) {
+      eventDispatcher.dispatch('toast', {
+        type: 'warning',
+        message: _('Select text with a valid location to save a quote.'),
+        timeout: 2500,
+      });
+      return;
+    }
+
+    isCapturingQuoteRef.current = true;
+    try {
+      const citasService = await getCitasService(appService);
+      const createQuote = useCitasStore.getState().createQuote;
+      const result = await captureQuoteFromSelection({
+        selectedText: selection.text,
+        cfi,
+        page: progress.page,
+        sectionHref: progress.sectionHref,
+        book: {
+          hash: bookData.book?.hash ?? bookKey.split('-')[0]!,
+          title: bookData.book?.title,
+          author: bookData.book?.author,
+        },
+        contextBefore: null,
+        contextAfter: null,
+        service: {
+          createQuote: (input) => createQuote(input, citasService),
+        },
+        noteId: uniqueId(),
+        timestamp: Date.now(),
+        color: resolveCitasHighlightColor(),
+      });
+
+      if (!result.ok) {
+        eventDispatcher.dispatch('toast', {
+          type: result.reason === 'duplicate' ? 'info' : 'warning',
+          message: result.message ?? _('Could not save quote.'),
+          timeout: 2500,
+        });
+        return;
+      }
+
+      const { booknotes: annotations = [] } = config;
+      annotations.push(result.highlight);
+      const views = getViewsById(bookKey.split('-')[0]!);
+      views.forEach((view) => view?.addAnnotation(result.highlight));
+      setSelection({ ...selection, cfi, page: result.highlight.page, annotated: true });
+      setShowAnnotPopup(false);
+
+      const updatedConfig = updateBooknotes(bookKey, annotations);
+      if (updatedConfig) {
+        saveConfig(envConfig, bookKey, updatedConfig, settings);
+      }
+    } catch (error) {
+      console.warn('Failed to save quote:', error);
+      eventDispatcher.dispatch('toast', {
+        type: 'warning',
+        message: _('Could not save quote.'),
+        timeout: 2500,
+      });
+    } finally {
+      isCapturingQuoteRef.current = false;
+    }
   };
 
   const handleCreateCaptureHighlight = useCallback(
@@ -1478,7 +1554,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
         return {
           tooltipText: 'C',
           Icon,
-          onClick: () => setShowAnnotPopup(false),
+          onClick: () => void handleQuoteCapture(),
           iconClassName: 'text-red-200',
         };
       default:
