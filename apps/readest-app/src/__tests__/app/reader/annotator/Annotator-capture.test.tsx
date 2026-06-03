@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/re
 import type { ReactNode } from 'react';
 
 import { createDictionaryCaptureHighlight } from '@/app/reader/utils/dictionaryCapture';
+import { eventDispatcher } from '@/utils/event';
 
 // ---------------------------------------------------------------------------
 // Minimal mocks required for Annotator to load
@@ -55,6 +56,7 @@ const annotatorMocks = vi.hoisted(() => {
   const handleUpToPopup = vi.fn();
   const overlayerHitTest = vi.fn();
   const deleteCitasQuotes = vi.fn().mockResolvedValue(undefined);
+  const removeQuotesFromState = vi.fn();
   const citasQuotes: (typeof quote)[] = [];
   const foliateHandlers: { current: Record<string, (event: Event) => void> } = { current: {} };
   return {
@@ -70,6 +72,7 @@ const annotatorMocks = vi.hoisted(() => {
     handleUpToPopup,
     overlayerHitTest,
     deleteCitasQuotes,
+    removeQuotesFromState,
     citasQuotes,
     foliateHandlers,
     getDictionaryService: vi.fn().mockResolvedValue(dictionaryService),
@@ -181,6 +184,7 @@ vi.mock('@/store/citasStore', () => ({
     getState: () => ({
       createQuote: annotatorMocks.createQuoteInStore,
       deleteQuotes: annotatorMocks.deleteCitasQuotes,
+      removeQuotesFromState: annotatorMocks.removeQuotesFromState,
       quotes: annotatorMocks.citasQuotes,
     }),
   },
@@ -343,7 +347,30 @@ vi.mock('@/services/environment', async () => {
 // Mock popup components to avoid dragging in complex deps
 vi.mock('@/components/Popup', () => ({ default: () => null }));
 vi.mock('@/components/Dialog', () => ({ default: () => null }));
-vi.mock('@/components/Alert', () => ({ default: () => null }));
+vi.mock('@/components/Alert', () => ({
+  default: ({
+    onConfirm,
+    onCancel,
+    title,
+    message,
+  }: {
+    onConfirm: () => void;
+    onCancel: () => void;
+    title: string;
+    message: string;
+  }) => (
+    <div data-testid='alert-dialog'>
+      <h3>{title}</h3>
+      <p>{message}</p>
+      <button data-testid='alert-confirm' onClick={onConfirm}>
+        Confirm
+      </button>
+      <button data-testid='alert-cancel' onClick={onCancel}>
+        Cancel
+      </button>
+    </div>
+  ),
+}));
 vi.mock('@/components/ModalPortal', () => ({
   default: ({ children }: { children: ReactNode }) => children,
 }));
@@ -446,6 +473,7 @@ afterEach(() => {
   annotatorMocks.citasService.createQuote.mockResolvedValue(annotatorMocks.quote);
   annotatorMocks.createQuoteInStore.mockResolvedValue(annotatorMocks.quote);
   annotatorMocks.deleteCitasQuotes.mockResolvedValue(undefined);
+  annotatorMocks.removeQuotesFromState.mockReset();
   annotatorMocks.citasQuotes.length = 0;
 });
 
@@ -899,5 +927,101 @@ describe('createDictionaryCaptureHighlight', () => {
     expect(highlight.text).toBe('con-\nnection');
     expect(highlight.style).toBe('underline');
     expect(highlight.color).toBe('blue');
+  });
+});
+
+describe('Annotator clear-annotations Citas sync', () => {
+  it('calls removeQuotesFromState for each citeId annotation when clear-annotations is confirmed', async () => {
+    annotatorMocks.config.booknotes = [
+      {
+        ...annotatorMocks.config.booknotes[0]!,
+        id: 'note-cite-a',
+        dictionaryEntryId: undefined,
+        citeId: 'cite-a',
+        color: '#fecaca',
+      },
+      {
+        ...annotatorMocks.config.booknotes[0]!,
+        id: 'note-cite-b',
+        dictionaryEntryId: undefined,
+        citeId: 'cite-b',
+        color: '#fecaca',
+      },
+      {
+        ...annotatorMocks.config.booknotes[0]!,
+        id: 'note-plain-1',
+        dictionaryEntryId: undefined,
+        citeId: undefined,
+        color: '#fef08a',
+      },
+      {
+        ...annotatorMocks.config.booknotes[0]!,
+        id: 'note-dict-1',
+        dictionaryEntryId: 'entry-1',
+        citeId: undefined,
+        color: '#bae6fd',
+      },
+    ];
+    const gridCell = document.createElement('div');
+    gridCell.id = 'gridcell-book-1';
+    document.body.appendChild(gridCell);
+
+    render(<Annotator bookKey='book-1' />);
+
+    // Get the clear-annotations handler registered via eventDispatcher.on
+    const onMock = vi.mocked(eventDispatcher.on);
+    const clearCall = onMock.mock.calls.find(
+      ([eventName]: [string]) => eventName === 'clear-annotations',
+    );
+    expect(clearCall).toBeTruthy();
+    const handler = clearCall![1] as (event: CustomEvent) => void;
+    handler(new CustomEvent('clear-annotations', { detail: { bookKey: 'book-1' } }));
+
+    // The Alert confirm dialog should appear
+    await waitFor(() => {
+      expect(screen.getByTestId('alert-dialog')).toBeTruthy();
+    });
+
+    // Click confirm
+    fireEvent.click(screen.getByTestId('alert-confirm'));
+
+    await waitFor(() => {
+      expect(annotatorMocks.removeQuotesFromState).toHaveBeenCalledWith(['cite-a', 'cite-b']);
+    });
+  });
+
+  it('does not call removeQuotesFromState when no citeId annotations are cleared', async () => {
+    annotatorMocks.config.booknotes = [
+      {
+        ...annotatorMocks.config.booknotes[0]!,
+        id: 'note-plain-2',
+        dictionaryEntryId: undefined,
+        citeId: undefined,
+        color: '#fef08a',
+      },
+    ];
+    const gridCell = document.createElement('div');
+    gridCell.id = 'gridcell-book-1';
+    document.body.appendChild(gridCell);
+
+    render(<Annotator bookKey='book-1' />);
+
+    const onMock = vi.mocked(eventDispatcher.on);
+    const clearCall = onMock.mock.calls.find(
+      ([eventName]: [string]) => eventName === 'clear-annotations',
+    );
+    expect(clearCall).toBeTruthy();
+    const handler = clearCall![1] as (event: CustomEvent) => void;
+    handler(new CustomEvent('clear-annotations', { detail: { bookKey: 'book-1' } }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('alert-dialog')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('alert-confirm'));
+
+    await waitFor(() => {
+      expect(annotatorMocks.removeQuotesFromState).not.toHaveBeenCalled();
+    });
   });
 });

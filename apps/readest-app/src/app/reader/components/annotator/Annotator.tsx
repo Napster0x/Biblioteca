@@ -1607,6 +1607,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     const now = Date.now();
     const views = getViewsById(bookKey.split('-')[0]!);
     let cleared = 0;
+    const clearedCiteIds: string[] = [];
     storedNotes.forEach((note) => {
       if (note.type === 'annotation' && !note.deletedAt) {
         note.deletedAt = now;
@@ -1614,6 +1615,9 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
         // Drop the rendered overlay so the page reflects the cleared
         // state immediately without waiting for a relocate.
         views.forEach((view) => removeBookNoteOverlays(view, note));
+        if (note.citeId) {
+          clearedCiteIds.push(note.citeId);
+        }
       }
     });
     if (cleared === 0) return;
@@ -1625,6 +1629,22 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     // Reset any browse-mode state in the annotations sidebar tab so it
     // doesn't keep paging through stale (now soft-deleted) entries.
     clearBooknotesNav(bookKey);
+
+    // Batch-remove associated Citas entries for any cleared citeId highlights
+    if (clearedCiteIds.length > 0) {
+      try {
+        useCitasStore.getState().removeQuotesFromState(clearedCiteIds);
+      } catch (err) {
+        console.warn('Failed to batch-remove cites from state:', err);
+      }
+      if (appService) {
+        getCitasService(appService)
+          .then((citasService) =>
+            useCitasStore.getState().deleteQuotes(clearedCiteIds, citasService),
+          )
+          .catch((err) => console.warn('Failed to batch-delete cites:', err));
+      }
+    }
 
     eventDispatcher.dispatch('toast', {
       type: 'info',

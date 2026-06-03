@@ -10,10 +10,12 @@ import { useSettingsStore } from '@/store/settingsStore';
 import { useReaderStore } from '@/store/readerStore';
 import { useNotebookStore } from '@/store/notebookStore';
 import { useBookDataStore } from '@/store/bookDataStore';
+import { useCitasStore } from '@/store/citasStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useResponsiveSize } from '@/hooks/useResponsiveSize';
 import { eventDispatcher } from '@/utils/event';
 import { removeBookNoteOverlays } from '../../utils/annotatorUtil';
+import { getCitasService } from '@/services/citas/citasServiceCache';
 import useScrollToItem from '../../hooks/useScrollToItem';
 import TextButton from '@/components/TextButton';
 import TextEditor, { TextEditorRef } from '@/components/TextEditor';
@@ -27,7 +29,7 @@ interface BooknoteItemProps {
 
 const BooknoteItem: React.FC<BooknoteItemProps> = ({ bookKey, item, isNearest, onClick }) => {
   const _ = useTranslation();
-  const { envConfig } = useEnv();
+  const { envConfig, appService } = useEnv();
   const { settings } = useSettingsStore();
   const { getConfig, saveConfig, updateBooknotes } = useBookDataStore();
   const { getProgress, getView, getViewsById } = useReaderStore();
@@ -72,6 +74,22 @@ const BooknoteItem: React.FC<BooknoteItemProps> = ({ bookKey, item, isNearest, o
     const updatedConfig = updateBooknotes(bookKey, booknotes);
     if (updatedConfig) {
       saveConfig(envConfig, bookKey, updatedConfig, settings);
+    }
+
+    // Sync deletion to Citas store if this note has a citeId
+    if (note.citeId) {
+      try {
+        useCitasStore.getState().removeQuotesFromState([note.citeId]);
+      } catch (err) {
+        console.warn('Failed to remove quote from Citas state:', err);
+      }
+      if (appService) {
+        getCitasService(appService)
+          .then((citasService) =>
+            useCitasStore.getState().deleteQuotes([note.citeId], citasService),
+          )
+          .catch((err) => console.warn('Failed to persist sidebar quote deletion:', err));
+      }
     }
   };
 

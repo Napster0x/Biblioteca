@@ -135,10 +135,29 @@ describe('citas capture client graph', () => {
 
     // Phase 3: quote highlights now support hover delete
     expect(annotator).toMatch(/citeId[\s\S]{0,120}(delete|deletedAt|removeBookNoteOverlays)/i);
+    // Phase 4: clear-all batches citeId deletes via removeQuotesFromState
+    expect(annotator).toMatch(/clearedCiteIds[\s\S]{0,80}removeQuotesFromState/);
     // Phase 4 not yet: no blink/parpadeo/flash for quote navigation
     expect(annotator).not.toMatch(/(blink|parpadeo|flash)/i);
     // Phase 4 not yet: no citeId-based router.push for Citas nav
     expect(annotator).not.toMatch(/citeId[\s\S]{0,120}router\.push/i);
+  });
+});
+
+describe('Phase 4 sidebar delete sync guard', () => {
+  it('BooknoteItem deleteNote with citeId calls useCitasStore removeQuotesFromState', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/app/reader/components/sidebar/BooknoteItem.tsx'),
+      'utf8',
+    );
+
+    // Phase 4: sidebar delete with citeId syncs to Citas
+    expect(source).toMatch(/useCitasStore/);
+    expect(source).toMatch(/removeQuotesFromState/);
+    // Blocks Phase 5: no blink/parpadeo/flash for quote navigation
+    expect(source).not.toMatch(/(blink|parpadeo|flash)/i);
+    // Blocks Phase 5: no citeId-based router.push for Citas nav
+    expect(source).not.toMatch(/citeId[\s\S]{0,80}router\.push/i);
   });
 });
 
