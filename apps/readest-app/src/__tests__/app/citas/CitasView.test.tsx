@@ -16,6 +16,9 @@ const mocks = vi.hoisted(() => ({
   cancelSelectMode: vi.fn(),
   toggleSelectedQuote: vi.fn(),
   getCitasService: vi.fn(),
+  goTo: vi.fn(),
+  setPreviewMode: vi.fn(),
+  navigateToReader: vi.fn(),
   appService: { platform: 'test' },
 }));
 
@@ -23,6 +26,7 @@ let mockQuotes: Cite[] = [];
 let mockIsLoading = false;
 let mockIsSelectMode = false;
 let mockSelectedQuoteIds: string[] = [];
+let mockViewStates: Record<string, { view?: { goTo: (cfi: string) => void } }> = {};
 
 interface MockCitasStoreState {
   quotes: Cite[];
@@ -50,6 +54,23 @@ vi.mock('@/context/EnvContext', () => ({
 vi.mock('@/services/citas/citasServiceCache', () => ({
   getCitasService: mocks.getCitasService,
 }));
+
+vi.mock('@/store/readerStore', () => ({
+  useReaderStore: {
+    getState: () => ({
+      viewStates: mockViewStates,
+      setPreviewMode: mocks.setPreviewMode,
+    }),
+  },
+}));
+
+vi.mock('@/utils/nav', async () => {
+  const actual = await vi.importActual<typeof import('@/utils/nav')>('@/utils/nav');
+  return {
+    ...actual,
+    navigateToReader: mocks.navigateToReader,
+  };
+});
 
 vi.mock('@/store/citasStore', () => ({
   useCitasStore: (selector: (s: MockCitasStoreState) => unknown) =>
@@ -104,9 +125,13 @@ describe('CitasGrid', () => {
     mockIsLoading = false;
     mockIsSelectMode = false;
     mockSelectedQuoteIds = [];
+    mockViewStates = {};
     mocks.push.mockReset();
     mocks.replace.mockReset();
     mocks.back.mockReset();
+    mocks.goTo.mockReset();
+    mocks.setPreviewMode.mockReset();
+    mocks.navigateToReader.mockReset();
     mocks.loadQuotes.mockReset();
     mocks.searchQuotes.mockReset();
     mocks.createQuote.mockReset();
@@ -172,15 +197,30 @@ describe('CitasGrid', () => {
     expect(searchInput.value).toBe('Borges');
   });
 
-  it('renders loaded quotes as CitasTile cards with accessible quote labels', () => {
-    mockQuotes = [makeQuote()];
+  it('renders loaded quotes as full-width rows with full text and title-author metadata', () => {
+    const longText =
+      'El universo es una vasta biblioteca compuesta de galerías hexagonales que se lee completa en una fila.';
+    mockQuotes = [makeQuote({ text: longText, cfi: 'epubcfi(/6/2)' })];
 
     render(<CitasGrid service={mockService} />);
 
-    expect(
-      screen.getByRole('link', { name: 'Quote: El universo es una vasta biblioteca.' }),
-    ).toBeTruthy();
-    expect(screen.getByText('El universo es una vasta biblioteca.')).toBeTruthy();
+    expect(screen.getByRole('list', { name: 'Quotes' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: `Quote: ${longText}` })).toBeTruthy();
+    expect(screen.getByText(longText)).toBeTruthy();
+    expect(screen.getByText('Ficciones ~ Borges')).toBeTruthy();
+  });
+
+  it('keeps existing text and author search results in the row layout', () => {
+    mockQuotes = [
+      makeQuote({ id: 'cite-1', text: 'Biblioteca secreta', bookAuthor: 'Borges' }),
+      makeQuote({ id: 'cite-2', text: 'Jardín visible', bookAuthor: 'Bioy' }),
+    ];
+
+    render(<CitasGrid service={mockService} />);
+    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'borges' } });
+
+    expect(screen.getByText('Biblioteca secreta')).toBeTruthy();
+    expect(screen.queryByText('Jardín visible')).toBeNull();
   });
 
   it('wires CitasTile selection clicks through the citas store in select mode', () => {

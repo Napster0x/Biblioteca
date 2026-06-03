@@ -132,9 +132,11 @@ export default function CitasGrid({ service }: CitasGridProps) {
             )}
           </div>
         ) : (
-          <div className='grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-6'>
+          <div className='flex flex-col gap-3' role='list' aria-label={_('Quotes')}>
             {filteredQuotes.map((quote) => (
-              <CitasTile key={quote.id} quote={quote} />
+              <div key={quote.id} role='listitem'>
+                <CitasTile quote={quote} />
+              </div>
             ))}
           </div>
         )}

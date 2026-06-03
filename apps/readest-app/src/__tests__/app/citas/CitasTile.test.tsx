@@ -1,14 +1,35 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Cite } from '@/types/citas';
 
 const mocks = vi.hoisted(() => ({
+  goTo: vi.fn(),
+  push: vi.fn(),
+  setPreviewMode: vi.fn(),
+  navigateToReader: vi.fn(),
   toggleSelectedQuote: vi.fn(),
 }));
 
 let mockIsSelectMode = false;
 let mockSelectedQuoteIds: string[] = [];
+let mockViewStates: Record<string, { view?: { goTo: (cfi: string) => void } }> = {};
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: mocks.push }),
+}));
+
+vi.mock('@/store/readerStore', () => ({
+  useReaderStore: {
+    getState: () => ({
+      viewStates: mockViewStates,
+      setPreviewMode: mocks.setPreviewMode,
+    }),
+  },
+}));
+
+vi.mock('@/utils/nav', () => ({
+  navigateToReader: mocks.navigateToReader,
+}));
 
 vi.mock('@/store/citasStore', () => ({
   useCitasStore: (selector: (state: unknown) => unknown) =>
@@ -22,14 +43,6 @@ vi.mock('@/store/citasStore', () => ({
 vi.mock('@/hooks/useTranslation', () => ({
   useTranslation: () => (key: string, options?: Record<string, string>) =>
     key.replace('{{text}}', options?.['text'] ?? ''),
-}));
-
-vi.mock('next/link', () => ({
-  default: ({ href, children, ...props }: { href: string; children: ReactNode }) => (
-    <a href={href} {...props}>
-      {children}
-    </a>
-  ),
 }));
 
 import CitasTile from '@/app/citas/CitasTile';
@@ -57,6 +70,11 @@ describe('CitasTile', () => {
   beforeEach(() => {
     mockIsSelectMode = false;
     mockSelectedQuoteIds = [];
+    mockViewStates = {};
+    mocks.goTo.mockReset();
+    mocks.push.mockReset();
+    mocks.setPreviewMode.mockReset();
+    mocks.navigateToReader.mockReset();
     mocks.toggleSelectedQuote.mockReset();
   });
 
@@ -64,23 +82,56 @@ describe('CitasTile', () => {
     cleanup();
   });
 
-  it('renders quote text with book metadata and an accessible label in default mode', () => {
-    render(<CitasTile quote={makeQuote()} />);
+  it('renders the full quote text and exact title-author metadata in default mode', () => {
+    const longText =
+      'El universo es una vasta biblioteca compuesta de galerías hexagonales que no debe quedar cortada ni escondida en una tarjeta cuadrada.';
 
-    const tile = screen.getByRole('link', { name: 'Quote: El universo es una vasta biblioteca.' });
-    expect(tile.getAttribute('href')).toBe('/citas');
-    expect(screen.getByText('El universo es una vasta biblioteca.')).toBeTruthy();
-    expect(screen.getByText('— Borges')).toBeTruthy();
-    expect(screen.getByText('Ficciones')).toBeTruthy();
+    render(<CitasTile quote={makeQuote({ text: longText })} />);
+
+    expect(screen.getByRole('button', { name: `Quote: ${longText}` })).toBeTruthy();
+    expect(screen.getByText(longText)).toBeTruthy();
+    expect(screen.getByText('Ficciones ~ Borges')).toBeTruthy();
   });
 
-  it('does not navigate to a source book CFI in Phase 1 default mode', () => {
+  it('does not apply truncation classes to the quote text or metadata', () => {
+    const { container } = render(<CitasTile quote={makeQuote()} />);
+
+    const renderedClasses = container.innerHTML;
+    expect(renderedClasses).not.toContain('line-clamp');
+    expect(renderedClasses).not.toContain('truncate');
+  });
+
+  it('navigates to the source book CFI and previews an already-open reader view', () => {
+    mockViewStates = { 'book-1-main': { view: { goTo: mocks.goTo } } };
+
     render(<CitasTile quote={makeQuote()} />);
 
-    const tile = screen.getByRole('link', { name: 'Quote: El universo es una vasta biblioteca.' });
-    expect(tile.getAttribute('href')).toBe('/citas');
-    expect(tile.getAttribute('href')).not.toContain('/reader');
-    expect(tile.getAttribute('href')).not.toContain('epubcfi');
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Quote: El universo es una vasta biblioteca.' }),
+    );
+
+    expect(mocks.goTo).toHaveBeenCalledWith('epubcfi(/6/2)');
+    expect(mocks.setPreviewMode).toHaveBeenCalledWith('book-1-main', true);
+    expect(mocks.navigateToReader).toHaveBeenCalledWith(
+      { push: mocks.push },
+      ['book-1'],
+      'cfi=epubcfi(%2F6%2F2)',
+    );
+  });
+
+  it('marks missing-CFI quotes disabled and keeps activation a no-op', () => {
+    render(<CitasTile quote={makeQuote({ cfi: null })} />);
+
+    const tile = screen.getByRole('button', {
+      name: 'Quote unavailable: El universo es una vasta biblioteca.',
+    });
+    expect((tile as HTMLButtonElement).disabled).toBe(true);
+    expect(tile.getAttribute('aria-disabled')).toBe('true');
+
+    fireEvent.click(tile);
+
+    expect(mocks.goTo).not.toHaveBeenCalled();
+    expect(mocks.navigateToReader).not.toHaveBeenCalled();
   });
 
   it('toggles the quote selection from select mode instead of rendering a link', () => {
@@ -93,7 +144,7 @@ describe('CitasTile', () => {
     );
 
     expect(mocks.toggleSelectedQuote).toHaveBeenCalledWith('cite-1');
-    expect(screen.queryByRole('link')).toBeNull();
+    expect(mocks.navigateToReader).not.toHaveBeenCalled();
   });
 
   it('announces selected quotes as pressed in select mode', () => {

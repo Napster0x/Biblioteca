@@ -1,11 +1,13 @@
 'use client';
 
 import clsx from 'clsx';
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { PiCheckCircle } from 'react-icons/pi';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useCitasStore } from '@/store/citasStore';
+import { useReaderStore } from '@/store/readerStore';
 import type { Cite } from '@/types/citas';
+import { navigateToReader } from '@/utils/nav';
 
 interface CitasTileProps {
   quote: Cite;
@@ -13,18 +15,37 @@ interface CitasTileProps {
 
 export default function CitasTile({ quote }: CitasTileProps) {
   const _ = useTranslation();
+  const router = useRouter();
   const isSelectMode = useCitasStore((s) => s.isSelectMode);
   const selectedQuoteIds = useCitasStore((s) => s.selectedQuoteIds);
   const toggleSelectedQuote = useCitasStore((s) => s.toggleSelectedQuote);
   const isSelected = selectedQuoteIds.includes(quote.id);
+  const canNavigate = Boolean(quote.bookHash && quote.cfi);
   const quoteLabel = _('Quote: {{text}}', { text: quote.text });
   const tileClassName = clsx(
-    '@container',
-    'eink-bordered bg-base-100 group relative aspect-square overflow-hidden rounded-2xl text-left border-2 border-black hover:border-transparent transition-[border-color] duration-500 not-eink:drop-shadow-[0_0_14px_rgb(0_0_0_/_0.25)]',
+    'eink-bordered bg-base-100 group relative w-full rounded-2xl p-4 text-left transition-colors not-eink:shadow-[0_0_16px_rgb(0_0_0_/_0.22)]',
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-base-content/15',
     isSelectMode && 'transition-colors duration-150 hover:bg-base-200',
+    !isSelectMode && canNavigate && 'hover:bg-base-300/40',
+    !isSelectMode && !canNavigate && 'cursor-not-allowed opacity-60',
     isSelected && 'border-2 border-base-content',
   );
+
+  const handleGoToReader = () => {
+    if (!quote.bookHash || !quote.cfi) return;
+
+    const { viewStates, setPreviewMode } = useReaderStore.getState();
+    const openEntry = Object.entries(viewStates).find(
+      ([bookKey, state]) => bookKey.startsWith(quote.bookHash) && state.view,
+    );
+    if (openEntry) {
+      const [bookKey, state] = openEntry;
+      state.view?.goTo(quote.cfi);
+      setPreviewMode(bookKey, true);
+    }
+
+    navigateToReader(router, [quote.bookHash], `cfi=${encodeURIComponent(quote.cfi)}`);
+  };
 
   if (isSelectMode) {
     return (
@@ -41,10 +62,25 @@ export default function CitasTile({ quote }: CitasTileProps) {
   }
 
   return (
-    <Link href='/citas' className={tileClassName} aria-label={quoteLabel}>
+    <button
+      type='button'
+      className={tileClassName}
+      aria-label={canNavigate ? quoteLabel : _('Quote unavailable: {{text}}', { text: quote.text })}
+      aria-disabled={!canNavigate}
+      disabled={!canNavigate}
+      title={!canNavigate ? _('Source location unavailable') : undefined}
+      onClick={handleGoToReader}
+    >
       <TileContent quote={quote} isSelected={false} selectedLabel={_('Selected')} />
-    </Link>
+    </button>
   );
+}
+
+function formatBookMetadata(quote: Cite): string | null {
+  const title = quote.bookTitle?.trim();
+  const author = quote.bookAuthor?.trim();
+  if (title && author) return `${title} ~ ${author}`;
+  return title || author || null;
 }
 
 function TileContent({
@@ -56,24 +92,15 @@ function TileContent({
   isSelected: boolean;
   selectedLabel: string;
 }) {
+  const metadata = formatBookMetadata(quote);
+
   return (
     <>
-      <div
-        aria-hidden
-        className='absolute inset-0 bg-base-100 transition-colors group-hover:bg-base-200'
-      />
-      <div className='relative flex h-full flex-col justify-between p-4'>
-        <blockquote
-          className='line-clamp-3 font-serif text-base font-semibold leading-snug text-base-content'
-          data-citas-sizing='cqi'
-          style={{ fontSize: 'min(7cqi, 1.1rem)' }}
-        >
+      <div className='relative flex flex-col gap-3 text-center'>
+        <blockquote className='font-serif text-base font-light italic leading-relaxed tracking-[0.01em] text-base-content'>
           {quote.text}
         </blockquote>
-        <div className='mt-3 space-y-1'>
-          {quote.bookAuthor && <p className='text-sm opacity-70'>— {quote.bookAuthor}</p>}
-          {quote.bookTitle && <p className='line-clamp-1 text-xs opacity-50'>{quote.bookTitle}</p>}
-        </div>
+        {metadata && <p className='font-serif text-base-content/70 text-sm italic'>{metadata}</p>}
       </div>
       {isSelected && (
         <span className='eink-bordered absolute start-2 top-2 inline-flex items-center gap-1 rounded-full border border-base-content bg-base-100 px-2 py-1 text-xs font-semibold text-base-content'>
