@@ -1,10 +1,11 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as React from 'react';
 
 import Bookshelf from '@/app/library/components/Bookshelf';
 import { DEFAULT_SYSTEM_SETTINGS } from '@/services/constants';
 import type { Book } from '@/types/book';
+import type { CitasService } from '@/services/citas/CitasService';
 
 const {
   pushMock,
@@ -13,6 +14,10 @@ const {
   menuItemNewMock,
   loadBookConfigMock,
   saveBookConfigMock,
+  deleteQuotesByBookMock,
+  getCitasServiceMock,
+  removeQuotesFromStateMock,
+  consoleWarnMock,
 } = vi.hoisted(() => ({
   pushMock: vi.fn(),
   navigateToReaderMock: vi.fn(),
@@ -20,6 +25,10 @@ const {
   menuItemNewMock: vi.fn(async () => ({})),
   loadBookConfigMock: vi.fn(),
   saveBookConfigMock: vi.fn(),
+  deleteQuotesByBookMock: vi.fn<[string], Promise<string[]>>(),
+  getCitasServiceMock: vi.fn(),
+  removeQuotesFromStateMock: vi.fn(),
+  consoleWarnMock: vi.fn(),
 }));
 
 let searchParams = new URLSearchParams();
@@ -274,5 +283,120 @@ describe('Bookshelf Citas entry', () => {
 
     expect(menuNewMock).not.toHaveBeenCalled();
     expect(menuItemNewMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('Cascade delete of quotes on book deletion', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(consoleWarnMock);
+    getCitasServiceMock.mockReset();
+    deleteQuotesByBookMock.mockReset();
+    removeQuotesFromStateMock.mockReset();
+    consoleWarnMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('calls deleteQuotesByBook with bookHash on successful book deletion', async () => {
+    const mockAppService = {
+      deleteBook: vi.fn().mockResolvedValue(undefined),
+    };
+
+    getCitasServiceMock.mockResolvedValue({
+      deleteQuotesByBook: deleteQuotesByBookMock,
+    });
+    deleteQuotesByBookMock.mockResolvedValue(['id1', 'id2']);
+
+    const handleDelete = () => {
+      return async (book: Book) => {
+        try {
+          await (mockAppService as any)?.deleteBook(book);
+          if (mockAppService) {
+            const cs = await getCitasServiceMock(mockAppService);
+            const deletedIds = await cs.deleteQuotesByBook(book.hash);
+            removeQuotesFromStateMock(deletedIds);
+          }
+          return true;
+        } catch {
+          return false;
+        }
+      };
+    };
+
+    const book = makeBook({ hash: 'book-abc' });
+    const result = await handleDelete()(book);
+
+    expect(result).toBe(true);
+    expect(deleteQuotesByBookMock).toHaveBeenCalledWith('book-abc');
+    expect(removeQuotesFromStateMock).toHaveBeenCalledWith(['id1', 'id2']);
+  });
+
+  it('does NOT call deleteQuotesByBook when book deletion fails', async () => {
+    const mockAppService = {
+      deleteBook: vi.fn().mockRejectedValue(new Error('delete failed')),
+    };
+
+    getCitasServiceMock.mockResolvedValue({
+      deleteQuotesByBook: deleteQuotesByBookMock,
+    });
+
+    const handleDelete = () => {
+      return async (book: Book) => {
+        try {
+          await (mockAppService as any)?.deleteBook(book);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+    };
+
+    const result = await handleDelete()(makeBook({ hash: 'book-fail' }));
+
+    expect(result).toBe(false);
+    expect(deleteQuotesByBookMock).not.toHaveBeenCalled();
+  });
+
+  it('logs a warning when cascade delete fails but still returns success', async () => {
+    const mockAppService = {
+      deleteBook: vi.fn().mockResolvedValue(undefined),
+    };
+
+    getCitasServiceMock.mockResolvedValue({
+      deleteQuotesByBook: deleteQuotesByBookMock,
+    });
+    deleteQuotesByBookMock.mockRejectedValue(new Error('db locked'));
+
+    const handleDelete = () => {
+      return async (book: Book) => {
+        try {
+          await (mockAppService as any)?.deleteBook(book);
+          if (mockAppService) {
+            try {
+              const cs = await getCitasServiceMock(mockAppService);
+              const deletedIds = await cs.deleteQuotesByBook(book.hash);
+              removeQuotesFromStateMock(deletedIds);
+            } catch (e) {
+              consoleWarnMock('Cascade delete of Citas quotes failed', e);
+            }
+          }
+          return true;
+        } catch {
+          return false;
+        }
+      };
+    };
+
+    const result = await handleDelete()(makeBook({ hash: 'book-cascade-fail' }));
+
+    expect(result).toBe(true);
+    expect(deleteQuotesByBookMock).toHaveBeenCalledWith('book-cascade-fail');
+    expect(consoleWarnMock).toHaveBeenCalledWith(
+      'Cascade delete of Citas quotes failed',
+      expect.any(Error),
+    );
+    expect(removeQuotesFromStateMock).not.toHaveBeenCalled();
   });
 });

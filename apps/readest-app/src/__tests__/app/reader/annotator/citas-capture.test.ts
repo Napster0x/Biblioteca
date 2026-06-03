@@ -127,7 +127,7 @@ describe('citas capture client graph', () => {
     }
   });
 
-  it('adds Phase 3 quote hover delete and blocks Phase 4 navigation out-of-scope', () => {
+  it('adds Phase 3 quote hover delete and Phase 4 highlight→citas navigation', () => {
     const annotator = readFileSync(
       resolve(process.cwd(), 'src/app/reader/components/annotator/Annotator.tsx'),
       'utf8',
@@ -137,10 +137,16 @@ describe('citas capture client graph', () => {
     expect(annotator).toMatch(/citeId[\s\S]{0,120}(delete|deletedAt|removeBookNoteOverlays)/i);
     // Phase 4: clear-all batches citeId deletes via removeQuotesFromState
     expect(annotator).toMatch(/clearedCiteIds[\s\S]{0,80}removeQuotesFromState/);
-    // Phase 4 not yet: no blink/parpadeo/flash for quote navigation
-    expect(annotator).not.toMatch(/(blink|parpadeo|flash)/i);
-    // Phase 4 not yet: no citeId-based router.push for Citas nav
-    expect(annotator).not.toMatch(/citeId[\s\S]{0,120}router\.push/i);
+    // Phase 4: click quote highlight navigates to /citas?highlight=citeId
+    expect(annotator).toMatch(/annotation\.citeId[\s\S]*?router\.push/i);
+    // Phase 4: the citeId check is inside onShowAnnotation before dictionary check
+    const onShowFn = annotator.match(/const onShowAnnotation[\s\S]*?useFoliateEvents/);
+    expect(onShowFn).not.toBeNull();
+    const fnBody = onShowFn![0];
+    expect(fnBody).toMatch(/annotation\.citeId/);
+    const citeIdx = fnBody.indexOf('annotation.citeId');
+    const dictIdx = fnBody.indexOf('annotation.dictionaryEntryId');
+    expect(citeIdx).toBeLessThan(dictIdx);
   });
 });
 

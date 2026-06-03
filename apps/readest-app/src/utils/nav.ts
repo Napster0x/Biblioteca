@@ -141,12 +141,14 @@ export const navigateToDictionary = (
 
 export const navigateToCitas = (
   router: ReturnType<typeof useRouter>,
+  queryParams?: string,
   navOptions?: { scroll?: boolean },
 ) => {
+  const href = `/citas${queryParams ? `?${queryParams}` : ''}`;
   if (navOptions) {
-    router.push('/citas', navOptions);
+    router.push(href, navOptions);
   } else {
-    router.push('/citas');
+    router.push(href);
   }
 };
 

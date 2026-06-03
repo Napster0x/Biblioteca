@@ -35,10 +35,7 @@ export default function CitasGrid({ service, appService: appServiceProp }: Citas
 
   const [search, setSearch] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-
-  useEffect(() => {
-    loadQuotes(service);
-  }, [loadQuotes, service]);
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
 
   const filteredQuotes = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -49,6 +46,30 @@ export default function CitasGrid({ service, appService: appServiceProp }: Citas
         (quote.bookAuthor ?? '').toLowerCase().includes(query),
     );
   }, [quotes, search]);
+
+  useEffect(() => {
+    loadQuotes(service);
+  }, [loadQuotes, service]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const highlight = params.get('highlight');
+    if (highlight) {
+      setHighlightedId(highlight);
+      setSearch('');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!highlightedId || filteredQuotes.length === 0) return;
+    const raf = requestAnimationFrame(() => {
+      document.getElementById(highlightedId)?.scrollIntoView({
+        behavior: 'instant',
+        block: 'center',
+      });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [highlightedId, filteredQuotes]);
 
   const handleBack = useCallback(() => {
     navigateToLibrary(router);
@@ -160,7 +181,7 @@ export default function CitasGrid({ service, appService: appServiceProp }: Citas
           <div className='flex flex-col gap-3' role='list' aria-label={_('Quotes')}>
             {filteredQuotes.map((quote) => (
               <div key={quote.id} role='listitem'>
-                <CitasTile quote={quote} />
+                <CitasTile quote={quote} isHighlighted={highlightedId === quote.id} />
               </div>
             ))}
           </div>

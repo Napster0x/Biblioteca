@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, act } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CitasService } from '@/services/citas/CitasService';
 import type { Cite } from '@/types/citas';
@@ -369,6 +369,76 @@ describe('CitasGrid', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Back to Library' }));
 
     expect(mocks.replace).toHaveBeenCalledWith('/library', undefined);
+  });
+
+  describe('?highlight= param', () => {
+    const origPushState = window.history.pushState.bind(window.history);
+
+    beforeEach(() => {
+      // Ensure no highlight param by default
+      window.history.pushState({}, '', '/citas');
+      // Mock scrollIntoView
+      Element.prototype.scrollIntoView = vi.fn();
+    });
+
+    afterEach(() => {
+      window.history.pushState({}, '', '/citas');
+    });
+
+    it('resets search input when ?highlight= param is present', () => {
+      window.history.pushState({}, '', '/citas?highlight=cite-1');
+      mockQuotes = [makeQuote({ id: 'cite-1' })];
+
+      render(<CitasGrid service={mockService} />);
+
+      const searchInput = screen.getByLabelText('Search') as HTMLInputElement;
+      expect(searchInput.value).toBe('');
+    });
+
+    it('renders the highlighted tile with citas-pulse class when ?highlight= matches a quote id', () => {
+      window.history.pushState({}, '', '/citas?highlight=cite-1');
+      mockQuotes = [makeQuote({ id: 'cite-1', text: 'Highlighted quote' })];
+
+      render(<CitasGrid service={mockService} />);
+
+      const tile = screen.getByText('Highlighted quote').closest('button');
+      expect(tile).not.toBeNull();
+      expect(tile!.className).toContain('citas-pulse');
+    });
+
+    it('does NOT add citas-pulse when ?highlight= does not match any quote id', () => {
+      window.history.pushState({}, '', '/citas?highlight=cite-unknown');
+      mockQuotes = [makeQuote({ id: 'cite-1', text: 'Not highlighted' })];
+
+      render(<CitasGrid service={mockService} />);
+
+      const tile = screen.getByText('Not highlighted').closest('button');
+      expect(tile).not.toBeNull();
+      expect(tile!.className).not.toContain('citas-pulse');
+    });
+
+    it('calls scrollIntoView on the highlighted tile after quotes load', async () => {
+      window.history.pushState({}, '', '/citas?highlight=cite-1');
+      const scrollIntoViewMock = vi.fn();
+      Element.prototype.scrollIntoView = scrollIntoViewMock;
+      mockQuotes = [makeQuote({ id: 'cite-1' })];
+
+      render(<CitasGrid service={mockService} />);
+
+      await waitFor(() => {
+        expect(scrollIntoViewMock).toHaveBeenCalled();
+      });
+    });
+
+    it('preserves existing search when no ?highlight= param is present', () => {
+      window.history.pushState({}, '', '/citas');
+      mockQuotes = [makeQuote({ id: 'cite-1' })];
+
+      render(<CitasGrid service={mockService} />);
+
+      const searchInput = screen.getByLabelText('Search') as HTMLInputElement;
+      expect(searchInput.value).toBe('');
+    });
   });
 });
 

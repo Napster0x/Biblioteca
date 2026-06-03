@@ -613,6 +613,15 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     const annotation = findAnnotationByValue(value, isNote);
     if (!annotation) return;
 
+    if (!isNote && annotation.citeId) {
+      setShowAnnotPopup(false);
+      setShowAnnotationNotes(false);
+      setEditingAnnotation(null);
+      setAnnotationNotes([]);
+      router.push(`/citas?highlight=${encodeURIComponent(annotation.citeId)}`);
+      return;
+    }
+
     if (!isNote && annotation.dictionaryEntryId) {
       setShowAnnotPopup(false);
       setShowAnnotationNotes(false);
@@ -1121,8 +1130,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
       annotations.push(result.highlight);
       const views = getViewsById(bookKey.split('-')[0]!);
       views.forEach((view) => view?.addAnnotation(result.highlight));
-      setSelection({ ...selection, cfi, page: result.highlight.page, annotated: true });
-      setShowAnnotPopup(false);
+      handleDismissPopupAndSelection();
 
       const updatedConfig = updateBooknotes(bookKey, annotations);
       if (updatedConfig) {
@@ -1700,7 +1708,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
         };
       case 'quote':
         return {
-          tooltipText: 'C',
+          tooltipText: _(label),
           Icon,
           onClick: () => void handleQuoteCapture(),
           iconClassName: 'text-red-200',

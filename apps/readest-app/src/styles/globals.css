@@ -668,6 +668,28 @@ input[type='range'].slider-input {
   border-radius: 8px;
 }
 
+/* citas pulse animation for highlight-to-citas navigation */
+@keyframes citas-pulse {
+  0%,
+  100% {
+    background-color: transparent;
+  }
+
+  50% {
+    background-color: theme('colors.primary/0.15');
+  }
+}
+
+.citas-pulse {
+  animation: citas-pulse 0.5s ease-in-out 2;
+  border-radius: 8px;
+}
+
+[data-eink='true'] .citas-pulse {
+  animation: none;
+  border: 2px solid red;
+}
+
 /* View Transitions for library navigation */
 ::view-transition-old(root),
 ::view-transition-new(root) {

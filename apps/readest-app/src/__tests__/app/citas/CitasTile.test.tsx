@@ -159,4 +159,26 @@ describe('CitasTile', () => {
     expect(tile.getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByText('Selected')).toBeTruthy();
   });
+
+  it('adds the citas-pulse class when isHighlighted is true', () => {
+    const { container } = render(<CitasTile quote={makeQuote()} isHighlighted />);
+    const tile = container.firstChild as HTMLElement;
+    expect(tile.className).toContain('citas-pulse');
+  });
+
+  it('does not add the citas-pulse class when isHighlighted is false or undefined', () => {
+    const { container: undefContainer } = render(<CitasTile quote={makeQuote()} />);
+    expect(undefContainer.firstChild!.className).not.toContain('citas-pulse');
+
+    const { container: falseContainer } = render(
+      <CitasTile quote={makeQuote()} isHighlighted={false} />,
+    );
+    expect(falseContainer.firstChild!.className).not.toContain('citas-pulse');
+  });
+
+  it('renders with id attribute on the outer element', () => {
+    const { container } = render(<CitasTile quote={makeQuote({ id: 'cite-test-id' })} />);
+    const tile = container.firstChild as HTMLElement;
+    expect(tile.getAttribute('id')).toBe('cite-test-id');
+  });
 });

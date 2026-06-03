@@ -246,6 +246,16 @@ export class CitasService {
     const placeholders = ids.map(() => '?').join(', ');
     await this.db.execute(`DELETE FROM quotes WHERE id IN (${placeholders})`, [...ids]);
   }
+
+  async deleteQuotesByBook(bookHash: string): Promise<string[]> {
+    const rows = await this.db.select<{ id: string }>('SELECT id FROM quotes WHERE book_hash = ?', [
+      bookHash,
+    ]);
+    const ids = rows.map((r) => r.id);
+    if (ids.length === 0) return [];
+    await this.db.execute('DELETE FROM quotes WHERE book_hash = ?', [bookHash]);
+    return ids;
+  }
 }
 
 function quoteFromRow(row: QuoteRow): Cite {

@@ -377,6 +377,75 @@ describe('CitasService', () => {
     const all = await service.listQuotes();
     expect(all).toHaveLength(1);
   });
+
+  it('deleteQuotesByBook deletes only quotes matching the given bookHash', async () => {
+    const a = await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'from book-1',
+      contextBefore: null,
+      contextAfter: null,
+    });
+    const b = await service.createQuote({
+      bookHash: 'book-2',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'from book-2',
+      contextBefore: null,
+      contextAfter: null,
+    });
+    const c = await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'also from book-1',
+      contextBefore: null,
+      contextAfter: null,
+    });
+
+    const deletedIds = await service.deleteQuotesByBook('book-1');
+
+    expect(deletedIds).toEqual([a.id, c.id]);
+    const remaining = await service.listQuotes();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.id).toBe(b.id);
+  });
+
+  it('deleteQuotesByBook returns empty array and keeps all quotes when bookHash has no matches', async () => {
+    await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'only quote',
+      contextBefore: null,
+      contextAfter: null,
+    });
+
+    const deletedIds = await service.deleteQuotesByBook('book-unknown');
+
+    expect(deletedIds).toEqual([]);
+    const all = await service.listQuotes();
+    expect(all).toHaveLength(1);
+  });
+
+  it('deleteQuotesByBook returns empty array when no quotes exist at all', async () => {
+    const deletedIds = await service.deleteQuotesByBook('book-empty');
+
+    expect(deletedIds).toEqual([]);
+  });
 });
 
 /**

@@ -10,6 +10,8 @@ import { Book } from '@/types/book';
 import { AppService } from '@/types/system';
 import { buildBookLookupIndex } from '@/services/bookService';
 import { navigateToLibrary, navigateToReader } from '@/utils/nav';
+import { getCitasService } from '@/services/citas/citasServiceCache';
+import { useCitasStore } from '@/store/citasStore';
 import { formatAuthors, formatTitle, getPrimaryLanguage, listFormater } from '@/utils/book';
 import { getImportErrorMessage } from '@/services/errors';
 import { ingestFile } from '@/services/ingestService';
@@ -732,6 +734,16 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
         book.coverDownloadedAt = null;
         await updateBook(envConfig, book);
         clearBookData(book.hash);
+        // Cascade delete: remove quotes associated with the deleted book
+        if (appService) {
+          try {
+            const cs = await getCitasService(appService);
+            const deletedIds = await cs.deleteQuotesByBook(book.hash);
+            useCitasStore.getState().removeQuotesFromState(deletedIds);
+          } catch (e) {
+            console.warn('Cascade delete of Citas quotes failed', e);
+          }
+        }
         eventDispatcher.dispatch('toast', {
           type: 'info',
           timeout: 1000,

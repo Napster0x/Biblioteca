@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import { useState } from 'react';
 import { PiBookBookmark } from 'react-icons/pi';
 
 import type { DictionaryShelfItem } from '@/types/dictionary';
@@ -10,6 +11,8 @@ interface DictionaryShelfCardProps {
 }
 
 const DictionaryShelfCard = ({ item, mode }: DictionaryShelfCardProps) => {
+  const [coverError, setCoverError] = useState(false);
+
   return (
     <div
       role='none'
@@ -23,18 +26,27 @@ const DictionaryShelfCard = ({ item, mode }: DictionaryShelfCardProps) => {
       <div
         className={clsx(
           'bookitem-main eink-bordered bg-base-100 text-base-content relative flex justify-center overflow-hidden rounded',
-          mode === 'grid' && 'aspect-[28/41] items-center shadow-md',
-          mode === 'list' && 'min-w-20 items-center',
+          mode === 'grid' && 'aspect-[28/41] shadow-md',
+          mode === 'list' && 'min-w-20',
         )}
       >
-        <div className='flex h-full w-full flex-col items-center justify-center gap-3 p-4 text-center'>
-          <PiBookBookmark aria-hidden className='text-base-content/70 size-10' />
-          {mode === 'grid' && (
-            <span className='text-base-content/75 text-[0.6rem] font-medium uppercase tracking-wide'>
-              Vocabulario
-            </span>
-          )}
-        </div>
+        {coverError ? (
+          <div className='flex h-full w-full flex-col items-center justify-center gap-3 p-4 text-center'>
+            <PiBookBookmark aria-hidden className='text-base-content/70 size-10' />
+            {mode === 'grid' && (
+              <span className='text-base-content/75 text-[0.6rem] font-medium uppercase tracking-wide'>
+                Vocabulario
+              </span>
+            )}
+          </div>
+        ) : (
+          <img
+            src='/images/dictionary-cover.png'
+            alt='Diccionario'
+            className='absolute inset-0 h-full w-full object-cover'
+            onError={() => setCoverError(true)}
+          />
+        )}
       </div>
       <div className={clsx('flex w-full flex-col p-0', mode === 'grid' && 'pt-2')}>
         <div className='min-w-0 flex-1'>

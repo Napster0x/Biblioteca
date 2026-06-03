@@ -11,9 +11,10 @@ import { navigateToReader } from '@/utils/nav';
 
 interface CitasTileProps {
   quote: Cite;
+  isHighlighted?: boolean;
 }
 
-export default function CitasTile({ quote }: CitasTileProps) {
+export default function CitasTile({ quote, isHighlighted }: CitasTileProps) {
   const _ = useTranslation();
   const router = useRouter();
   const isSelectMode = useCitasStore((s) => s.isSelectMode);
@@ -29,6 +30,7 @@ export default function CitasTile({ quote }: CitasTileProps) {
     !isSelectMode && canNavigate && 'hover:bg-base-300/40',
     !isSelectMode && !canNavigate && 'cursor-not-allowed opacity-60',
     isSelected && 'border-2 border-base-content',
+    isHighlighted && 'citas-pulse',
   );
 
   const handleGoToReader = () => {
@@ -51,6 +53,7 @@ export default function CitasTile({ quote }: CitasTileProps) {
     return (
       <button
         type='button'
+        id={quote.id}
         className={tileClassName}
         aria-label={`${isSelected ? _('Deselect') : _('Select')} ${quoteLabel}`}
         aria-pressed={isSelected}
@@ -64,6 +67,7 @@ export default function CitasTile({ quote }: CitasTileProps) {
   return (
     <button
       type='button'
+      id={quote.id}
       className={tileClassName}
       aria-label={canNavigate ? quoteLabel : _('Quote unavailable: {{text}}', { text: quote.text })}
       aria-disabled={!canNavigate}
