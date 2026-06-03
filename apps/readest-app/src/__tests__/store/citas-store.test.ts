@@ -201,6 +201,35 @@ describe('citasStore', () => {
     expect(state.isLoading).toBe(false);
   });
 
+  it('deleteQuotes removes the requested ids from SQL-backed service and local state', async () => {
+    const service = { deleteQuotes: vi.fn().mockResolvedValue(undefined) };
+    useCitasStore.getState().setQuotes([quoteOne, quoteTwo]);
+    useCitasStore.getState().setQuote(quoteOne);
+
+    await useCitasStore.getState().deleteQuotes(['cite-1'], asCitasService(service));
+
+    const state = useCitasStore.getState();
+    expect(service.deleteQuotes).toHaveBeenCalledWith(['cite-1']);
+    expect(state.quotes).toEqual([quoteTwo]);
+    expect(state.quote).toBeNull();
+    expect(state.isLoading).toBe(false);
+  });
+
+  it('removeQuotesFromState prunes external reader-synced deletes without calling SQL', () => {
+    useCitasStore.getState().setQuotes([quoteOne, quoteTwo]);
+    useCitasStore.getState().setQuote(quoteTwo);
+    useCitasStore.getState().enterSelectMode();
+    useCitasStore.getState().toggleSelectedQuote('cite-1');
+    useCitasStore.getState().toggleSelectedQuote('cite-2');
+
+    useCitasStore.getState().removeQuotesFromState(['cite-2']);
+
+    const state = useCitasStore.getState();
+    expect(state.quotes).toEqual([quoteOne]);
+    expect(state.quote).toBeNull();
+    expect(state.selectedQuoteIds).toEqual(['cite-1']);
+  });
+
   it('does not call delete service when no quotes are selected', async () => {
     const service = { deleteQuotes: vi.fn().mockResolvedValue(undefined) };
 

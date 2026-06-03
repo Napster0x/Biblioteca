@@ -6,8 +6,10 @@ import { annotationToolButtons } from '@/app/reader/components/annotator/Annotat
 import {
   captureQuoteFromSelection,
   CITAS_HIGHLIGHT_FALLBACK,
+  markCitasHighlightsDeleted,
   resolveCitasHighlightColor,
 } from '@/app/reader/utils/citasCapture';
+import type { BookNote } from '@/types/book';
 
 describe('reader quote selection actions', () => {
   it('exposes the Citas quick action as a quote tool', () => {
@@ -39,6 +41,62 @@ describe('citas highlight color', () => {
     const globals = readFileSync(resolve(process.cwd(), 'src/styles/globals.css'), 'utf8');
 
     expect(globals).toContain(`--citas-highlight: ${CITAS_HIGHLIGHT_FALLBACK}`);
+  });
+});
+
+describe('markCitasHighlightsDeleted', () => {
+  const baseNote: BookNote = {
+    id: 'note-1',
+    type: 'annotation',
+    cfi: 'epubcfi(/6/2)',
+    style: 'highlight',
+    citeId: 'cite-1',
+    text: 'cita uno',
+    note: '',
+    createdAt: 100,
+    updatedAt: 100,
+  };
+
+  it('soft-deletes one matching Citas highlight by citeId without mutating other notes', () => {
+    const untouched: BookNote = { ...baseNote, id: 'note-2', citeId: 'cite-2', text: 'cita dos' };
+
+    const result = markCitasHighlightsDeleted([baseNote, untouched], new Set(['cite-1']), 9000);
+
+    expect(result.changed).toBe(true);
+    expect(result.booknotes).toEqual([{ ...baseNote, deletedAt: 9000 }, untouched]);
+    expect(baseNote.deletedAt).toBeUndefined();
+  });
+
+  it('soft-deletes every matching highlight in a bulk citeId set', () => {
+    const second: BookNote = { ...baseNote, id: 'note-2', citeId: 'cite-2', text: 'cita dos' };
+    const normalHighlight: BookNote = {
+      ...baseNote,
+      id: 'note-normal',
+      citeId: undefined,
+      dictionaryEntryId: 'entry-1',
+    };
+
+    const result = markCitasHighlightsDeleted(
+      [baseNote, second, normalHighlight],
+      new Set(['cite-1', 'cite-2']),
+      9001,
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.booknotes).toEqual([
+      { ...baseNote, deletedAt: 9001 },
+      { ...second, deletedAt: 9001 },
+      normalHighlight,
+    ]);
+  });
+
+  it('reports no change when no active note matches the selected citeIds', () => {
+    const alreadyDeleted: BookNote = { ...baseNote, deletedAt: 777 };
+
+    const result = markCitasHighlightsDeleted([alreadyDeleted], new Set(['cite-1']), 9002);
+
+    expect(result.changed).toBe(false);
+    expect(result.booknotes).toEqual([alreadyDeleted]);
   });
 });
 

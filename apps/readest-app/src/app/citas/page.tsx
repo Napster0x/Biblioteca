@@ -73,5 +73,5 @@ export default function CitasPage() {
     );
   }
 
-  return <CitasGrid service={service} />;
+  return <CitasGrid service={service} appService={appService} />;
 }

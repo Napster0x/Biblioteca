@@ -19,7 +19,10 @@ const mocks = vi.hoisted(() => ({
   goTo: vi.fn(),
   setPreviewMode: vi.fn(),
   navigateToReader: vi.fn(),
+  softDeleteCitasHighlights: vi.fn(),
   appService: { platform: 'test' },
+  envConfig: { getAppService: vi.fn() },
+  settings: { animated: false },
 }));
 
 let mockQuotes: Cite[] = [];
@@ -48,7 +51,11 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('@/context/EnvContext', () => ({
-  useEnv: () => ({ appService: mocks.appService }),
+  useEnv: () => ({ appService: mocks.appService, envConfig: mocks.envConfig }),
+}));
+
+vi.mock('@/store/settingsStore', () => ({
+  useSettingsStore: () => ({ settings: mocks.settings }),
 }));
 
 vi.mock('@/services/citas/citasServiceCache', () => ({
@@ -89,6 +96,16 @@ vi.mock('@/store/citasStore', () => ({
       toggleSelectedQuote: mocks.toggleSelectedQuote,
     }),
 }));
+
+vi.mock('@/app/reader/utils/citasCapture', async () => {
+  const actual = await vi.importActual<typeof import('@/app/reader/utils/citasCapture')>(
+    '@/app/reader/utils/citasCapture',
+  );
+  return {
+    ...actual,
+    softDeleteCitasHighlights: mocks.softDeleteCitasHighlights,
+  };
+});
 
 vi.mock('@/hooks/useTranslation', () => ({
   useTranslation: () => (key: string, options?: Record<string, string>) =>
@@ -132,6 +149,8 @@ describe('CitasGrid', () => {
     mocks.goTo.mockReset();
     mocks.setPreviewMode.mockReset();
     mocks.navigateToReader.mockReset();
+    mocks.softDeleteCitasHighlights.mockReset();
+    mocks.softDeleteCitasHighlights.mockResolvedValue(undefined);
     mocks.loadQuotes.mockReset();
     mocks.searchQuotes.mockReset();
     mocks.createQuote.mockReset();
@@ -271,6 +290,54 @@ describe('CitasGrid', () => {
 
     const deleteButton = screen.getByRole('button', { name: 'Delete selected' });
     expect((deleteButton as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('soft-deletes selected quote highlights before deleting the selected Citas rows', async () => {
+    const quote = makeQuote({ id: 'cite-1', bookHash: 'book-1', cfi: 'epubcfi(/6/2)' });
+    mockQuotes = [quote];
+    mockIsSelectMode = true;
+    mockSelectedQuoteIds = ['cite-1'];
+
+    render(<CitasGrid service={mockService} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => {
+      expect(mocks.softDeleteCitasHighlights).toHaveBeenCalledWith(
+        [quote],
+        ['cite-1'],
+        mocks.appService,
+        mocks.envConfig,
+        mocks.settings,
+      );
+      expect(mocks.deleteQuotes).toHaveBeenCalledWith(['cite-1'], mockService);
+      expect(mocks.cancelSelectMode).toHaveBeenCalled();
+    });
+  });
+
+  it('still deletes selected Citas rows when selected quote metadata is incomplete', async () => {
+    const quoteWithoutCfi = makeQuote({ id: 'cite-missing-cfi', cfi: null });
+    mockQuotes = [quoteWithoutCfi];
+    mockIsSelectMode = true;
+    mockSelectedQuoteIds = ['cite-missing-cfi'];
+    mocks.softDeleteCitasHighlights.mockRejectedValueOnce(new Error('missing highlight metadata'));
+
+    render(<CitasGrid service={mockService} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => {
+      expect(mocks.softDeleteCitasHighlights).toHaveBeenCalledWith(
+        [quoteWithoutCfi],
+        ['cite-missing-cfi'],
+        mocks.appService,
+        mocks.envConfig,
+        mocks.settings,
+      );
+      expect(mocks.deleteQuotes).toHaveBeenCalledWith(['cite-missing-cfi'], mockService);
+    });
   });
 
   it('calls cancelSelectMode when the bottom-bar Cancel button is clicked', () => {

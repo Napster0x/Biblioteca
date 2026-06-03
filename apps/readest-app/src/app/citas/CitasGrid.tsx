@@ -4,17 +4,25 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { PiBookBookmark, PiMagnifyingGlass, PiSelectionAll, PiTrash, PiX } from 'react-icons/pi';
 import { useTranslation } from '@/hooks/useTranslation';
+import { useEnv } from '@/context/EnvContext';
 import type { CitasService } from '@/services/citas/CitasService';
 import { useCitasStore } from '@/store/citasStore';
+import { useSettingsStore } from '@/store/settingsStore';
+import type { AppService } from '@/types/system';
+import { softDeleteCitasHighlights } from '@/app/reader/utils/citasCapture';
 import { navigateToLibrary } from '@/utils/nav';
 import CitasTile from './CitasTile';
 
 interface CitasGridProps {
   service: CitasService;
+  appService?: AppService | null;
 }
 
-export default function CitasGrid({ service }: CitasGridProps) {
+export default function CitasGrid({ service, appService: appServiceProp }: CitasGridProps) {
   const _ = useTranslation();
+  const { appService: envAppService, envConfig } = useEnv();
+  const appService = appServiceProp ?? envAppService;
+  const { settings } = useSettingsStore();
   const router = useRouter();
   const quotes = useCitasStore((s) => s.quotes);
   const isSelectMode = useCitasStore((s) => s.isSelectMode);
@@ -23,7 +31,7 @@ export default function CitasGrid({ service }: CitasGridProps) {
   const searchQuotes = useCitasStore((s) => s.searchQuotes);
   const enterSelectMode = useCitasStore((s) => s.enterSelectMode);
   const cancelSelectMode = useCitasStore((s) => s.cancelSelectMode);
-  const deleteSelectedQuotes = useCitasStore((s) => s.deleteSelectedQuotes);
+  const deleteQuotes = useCitasStore((s) => s.deleteQuotes);
 
   const [search, setSearch] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -63,9 +71,26 @@ export default function CitasGrid({ service }: CitasGridProps) {
   }, []);
 
   const handleConfirmDelete = useCallback(async () => {
-    await deleteSelectedQuotes(service);
+    const ids = selectedQuoteIds;
+    const selectedQuotes = quotes.filter((quote) => ids.includes(quote.id));
+    try {
+      await softDeleteCitasHighlights(selectedQuotes, ids, appService, envConfig, settings);
+    } catch (err) {
+      console.warn('Could not delete Citas highlights before deleting quotes', err);
+    }
+    await deleteQuotes(ids, service);
+    cancelSelectMode();
     setShowDeleteConfirm(false);
-  }, [deleteSelectedQuotes, service]);
+  }, [
+    appService,
+    cancelSelectMode,
+    deleteQuotes,
+    envConfig,
+    quotes,
+    selectedQuoteIds,
+    service,
+    settings,
+  ]);
 
   return (
     <main className='text-base-content full-height flex flex-col bg-base-200'>

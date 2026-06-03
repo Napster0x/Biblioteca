@@ -24,7 +24,9 @@ export interface CitasActions {
   searchQuotes(query: string, service: CitasService): Promise<void>;
   createQuote(input: CiteInput, service: CitasService): Promise<Cite>;
   updateQuote(input: CiteUpdate, service: CitasService): Promise<Cite>;
+  deleteQuotes(ids: readonly string[], service: CitasService): Promise<void>;
   deleteSelectedQuotes(service: CitasService): Promise<void>;
+  removeQuotesFromState(ids: readonly string[]): void;
   reset(): void;
 }
 
@@ -123,24 +125,39 @@ export const useCitasStore = create<CitasStore>((set) => ({
     }
   },
 
-  async deleteSelectedQuotes(service) {
-    const ids = useCitasStore.getState().selectedQuoteIds;
+  async deleteQuotes(ids, service) {
     if (ids.length === 0) return;
 
     set({ isLoading: true });
     try {
       await service.deleteQuotes(ids);
-      const deletedIds = new Set(ids);
-      set((state) => ({
-        quotes: state.quotes.filter((quote) => !deletedIds.has(quote.id)),
-        quote: state.quote && deletedIds.has(state.quote.id) ? null : state.quote,
-        selectedQuoteIds: [],
-        isSelectMode: false,
-        isLoading: false,
-      }));
+      useCitasStore.getState().removeQuotesFromState(ids);
+      set({ isLoading: false });
     } catch {
       set({ isLoading: false });
     }
+  },
+
+  async deleteSelectedQuotes(service) {
+    const ids = useCitasStore.getState().selectedQuoteIds;
+    try {
+      await useCitasStore.getState().deleteQuotes(ids, service);
+      if (ids.length > 0) {
+        set({ selectedQuoteIds: [], isSelectMode: false });
+      }
+    } catch {
+      // Preserve the historical selected-delete contract: failures only clear loading.
+    }
+  },
+
+  removeQuotesFromState(ids) {
+    if (ids.length === 0) return;
+    const deletedIds = new Set(ids);
+    set((state) => ({
+      quotes: state.quotes.filter((quote) => !deletedIds.has(quote.id)),
+      quote: state.quote && deletedIds.has(state.quote.id) ? null : state.quote,
+      selectedQuoteIds: state.selectedQuoteIds.filter((id) => !deletedIds.has(id)),
+    }));
   },
 
   reset() {
