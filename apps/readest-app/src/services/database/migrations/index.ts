@@ -88,6 +88,35 @@ const migrations: Record<SchemaType, MigrationEntry[]> = {
       `,
     },
   ],
+  // Anotaciones — saved highlights/annotations from the reader (Phase 1).
+  annotaciones: [
+    {
+      name: '2026060401_annotaciones_init',
+      sql: `
+        CREATE TABLE IF NOT EXISTS annotations (
+          id              TEXT PRIMARY KEY,
+          book_hash       TEXT NOT NULL,
+          book_title      TEXT,
+          book_author     TEXT,
+          cfi             TEXT,
+          section_href    TEXT,
+          page            INTEGER,
+          text            TEXT NOT NULL,
+          note            TEXT NOT NULL DEFAULT '',
+          style           TEXT NOT NULL DEFAULT 'highlight',
+          color           TEXT NOT NULL DEFAULT 'yellow',
+          created_at      INTEGER NOT NULL,
+          updated_at      INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_annotations_book_hash
+          ON annotations (book_hash);
+
+        CREATE INDEX IF NOT EXISTS idx_annotations_created_at
+          ON annotations (created_at DESC);
+      `,
+    },
+  ],
   // Citas — saved quotes from the reader (Fase 1: shell + data model only;
   // capture from the reader and per-cite detail view are deferred to Fase 2/3).
   // content_hash = sha256(text || \0 || context_before || \0 || context_after)
