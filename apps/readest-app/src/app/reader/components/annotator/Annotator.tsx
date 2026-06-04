@@ -69,6 +69,8 @@ import {
   resolveCitasHighlightColor,
   softDeleteCitasHighlights,
 } from '../../utils/citasCapture';
+import { getAnotacionesService } from '@/services/annotations/annotacionesServiceCache';
+import { useAnotacionesStore } from '@/store/annotacionesStore';
 import Alert from '@/components/Alert';
 import ModalPortal from '@/components/ModalPortal';
 import { useFileSelector } from '@/hooks/useFileSelector';
@@ -99,6 +101,17 @@ interface HoveredQuoteAnnotation {
 interface PendingQuoteDelete {
   noteId: string;
   citeId: string;
+}
+
+interface HoveredAnotacionAnnotation {
+  noteId: string;
+  annotationId: string;
+  rect: Pick<DOMRect, 'left' | 'top' | 'right' | 'bottom'>;
+}
+
+interface PendingAnotacionDelete {
+  noteId: string;
+  annotationId: string;
 }
 
 const dictionaryHighlightCloseButtonSize = 12;
@@ -170,6 +183,10 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
   const [hoveredQuoteAnnotation, setHoveredQuoteAnnotation] =
     useState<HoveredQuoteAnnotation | null>(null);
   const [pendingQuoteDelete, setPendingQuoteDelete] = useState<PendingQuoteDelete | null>(null);
+  const [hoveredAnotacionAnnotation, setHoveredAnotacionAnnotation] =
+    useState<HoveredAnotacionAnnotation | null>(null);
+  const [pendingAnotacionDelete, setPendingAnotacionDelete] =
+    useState<PendingAnotacionDelete | null>(null);
 
   const [selectedStyle, setSelectedStyle] = useState<HighlightStyle>(
     settings.globalReadSettings.highlightStyle,
@@ -425,6 +442,44 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     [bookKey, findAnnotationByValue, view],
   );
 
+  const handleAnotacionHighlightHover = useCallback(
+    (doc: Document, index: number, event: MouseEvent) => {
+      const content = view?.renderer
+        ?.getContents?.()
+        ?.find(
+          (item: { index?: number; doc?: Document }) => item.index === index && item.doc === doc,
+        );
+      const [value, , rect] = content?.overlayer?.hitTest?.(event) ?? [];
+      if (!value || typeof value !== 'string' || value.startsWith('search#') || !rect) {
+        setHoveredAnotacionAnnotation(null);
+        return;
+      }
+
+      const annotation = findAnnotationByValue(value);
+      if (!annotation?.annotationId) {
+        setHoveredAnotacionAnnotation(null);
+        return;
+      }
+
+      const frameRect = doc.defaultView?.frameElement?.getBoundingClientRect();
+      const offsetLeft = frameRect?.left ?? 0;
+      const offsetTop = frameRect?.top ?? 0;
+
+      doc.body.style.cursor = 'pointer';
+      setHoveredAnotacionAnnotation({
+        noteId: annotation.id,
+        annotationId: annotation.annotationId,
+        rect: {
+          left: offsetLeft + rect.left,
+          top: offsetTop + rect.top,
+          right: offsetLeft + rect.right,
+          bottom: offsetTop + rect.bottom,
+        },
+      });
+    },
+    [bookKey, findAnnotationByValue, view],
+  );
+
   const onLoad = (event: Event) => {
     const detail = (event as CustomEvent).detail;
     const { doc, index } = detail;
@@ -478,6 +533,8 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     detail.doc?.addEventListener('mouseleave', () => setHoveredDictionaryAnnotation(null));
     detail.doc?.addEventListener('mousemove', handleQuoteHighlightHover.bind(null, doc, index));
     detail.doc?.addEventListener('mouseleave', () => setHoveredQuoteAnnotation(null));
+    detail.doc?.addEventListener('mousemove', handleAnotacionHighlightHover.bind(null, doc, index));
+    detail.doc?.addEventListener('mouseleave', () => setHoveredAnotacionAnnotation(null));
     detail.doc?.addEventListener('pointercancel', handlePointerCancel.bind(null, doc, index));
     detail.doc?.addEventListener('pointerup', handlePointerUp.bind(null, doc, index));
     detail.doc?.addEventListener('selectionchange', handleSelectionchange.bind(null, doc, index));
@@ -612,6 +669,15 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     const cfi = isSyntheticGlobalValue(rawValue) ? sourceCfiFromSyntheticValue(rawValue) : rawValue;
     const annotation = findAnnotationByValue(value, isNote);
     if (!annotation) return;
+
+    if (!isNote && annotation.annotationId) {
+      setShowAnnotPopup(false);
+      setShowAnnotationNotes(false);
+      setEditingAnnotation(null);
+      setAnnotationNotes([]);
+      router.push(`/anotaciones?highlight=${encodeURIComponent(annotation.annotationId)}`);
+      return;
+    }
 
     if (!isNote && annotation.citeId) {
       setShowAnnotPopup(false);
@@ -1033,11 +1099,57 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     }
   };
 
-  const handleAnnotate = () => {
+  const handleAnnotate = async () => {
     if (!selection || !selection.text) return;
     const { sectionHref: href } = progress;
     selection.href = href;
     handleHighlight(true);
+
+    // Force 'yellow' color on the just-created annotation BookNote and
+    // persist an Anotacion row in the SQL database.  We search for the
+    // annotation by CFI and type because handleHighlight may have created
+    // a new note or updated an existing one.
+    const cfi = view?.getCFI(selection.index, selection.range);
+    if (cfi) {
+      const latestConfig = getConfig(bookKey);
+      if (latestConfig) {
+        const { booknotes: storedNotes = [] } = latestConfig;
+        const noteIdx = storedNotes.findIndex(
+          (n) => n.type === 'annotation' && n.style && !n.deletedAt && n.cfi === cfi,
+        );
+        if (noteIdx !== -1) {
+          const note = storedNotes[noteIdx]!;
+          note.color = 'yellow';
+
+          if (appService) {
+            try {
+              const svc = await getAnotacionesService(appService);
+              const annotacion = await svc.createAnnotation({
+                bookHash: bookData.book?.hash ?? bookKey.split('-')[0]!,
+                bookTitle: bookData.book?.title ?? null,
+                bookAuthor: bookData.book?.author ?? null,
+                cfi: note.cfi,
+                sectionHref: progress.sectionHref ?? null,
+                page: progress.page,
+                text: note.text ?? '',
+                note: note.note,
+                style: note.style ?? 'highlight',
+                color: 'yellow',
+              });
+              note.annotationId = annotacion.id;
+            } catch (err) {
+              console.warn('Failed to persist annotation to SQL:', err);
+            }
+          }
+
+          const updatedConfig = updateBooknotes(bookKey, storedNotes);
+          if (updatedConfig) {
+            saveConfig(envConfig, bookKey, updatedConfig, settings);
+          }
+        }
+      }
+    }
+
     setNotebookVisible(true);
     setNotebookNewAnnotation(selection);
     handleDismissPopup();
@@ -1205,6 +1317,26 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     [config, bookKey, settings, progress, envConfig, selection],
   );
 
+  const handleRemoveAnotacionHighlight = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!hoveredAnotacionAnnotation) return;
+
+      const latestConfig = getConfig(bookKey);
+      if (!latestConfig) return;
+      const { booknotes: storedNotes = [] } = latestConfig;
+      const note = storedNotes.find((n) => n.id === hoveredAnotacionAnnotation.noteId);
+      if (!note || note.deletedAt) return;
+
+      setPendingAnotacionDelete({
+        noteId: hoveredAnotacionAnnotation.noteId,
+        annotationId: hoveredAnotacionAnnotation.annotationId,
+      });
+    },
+    [bookKey, getConfig, hoveredAnotacionAnnotation],
+  );
+
   const handleRemoveDictionaryHighlight = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
@@ -1334,6 +1466,60 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     settings,
     updateBooknotes,
   ]);
+
+  const handleConfirmAnotacionDelete = useCallback(async () => {
+    if (!pendingAnotacionDelete) return;
+
+    const latestConfig = getConfig(bookKey);
+    if (!latestConfig) return;
+    const { booknotes: storedNotes = [] } = latestConfig;
+    const note = storedNotes.find((n) => n.id === pendingAnotacionDelete.noteId);
+    if (!note || note.deletedAt) return;
+
+    // 1. Soft-delete the BookNote
+    note.deletedAt = Date.now();
+
+    // 2. Remove overlays
+    const views = getViewsById(bookKey.split('-')[0]!);
+    views.forEach((view) => removeBookNoteOverlays(view, note));
+
+    // 3. Delete from SQL
+    try {
+      if (appService) {
+        const svc = await getAnotacionesService(appService);
+        await svc.deleteAnnotations([pendingAnotacionDelete.annotationId]);
+      }
+    } catch (err) {
+      console.warn('Failed to delete annotation from SQL:', err);
+    }
+
+    // 4. Remove from Zustand store
+    useAnotacionesStore
+      .getState()
+      .removeAnnotationsFromState([pendingAnotacionDelete.annotationId]);
+
+    // 5. Save config
+    const updatedConfig = updateBooknotes(bookKey, storedNotes);
+    if (updatedConfig) {
+      saveConfig(envConfig, bookKey, updatedConfig, settings);
+    }
+
+    // 6. Dismiss popup and reset hovered state
+    setHoveredAnotacionAnnotation(null);
+    setPendingAnotacionDelete(null);
+  }, [
+    appService,
+    bookKey,
+    envConfig,
+    getConfig,
+    getViewsById,
+    pendingAnotacionDelete,
+    saveConfig,
+    settings,
+    updateBooknotes,
+  ]);
+
+  const handleCancelAnotacionDelete = useCallback(() => setPendingAnotacionDelete(null), []);
 
   const handleCancelQuoteDelete = useCallback(() => setPendingQuoteDelete(null), []);
 
@@ -1616,6 +1802,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     const views = getViewsById(bookKey.split('-')[0]!);
     let cleared = 0;
     const clearedCiteIds: string[] = [];
+    const clearedAnnotationIds: string[] = [];
     storedNotes.forEach((note) => {
       if (note.type === 'annotation' && !note.deletedAt) {
         note.deletedAt = now;
@@ -1625,6 +1812,9 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
         views.forEach((view) => removeBookNoteOverlays(view, note));
         if (note.citeId) {
           clearedCiteIds.push(note.citeId);
+        }
+        if (note.annotationId) {
+          clearedAnnotationIds.push(note.annotationId);
         }
       }
     });
@@ -1651,6 +1841,20 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
             useCitasStore.getState().deleteQuotes(clearedCiteIds, citasService),
           )
           .catch((err) => console.warn('Failed to batch-delete cites:', err));
+      }
+    }
+
+    // Batch-remove associated Anotaciones entries
+    if (clearedAnnotationIds.length > 0) {
+      try {
+        useAnotacionesStore.getState().removeAnnotationsFromState(clearedAnnotationIds);
+      } catch (err) {
+        console.warn('Failed to batch-remove annotations from state:', err);
+      }
+      if (appService) {
+        getAnotacionesService(appService)
+          .then((svc) => svc.deleteAnnotations(clearedAnnotationIds))
+          .catch((err) => console.warn('Failed to batch-delete annotations:', err));
       }
     }
 
@@ -1755,6 +1959,24 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
           ×
         </button>
       )}
+      {hoveredAnotacionAnnotation && (
+        <button
+          type='button'
+          aria-label={_('Remove annotation highlight')}
+          className='fixed z-50 flex h-3 w-3 items-center justify-center bg-transparent p-0 text-[11px] font-bold leading-none text-red-500 hover:text-red-600'
+          style={{
+            left:
+              hoveredAnotacionAnnotation.rect.right - dictionaryHighlightCloseButtonSize / 2 + 1.5,
+            top: Math.max(
+              0,
+              hoveredAnotacionAnnotation.rect.top - dictionaryHighlightCloseButtonSize / 2,
+            ),
+          }}
+          onClick={handleRemoveAnotacionHighlight}
+        >
+          ×
+        </button>
+      )}
       {pendingDictionaryDelete && (
         <ModalPortal>
           <div
@@ -1794,6 +2016,45 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
                 type='button'
                 className='btn btn-error btn-sm text-white'
                 onClick={handleConfirmDictionaryDelete}
+              >
+                {_('Sí, borrar')}
+              </button>
+            </div>
+          </div>
+        </ModalPortal>
+      )}
+      {pendingAnotacionDelete && (
+        <ModalPortal>
+          <div
+            role='dialog'
+            aria-modal='true'
+            aria-label={_('Confirmar borrado de Anotación')}
+            className='eink-bordered bg-base-100 mx-4 w-full max-w-sm rounded-2xl p-5 shadow-2xl'
+          >
+            <div className='mb-4 flex items-start gap-3'>
+              <div className='flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-500/10 text-red-500'>
+                <RiDeleteBinLine aria-hidden className='size-5' />
+              </div>
+              <div className='min-w-0'>
+                <h3 className='text-base font-semibold'>{_('Borrar anotación')}</h3>
+                <p className='text-base-content/65 mt-1 text-sm leading-relaxed'>
+                  {_('¿Estás seguro de que quieres borrar esta anotación?')}
+                </p>
+              </div>
+            </div>
+
+            <div className='flex justify-end gap-2'>
+              <button
+                type='button'
+                className='btn btn-ghost btn-sm eink-bordered'
+                onClick={handleCancelAnotacionDelete}
+              >
+                {_('Cancelar')}
+              </button>
+              <button
+                type='button'
+                className='btn btn-error btn-sm text-white'
+                onClick={handleConfirmAnotacionDelete}
               >
                 {_('Sí, borrar')}
               </button>

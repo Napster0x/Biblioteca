@@ -182,7 +182,13 @@ describe('Bookshelf dictionary entry', () => {
       .getAllByRole('button')
       .map((button) => button.getAttribute('aria-label'))
       .filter((label) => label !== 'Show Book Details');
-    expect(itemLabels).toEqual(['Diccionario', 'Citas', 'Alpha field notes', 'Import Books']);
+    expect(itemLabels).toEqual([
+      'Diccionario',
+      'Citas',
+      'Anotaciones',
+      'Alpha field notes',
+      'Import Books',
+    ]);
     expect(screen.queryByRole('button', { name: 'Zeta handbook' })).toBeNull();
   });
 
@@ -199,7 +205,7 @@ describe('Bookshelf dictionary entry', () => {
       .getAllByRole('button')
       .map((button) => button.getAttribute('aria-label'))
       .filter((label) => label !== 'Show Book Details');
-    expect(itemLabels.slice(0, 3)).toEqual(['Diccionario', 'Citas', 'Fiction']);
+    expect(itemLabels.slice(0, 4)).toEqual(['Diccionario', 'Citas', 'Anotaciones', 'Fiction']);
   });
 
   it('keeps Diccionario visible when search filters out every book', () => {
@@ -210,7 +216,7 @@ describe('Bookshelf dictionary entry', () => {
     const itemLabels = screen
       .getAllByRole('button')
       .map((button) => button.getAttribute('aria-label'));
-    expect(itemLabels).toEqual(['Diccionario', 'Citas', 'Import Books']);
+    expect(itemLabels).toEqual(['Diccionario', 'Citas', 'Anotaciones', 'Import Books']);
     expect(screen.queryByRole('button', { name: 'Alpha field notes' })).toBeNull();
   });
 

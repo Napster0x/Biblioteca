@@ -11,11 +11,13 @@ import { useReaderStore } from '@/store/readerStore';
 import { useNotebookStore } from '@/store/notebookStore';
 import { useBookDataStore } from '@/store/bookDataStore';
 import { useCitasStore } from '@/store/citasStore';
+import { useAnotacionesStore } from '@/store/annotacionesStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useResponsiveSize } from '@/hooks/useResponsiveSize';
 import { eventDispatcher } from '@/utils/event';
 import { removeBookNoteOverlays } from '../../utils/annotatorUtil';
 import { getCitasService } from '@/services/citas/citasServiceCache';
+import { getAnotacionesService } from '@/services/annotations/annotacionesServiceCache';
 import useScrollToItem from '../../hooks/useScrollToItem';
 import TextButton from '@/components/TextButton';
 import TextEditor, { TextEditorRef } from '@/components/TextEditor';
@@ -89,6 +91,20 @@ const BooknoteItem: React.FC<BooknoteItemProps> = ({ bookKey, item, isNearest, o
             useCitasStore.getState().deleteQuotes([note.citeId], citasService),
           )
           .catch((err) => console.warn('Failed to persist sidebar quote deletion:', err));
+      }
+    }
+
+    // Sync deletion to Anotaciones store if this note has an annotationId
+    if (note.annotationId) {
+      try {
+        useAnotacionesStore.getState().removeAnnotationsFromState([note.annotationId]);
+      } catch (err) {
+        console.warn('Failed to remove annotation from Anotaciones state:', err);
+      }
+      if (appService) {
+        getAnotacionesService(appService)
+          .then((svc) => svc.deleteAnnotations([note.annotationId]))
+          .catch((err) => console.warn('Failed to persist sidebar annotation deletion:', err));
       }
     }
   };

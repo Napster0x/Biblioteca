@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   selectAll: vi.fn(),
   navigateToLibrary: vi.fn(),
   navigateToReader: vi.fn(),
+  softDeleteAnotacionesHighlights: vi.fn().mockResolvedValue(undefined),
   appService: { platform: 'test' },
   envConfig: {},
   settings: { animated: false },
@@ -54,6 +55,13 @@ vi.mock('@/store/settingsStore', () => ({
   useSettingsStore: () => ({ settings: mocks.settings }),
 }));
 
+vi.mock('@/context/EnvContext', () => ({
+  useEnv: () => ({
+    envConfig: mocks.envConfig,
+    appService: mocks.appService,
+  }),
+}));
+
 vi.mock('@/store/annotacionesStore', () => ({
   useAnotacionesStore: (selector: (s: MockAnotacionesStoreState) => unknown) =>
     selector({
@@ -72,6 +80,10 @@ vi.mock('@/store/annotacionesStore', () => ({
       exitSelectMode: mocks.exitSelectMode,
       selectAll: mocks.selectAll,
     }),
+}));
+
+vi.mock('@/app/reader/utils/annotacionesCapture', () => ({
+  softDeleteAnotacionesHighlights: mocks.softDeleteAnotacionesHighlights,
 }));
 
 vi.mock('@/utils/nav', () => ({
@@ -127,6 +139,8 @@ describe('AnotacionesGrid', () => {
     mocks.exitSelectMode.mockReset();
     mocks.navigateToLibrary.mockReset();
     mocks.navigateToReader.mockReset();
+    mocks.softDeleteAnotacionesHighlights.mockReset();
+    mocks.softDeleteAnotacionesHighlights.mockResolvedValue(undefined);
   });
 
   afterEach(() => {

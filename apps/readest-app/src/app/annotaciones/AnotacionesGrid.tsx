@@ -6,6 +6,9 @@ import { PiBookBookmark, PiMagnifyingGlass, PiSelectionAll, PiTrash, PiX } from 
 import { useTranslation } from '@/hooks/useTranslation';
 import type { AnotacionesService } from '@/services/annotations/AnotacionesService';
 import { useAnotacionesStore } from '@/store/annotacionesStore';
+import { useSettingsStore } from '@/store/settingsStore';
+import { useEnv } from '@/context/EnvContext';
+import { softDeleteAnotacionesHighlights } from '@/app/reader/utils/annotacionesCapture';
 import { navigateToLibrary } from '@/utils/nav';
 import AnotacionTile from './AnotacionTile';
 
@@ -16,6 +19,8 @@ interface AnotacionesGridProps {
 export default function AnotacionesGrid({ service }: AnotacionesGridProps) {
   const _ = useTranslation();
   const router = useRouter();
+  const { appService, envConfig } = useEnv();
+  const { settings } = useSettingsStore();
   const annotations = useAnotacionesStore((s) => s.annotations);
   const isSelectMode = useAnotacionesStore((s) => s.isSelectMode);
   const selectedAnnotationIds = useAnotacionesStore((s) => s.selectedAnnotationIds);
@@ -82,10 +87,28 @@ export default function AnotacionesGrid({ service }: AnotacionesGridProps) {
 
   const handleConfirmDelete = useCallback(async () => {
     const ids = selectedAnnotationIds;
+
+    // Soft-delete BookNotes in reader configs so the highlights disappear
+    // from the reader even before the user re-opens the book.
+    try {
+      await softDeleteAnotacionesHighlights(annotations, ids, appService, envConfig, settings);
+    } catch (err) {
+      console.warn('Failed to soft-delete annotation highlights:', err);
+    }
+
     await deleteAnnotations(ids, service);
     exitSelectMode();
     setShowDeleteConfirm(false);
-  }, [deleteAnnotations, exitSelectMode, selectedAnnotationIds, service]);
+  }, [
+    annotations,
+    appService,
+    deleteAnnotations,
+    envConfig,
+    exitSelectMode,
+    selectedAnnotationIds,
+    service,
+    settings,
+  ]);
 
   return (
     <main className='text-base-content full-height flex flex-col bg-base-200'>
