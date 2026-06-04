@@ -1,0 +1,225 @@
+'use client';
+
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { PiBookBookmark, PiMagnifyingGlass, PiSelectionAll, PiTrash, PiX } from 'react-icons/pi';
+import { useTranslation } from '@/hooks/useTranslation';
+import type { AnotacionesService } from '@/services/annotations/AnotacionesService';
+import { useAnotacionesStore } from '@/store/annotacionesStore';
+import { navigateToLibrary } from '@/utils/nav';
+import AnotacionTile from './AnotacionTile';
+
+interface AnotacionesGridProps {
+  service: AnotacionesService;
+}
+
+export default function AnotacionesGrid({ service }: AnotacionesGridProps) {
+  const _ = useTranslation();
+  const router = useRouter();
+  const annotations = useAnotacionesStore((s) => s.annotations);
+  const isSelectMode = useAnotacionesStore((s) => s.isSelectMode);
+  const selectedAnnotationIds = useAnotacionesStore((s) => s.selectedAnnotationIds);
+  const loadAnnotations = useAnotacionesStore((s) => s.loadAnnotations);
+  const deleteAnnotations = useAnotacionesStore((s) => s.deleteAnnotations);
+  const enterSelectMode = useAnotacionesStore((s) => s.enterSelectMode);
+  const exitSelectMode = useAnotacionesStore((s) => s.exitSelectMode);
+
+  const [search, setSearch] = useState('');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+
+  const filteredAnnotations = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return annotations;
+    return annotations.filter(
+      (a) =>
+        a.text.toLowerCase().includes(query) ||
+        (a.bookAuthor ?? '').toLowerCase().includes(query) ||
+        (a.bookTitle ?? '').toLowerCase().includes(query) ||
+        a.note.toLowerCase().includes(query),
+    );
+  }, [annotations, search]);
+
+  useEffect(() => {
+    loadAnnotations(service);
+  }, [loadAnnotations, service]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const highlight = params.get('highlight');
+    if (highlight) {
+      setHighlightedId(highlight);
+      setSearch('');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!highlightedId || filteredAnnotations.length === 0) return;
+    const raf = requestAnimationFrame(() => {
+      document.getElementById(highlightedId)?.scrollIntoView({
+        behavior: 'instant',
+        block: 'center',
+      });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [highlightedId, filteredAnnotations]);
+
+  const handleBack = useCallback(() => {
+    navigateToLibrary(router);
+  }, [router]);
+
+  const handleSearchChange = useCallback((nextSearch: string) => {
+    setSearch(nextSearch);
+  }, []);
+
+  const handleDeleteClick = useCallback(() => {
+    setShowDeleteConfirm(true);
+  }, []);
+
+  const handleCancelDelete = useCallback(() => {
+    setShowDeleteConfirm(false);
+  }, []);
+
+  const handleConfirmDelete = useCallback(async () => {
+    const ids = selectedAnnotationIds;
+    await deleteAnnotations(ids, service);
+    exitSelectMode();
+    setShowDeleteConfirm(false);
+  }, [deleteAnnotations, exitSelectMode, selectedAnnotationIds, service]);
+
+  return (
+    <main className='text-base-content full-height flex flex-col bg-base-200'>
+      <section className='mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 py-6 sm:px-6'>
+        <div className='mb-6 flex items-center gap-3'>
+          <button
+            type='button'
+            onClick={handleBack}
+            className='flex items-center justify-center rounded-full transition-colors hover:bg-black/10'
+            aria-label={_('Back to Library')}
+          >
+            <PiBookBookmark aria-hidden className='text-base-content/60 size-7' />
+          </button>
+          <h1 className='font-serif text-2xl font-semibold tracking-tight'>{_('Anotaciones')}</h1>
+        </div>
+
+        <div className='relative mb-4'>
+          <PiMagnifyingGlass
+            aria-hidden
+            className='text-base-content/40 pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2'
+          />
+          <input
+            type='text'
+            className='eink-bordered input input-sm w-full bg-base-100 pl-9'
+            placeholder={_('Search\u2026')}
+            value={search}
+            onChange={(event) => handleSearchChange(event.target.value)}
+            aria-label={_('Search')}
+          />
+          <div className='absolute end-2 top-1/2 flex -translate-y-1/2 items-center gap-1'>
+            <button
+              type='button'
+              onClick={enterSelectMode}
+              className='btn btn-ghost btn-xs eink-bordered flex h-7 w-7 items-center justify-center p-0'
+              aria-label={_('Select')}
+              title={_('Select')}
+            >
+              <PiSelectionAll aria-hidden className='size-4' />
+            </button>
+          </div>
+        </div>
+
+        {filteredAnnotations.length === 0 ? (
+          <div className='eink-bordered bg-base-100 flex flex-1 flex-col items-center justify-center rounded-2xl p-8 text-center'>
+            <PiBookBookmark aria-hidden className='text-base-content/60 mb-6 size-16' />
+            {search ? (
+              <>
+                <h2 className='mb-2 text-xl font-semibold'>{_('No results found')}</h2>
+                <p className='text-base-content/70 max-w-md text-pretty text-sm'>
+                  {_('Annotations are created when you save a passage from the reader.')}
+                </p>
+              </>
+            ) : (
+              <>
+                <h2 className='mb-2 text-xl font-semibold'>{_('No annotations yet')}</h2>
+                <p className='text-base-content/70 max-w-md text-pretty text-sm'>
+                  {_('Annotations are created when you save a passage from the reader.')}
+                </p>
+              </>
+            )}
+          </div>
+        ) : (
+          <div className='flex flex-col gap-3' role='list' aria-label={_('Annotations')}>
+            {filteredAnnotations.map((annotation) => (
+              <div key={annotation.id} role='listitem'>
+                <AnotacionTile
+                  annotation={annotation}
+                  isHighlighted={highlightedId === annotation.id}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {isSelectMode && (
+          <div className='fixed bottom-0 left-0 right-0 z-40 pb-4'>
+            <div className='eink-bordered bg-base-100 mx-auto flex w-fit max-w-[calc(100vw-1rem)] items-center justify-center gap-x-6 rounded-lg p-4 shadow-lg'>
+              <button
+                type='button'
+                onClick={handleDeleteClick}
+                disabled={selectedAnnotationIds.length === 0}
+                className='flex flex-col items-center gap-1 disabled:opacity-50'
+                aria-label={_('Delete selected')}
+              >
+                <PiTrash aria-hidden className='size-5 text-red-500' />
+                <span className='text-xs text-red-500'>{_('Delete')}</span>
+              </button>
+              <button
+                type='button'
+                onClick={exitSelectMode}
+                className='flex flex-col items-center gap-1'
+                aria-label={_('Cancel')}
+              >
+                <PiX aria-hidden className='size-5' />
+                <span className='text-xs'>{_('Cancel')}</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {showDeleteConfirm && (
+          <div
+            className='fixed inset-0 z-50 flex items-center justify-center bg-black/30'
+            role='dialog'
+            aria-label={_('Delete selected')}
+            aria-modal='true'
+          >
+            <div className='eink-bordered bg-base-100 mx-4 w-full max-w-sm rounded-2xl p-6 shadow-xl'>
+              <h3 className='mb-2 text-lg font-semibold'>{_('Delete selected')}</h3>
+              <p className='text-base-content/70 mb-6 text-sm'>
+                {_('Delete {{count}} selected annotation(s)?', {
+                  count: String(selectedAnnotationIds.length),
+                })}
+              </p>
+              <div className='flex justify-end gap-3'>
+                <button
+                  type='button'
+                  onClick={handleCancelDelete}
+                  className='btn btn-ghost btn-sm eink-bordered'
+                >
+                  {_('Cancel')}
+                </button>
+                <button
+                  type='button'
+                  onClick={handleConfirmDelete}
+                  className='btn btn-primary btn-sm'
+                >
+                  {_('Delete')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}

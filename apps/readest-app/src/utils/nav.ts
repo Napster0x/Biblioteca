@@ -139,6 +139,19 @@ export const navigateToDictionary = (
   }
 };
 
+export const navigateToAnotaciones = (
+  router: ReturnType<typeof useRouter>,
+  queryParams?: string,
+  navOptions?: { scroll?: boolean },
+) => {
+  const href = `/annotaciones${queryParams ? `?${queryParams}` : ''}`;
+  if (navOptions) {
+    router.push(href, navOptions);
+  } else {
+    router.push(href);
+  }
+};
+
 export const navigateToCitas = (
   router: ReturnType<typeof useRouter>,
   queryParams?: string,

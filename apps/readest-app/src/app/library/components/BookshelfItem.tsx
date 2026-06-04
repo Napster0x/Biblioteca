@@ -11,6 +11,7 @@ import { eventDispatcher } from '@/utils/event';
 import { getOSPlatform } from '@/utils/misc';
 import { throttle } from '@/utils/throttle';
 import {
+  navigateToAnotaciones,
   navigateToCitas,
   navigateToDictionary,
   navigateToReader,
@@ -20,9 +21,11 @@ import { LibraryCoverFitType, LibraryViewModeType } from '@/types/settings';
 import { BOOK_UNGROUPED_ID, BOOK_UNGROUPED_NAME } from '@/services/constants';
 import { FILE_REVEAL_LABELS, FILE_REVEAL_PLATFORMS } from '@/utils/os';
 import { Book, BooksGroup, ReadingStatus } from '@/types/book';
+import { AnotacionesShelfItem, isAnotacionesShelfItem } from '@/types/annotaciones';
 import { CitasShelfItem, isCitasShelfItem } from '@/types/citas';
 import { DictionaryShelfItem, isDictionaryShelfItem } from '@/types/dictionary';
 import { md5Fingerprint } from '@/utils/md5';
+import AnotacionesShelfCard from './AnotacionesShelfCard';
 import BookItem from './BookItem';
 import GroupItem from './GroupItem';
 import CitasShelfCard from './CitasShelfCard';
@@ -91,7 +94,7 @@ export const generateBookshelfItems = (
 
 interface BookshelfItemProps {
   mode: LibraryViewModeType;
-  item: Book | BooksGroup | DictionaryShelfItem | CitasShelfItem;
+  item: Book | BooksGroup | DictionaryShelfItem | CitasShelfItem | AnotacionesShelfItem;
   coverFit: LibraryCoverFitType;
   isSelectMode: boolean;
   itemSelected: boolean;
@@ -184,6 +187,12 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
   const handleCitasClick = useCallback(() => {
     if (!isSelectMode) {
       navigateToCitas(router);
+    }
+  }, [isSelectMode, router]);
+
+  const handleAnotacionesClick = useCallback(() => {
+    if (!isSelectMode) {
+      navigateToAnotaciones(router);
     }
   }, [isSelectMode, router]);
 
@@ -304,7 +313,7 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleSelectItem = useCallback(
     throttle(() => {
-      if (isDictionaryShelfItem(item) || isCitasShelfItem(item)) {
+      if (isDictionaryShelfItem(item) || isCitasShelfItem(item) || isAnotacionesShelfItem(item)) {
         return;
       }
       if (!isSelectMode) {
@@ -330,19 +339,28 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
         handleDictionaryClick();
       } else if (isCitasShelfItem(item)) {
         handleCitasClick();
+      } else if (isAnotacionesShelfItem(item)) {
+        handleAnotacionesClick();
       } else if ('format' in item) {
         handleBookClick(item as Book);
       } else {
         handleGroupClick(item as BooksGroup);
       }
     }, 100),
-    [handleSelectItem, handleBookClick, handleGroupClick, handleDictionaryClick, handleCitasClick],
+    [
+      handleSelectItem,
+      handleBookClick,
+      handleGroupClick,
+      handleDictionaryClick,
+      handleCitasClick,
+      handleAnotacionesClick,
+    ],
   );
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleContextMenu = useCallback(
     throttle(() => {
-      if (isDictionaryShelfItem(item) || isCitasShelfItem(item)) {
+      if (isDictionaryShelfItem(item) || isCitasShelfItem(item) || isAnotacionesShelfItem(item)) {
         return;
       }
       if ('format' in item) {
@@ -398,7 +416,7 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
         role='button'
         tabIndex={0}
         aria-label={
-          isDictionaryShelfItem(item) || isCitasShelfItem(item)
+          isDictionaryShelfItem(item) || isCitasShelfItem(item) || isAnotacionesShelfItem(item)
             ? item.title
             : 'format' in item
               ? item.title
@@ -415,6 +433,8 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
             <DictionaryShelfCard item={item} mode={mode} />
           ) : isCitasShelfItem(item) ? (
             <CitasShelfCard item={item} mode={mode} />
+          ) : isAnotacionesShelfItem(item) ? (
+            <AnotacionesShelfCard item={item} mode={mode} />
           ) : 'format' in item ? (
             <BookItem
               mode={mode}

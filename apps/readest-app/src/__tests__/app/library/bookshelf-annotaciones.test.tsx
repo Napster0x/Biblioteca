@@ -1,34 +1,16 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as React from 'react';
 
 import Bookshelf from '@/app/library/components/Bookshelf';
 import { DEFAULT_SYSTEM_SETTINGS } from '@/services/constants';
 import type { Book } from '@/types/book';
-import type { CitasService } from '@/services/citas/CitasService';
 
-const {
-  pushMock,
-  navigateToReaderMock,
-  menuNewMock,
-  menuItemNewMock,
-  loadBookConfigMock,
-  saveBookConfigMock,
-  deleteQuotesByBookMock,
-  getCitasServiceMock,
-  removeQuotesFromStateMock,
-  consoleWarnMock,
-} = vi.hoisted(() => ({
+const { pushMock, navigateToAnotacionesMock, menuNewMock, menuItemNewMock } = vi.hoisted(() => ({
   pushMock: vi.fn(),
-  navigateToReaderMock: vi.fn(),
+  navigateToAnotacionesMock: vi.fn(),
   menuNewMock: vi.fn(async () => ({ append: vi.fn(), popup: vi.fn() })),
   menuItemNewMock: vi.fn(async () => ({})),
-  loadBookConfigMock: vi.fn(),
-  saveBookConfigMock: vi.fn(),
-  deleteQuotesByBookMock: vi.fn<[string], Promise<string[]>>(),
-  getCitasServiceMock: vi.fn(),
-  removeQuotesFromStateMock: vi.fn(),
-  consoleWarnMock: vi.fn(),
 }));
 
 let searchParams = new URLSearchParams();
@@ -49,7 +31,7 @@ vi.mock('@/utils/nav', async () => {
   const actual = await vi.importActual<typeof import('@/utils/nav')>('@/utils/nav');
   return {
     ...actual,
-    navigateToReader: navigateToReaderMock,
+    navigateToAnotaciones: navigateToAnotacionesMock,
   };
 });
 
@@ -66,8 +48,6 @@ vi.mock('@/context/EnvContext', () => ({
       isMobileApp: false,
       isAndroidApp: false,
       isBookAvailable: vi.fn(async () => true),
-      loadBookConfig: loadBookConfigMock,
-      saveBookConfig: saveBookConfigMock,
     },
   }),
 }));
@@ -194,28 +174,20 @@ const renderBookshelf = (books: Book[], isSelectMode = false) =>
     />,
   );
 
-const bookshelfLabels = () =>
-  screen
-    .getAllByRole('button')
-    .map((button) => button.getAttribute('aria-label'))
-    .filter((label) => label !== 'Show Book Details');
-
 afterEach(() => {
   cleanup();
   pushMock.mockReset();
-  navigateToReaderMock.mockReset();
+  navigateToAnotacionesMock.mockReset();
   menuNewMock.mockClear();
   menuItemNewMock.mockClear();
-  loadBookConfigMock.mockReset();
-  saveBookConfigMock.mockReset();
   searchParams = new URLSearchParams();
   selectedBooks = [];
   hasContextMenu = false;
   libraryViewMode = 'grid';
 });
 
-describe('Bookshelf Citas entry', () => {
-  it('pins Citas second while real books follow both false books and Anotaciones', () => {
+describe('Bookshelf Anotaciones entry', () => {
+  it('pins Anotaciones third after DICT and CITAS, before real books', () => {
     searchParams = new URLSearchParams('sort=title&order=asc');
 
     renderBookshelf([
@@ -238,166 +210,39 @@ describe('Bookshelf Citas entry', () => {
     ]);
   });
 
-  it('keeps Citas visible in second position when search filters out every book', () => {
-    searchParams = new URLSearchParams('q=missing');
-
+  it('opens /annotaciones without invoking reader navigation', () => {
     renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
 
-    expect(bookshelfLabels()).toEqual(['Diccionario', 'Citas', 'Anotaciones', 'Import Books']);
-    expect(screen.queryByRole('button', { name: 'Alpha field notes' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Anotaciones' }));
+
+    expect(navigateToAnotacionesMock).toHaveBeenCalled();
+    expect(pushMock).not.toHaveBeenCalled();
   });
 
-  it('opens /citas without invoking reader navigation', () => {
-    renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Citas' }));
-
-    expect(pushMock).toHaveBeenCalledWith('/citas');
-    expect(navigateToReaderMock).not.toHaveBeenCalled();
-    expect(loadBookConfigMock).not.toHaveBeenCalled();
-    expect(saveBookConfigMock).not.toHaveBeenCalled();
-  });
-
-  it('renders the Citas list subtitle through the flat i18n key', () => {
+  it('renders the Anotaciones list subtitle through the flat i18n key', () => {
     libraryViewMode = 'list';
 
     renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
 
-    expect(screen.getByText('Saved passages')).toBeTruthy();
-    expect(screen.queryByText('Citas guardadas desde tus lecturas')).toBeNull();
+    expect(screen.getByText('Saved annotations')).toBeTruthy();
   });
 
-  it('ignores selection attempts on Citas', () => {
+  it('ignores selection attempts on Anotaciones', () => {
     renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })], true);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Citas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Anotaciones' }));
 
     expect(selectedBooks).toEqual([]);
     expect(pushMock).not.toHaveBeenCalled();
   });
 
-  it('ignores the context menu for Citas', () => {
+  it('ignores the context menu for Anotaciones', () => {
     hasContextMenu = true;
     renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
 
-    fireEvent.contextMenu(screen.getByRole('button', { name: 'Citas' }));
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Anotaciones' }));
 
     expect(menuNewMock).not.toHaveBeenCalled();
     expect(menuItemNewMock).not.toHaveBeenCalled();
-  });
-});
-
-describe('Cascade delete of quotes on book deletion', () => {
-  beforeEach(() => {
-    vi.spyOn(console, 'warn').mockImplementation(consoleWarnMock);
-    getCitasServiceMock.mockReset();
-    deleteQuotesByBookMock.mockReset();
-    removeQuotesFromStateMock.mockReset();
-    consoleWarnMock.mockReset();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('calls deleteQuotesByBook with bookHash on successful book deletion', async () => {
-    const mockAppService = {
-      deleteBook: vi.fn().mockResolvedValue(undefined),
-    };
-
-    getCitasServiceMock.mockResolvedValue({
-      deleteQuotesByBook: deleteQuotesByBookMock,
-    });
-    deleteQuotesByBookMock.mockResolvedValue(['id1', 'id2']);
-
-    const handleDelete = () => {
-      return async (book: Book) => {
-        try {
-          await (mockAppService as any)?.deleteBook(book);
-          if (mockAppService) {
-            const cs = await getCitasServiceMock(mockAppService);
-            const deletedIds = await cs.deleteQuotesByBook(book.hash);
-            removeQuotesFromStateMock(deletedIds);
-          }
-          return true;
-        } catch {
-          return false;
-        }
-      };
-    };
-
-    const book = makeBook({ hash: 'book-abc' });
-    const result = await handleDelete()(book);
-
-    expect(result).toBe(true);
-    expect(deleteQuotesByBookMock).toHaveBeenCalledWith('book-abc');
-    expect(removeQuotesFromStateMock).toHaveBeenCalledWith(['id1', 'id2']);
-  });
-
-  it('does NOT call deleteQuotesByBook when book deletion fails', async () => {
-    const mockAppService = {
-      deleteBook: vi.fn().mockRejectedValue(new Error('delete failed')),
-    };
-
-    getCitasServiceMock.mockResolvedValue({
-      deleteQuotesByBook: deleteQuotesByBookMock,
-    });
-
-    const handleDelete = () => {
-      return async (book: Book) => {
-        try {
-          await (mockAppService as any)?.deleteBook(book);
-          return true;
-        } catch {
-          return false;
-        }
-      };
-    };
-
-    const result = await handleDelete()(makeBook({ hash: 'book-fail' }));
-
-    expect(result).toBe(false);
-    expect(deleteQuotesByBookMock).not.toHaveBeenCalled();
-  });
-
-  it('logs a warning when cascade delete fails but still returns success', async () => {
-    const mockAppService = {
-      deleteBook: vi.fn().mockResolvedValue(undefined),
-    };
-
-    getCitasServiceMock.mockResolvedValue({
-      deleteQuotesByBook: deleteQuotesByBookMock,
-    });
-    deleteQuotesByBookMock.mockRejectedValue(new Error('db locked'));
-
-    const handleDelete = () => {
-      return async (book: Book) => {
-        try {
-          await (mockAppService as any)?.deleteBook(book);
-          if (mockAppService) {
-            try {
-              const cs = await getCitasServiceMock(mockAppService);
-              const deletedIds = await cs.deleteQuotesByBook(book.hash);
-              removeQuotesFromStateMock(deletedIds);
-            } catch (e) {
-              consoleWarnMock('Cascade delete of Citas quotes failed', e);
-            }
-          }
-          return true;
-        } catch {
-          return false;
-        }
-      };
-    };
-
-    const result = await handleDelete()(makeBook({ hash: 'book-cascade-fail' }));
-
-    expect(result).toBe(true);
-    expect(deleteQuotesByBookMock).toHaveBeenCalledWith('book-cascade-fail');
-    expect(consoleWarnMock).toHaveBeenCalledWith(
-      'Cascade delete of Citas quotes failed',
-      expect.any(Error),
-    );
-    expect(removeQuotesFromStateMock).not.toHaveBeenCalled();
   });
 });

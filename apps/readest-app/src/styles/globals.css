@@ -690,6 +690,27 @@ input[type='range'].slider-input {
   border: 2px solid red;
 }
 
+/* anotaciones pulse animation for highlight-to-annotaciones navigation */
+@keyframes anotaciones-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.anotaciones-pulse {
+  animation: anotaciones-pulse 1.5s ease-in-out 2;
+}
+
+[data-eink='true'] .anotaciones-pulse {
+  animation: none;
+  border: 2px solid red;
+}
+
 /* View Transitions for library navigation */
 ::view-transition-old(root),
 ::view-transition-new(root) {
