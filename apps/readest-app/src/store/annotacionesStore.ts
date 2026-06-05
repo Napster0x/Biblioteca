@@ -15,6 +15,7 @@ export interface AnotacionesActions {
   loadAnnotations(service: AnotacionesService): Promise<void>;
   searchAnnotations(query: string, service: AnotacionesService): Promise<void>;
   createAnnotation(input: AnnotacionInput, service: AnotacionesService): Promise<Annotacion>;
+  updateAnnotation(id: string, note: string, service: AnotacionesService): Promise<Annotacion>;
   deleteAnnotations(ids: readonly string[], service: AnotacionesService): Promise<void>;
   removeAnnotationsFromState(ids: readonly string[]): void;
   setSearchQuery(query: string): void;
@@ -61,6 +62,21 @@ export const useAnotacionesStore = create<AnotacionesStore>((set) => ({
       const annotation = await service.createAnnotation(input);
       set((state) => ({
         annotations: [annotation, ...state.annotations],
+        isLoading: false,
+      }));
+      return annotation;
+    } catch (err) {
+      set({ isLoading: false });
+      throw err;
+    }
+  },
+
+  async updateAnnotation(id, note, service) {
+    set({ isLoading: true });
+    try {
+      const annotation = await service.updateAnnotation({ id, note });
+      set((state) => ({
+        annotations: state.annotations.map((item) => (item.id === id ? annotation : item)),
         isLoading: false,
       }));
       return annotation;

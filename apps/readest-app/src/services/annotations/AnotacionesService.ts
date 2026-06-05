@@ -49,6 +49,11 @@ export interface AnotacionesServiceOptions {
   createId?: () => string;
 }
 
+export interface UpdateAnnotacionInput {
+  id: string;
+  note?: string;
+}
+
 export class AnotacionesService {
   private now: () => number;
   private createId: () => string;
@@ -140,6 +145,41 @@ export class AnotacionesService {
       createdAt,
       updatedAt: null,
     };
+  }
+
+  async updateAnnotation(input: UpdateAnnotacionInput): Promise<Annotacion> {
+    const updatedAt = this.now();
+    const sets: string[] = [];
+    const params: unknown[] = [];
+
+    if (input.note !== undefined) {
+      sets.push('note = ?');
+      params.push(input.note);
+    }
+
+    if (sets.length === 0) {
+      const existing = await this.getAnnotation(input.id);
+      if (!existing) throw new Error('Annotation not found');
+      return existing;
+    }
+
+    sets.push('updated_at = ?');
+    params.push(updatedAt, input.id);
+
+    await this.db.execute(`UPDATE annotations SET ${sets.join(', ')} WHERE id = ?`, params);
+
+    const updated = await this.getAnnotation(input.id);
+    if (!updated) throw new Error('Annotation not found');
+    return updated;
+  }
+
+  async getAnnotation(id: string): Promise<Annotacion | null> {
+    const rows = await this.db.select<AnnotacionRow>(
+      `SELECT ${ANNOTATION_COLUMNS} FROM annotations WHERE id = ?`,
+      [id],
+    );
+    const row = rows[0];
+    return row ? annotationFromRow(row) : null;
   }
 
   async deleteAnnotations(ids: readonly string[]): Promise<void> {

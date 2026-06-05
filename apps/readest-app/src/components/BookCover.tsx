@@ -3,6 +3,7 @@ import Image from 'next/image';
 import { memo, useEffect, useRef, useState } from 'react';
 import { Book } from '@/types/book';
 import { LibraryCoverFitType, LibraryViewModeType } from '@/types/settings';
+import { isTauriAppPlatform } from '@/services/environment';
 import { formatAuthors, formatTitle } from '@/utils/book';
 
 interface BookCoverProps {
@@ -32,8 +33,14 @@ const BookCover: React.FC<BookCoverProps> = memo<BookCoverProps>(
     const coverRef = useRef<HTMLDivElement>(null);
     const [imageLoaded, setImageLoaded] = useState(false);
     const [imageError, setImageError] = useState(false);
+    const cacheBustRef = useRef(Date.now());
 
     const shouldShowSpine = showSpine && imageLoaded && !imageError;
+    const rawCoverSrc = book.metadata?.coverImageUrl || book.coverImageUrl!;
+    const coverSrc =
+      isTauriAppPlatform() && rawCoverSrc.startsWith('asset:')
+        ? `${rawCoverSrc}${rawCoverSrc.includes('?') ? '&' : '?'}v=${book.hash}-${book.updatedAt ?? 0}-${cacheBustRef.current}`
+        : rawCoverSrc;
 
     const toggleImageVisibility = (showImage: boolean) => {
       if (coverRef.current) {
@@ -77,7 +84,7 @@ const BookCover: React.FC<BookCoverProps> = memo<BookCoverProps>(
         {coverFit === 'crop' ? (
           <>
             <Image
-              src={book.metadata?.coverImageUrl || book.coverImageUrl!}
+              src={coverSrc}
               alt={book.title}
               fill={true}
               loading='lazy'
@@ -98,7 +105,7 @@ const BookCover: React.FC<BookCoverProps> = memo<BookCoverProps>(
               )}
             >
               <Image
-                src={book.metadata?.coverImageUrl || book.coverImageUrl!}
+                src={coverSrc}
                 alt={book.title}
                 width={0}
                 height={0}

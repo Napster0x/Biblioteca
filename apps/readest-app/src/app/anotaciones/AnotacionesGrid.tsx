@@ -111,18 +111,30 @@ export default function AnotacionesGrid({ service }: AnotacionesGridProps) {
   ]);
 
   return (
-    <main className='text-base-content full-height flex flex-col bg-base-200'>
-      <section className='mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 py-6 sm:px-6'>
-        <div className='mb-6 flex items-center gap-3'>
+    <main className='text-base-content full-height flex flex-col overflow-y-auto bg-base-200 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'>
+      <section className='mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 pb-24 pt-5 sm:px-6 sm:pt-6'>
+        <div className='mb-6 flex items-center gap-4'>
           <button
             type='button'
             onClick={handleBack}
-            className='flex items-center justify-center rounded-full transition-colors hover:bg-black/10'
+            className='mt-1 flex self-center items-center justify-center rounded-full transition-colors hover:bg-black/10'
             aria-label={_('Back to Library')}
           >
-            <PiBookBookmark aria-hidden className='text-base-content/60 size-7' />
+            <span
+              aria-hidden='true'
+              className='relative inline-block size-7 rounded-full bg-[radial-gradient(circle_at_32%_28%,rgba(255,255,255,0.9)_0%,rgba(247,233,170,0.98)_18%,rgba(214,176,62,0.96)_60%,rgba(162,120,18,0.92)_100%)] shadow-[0_2px_4px_rgba(0,0,0,0.28),0_7px_18px_rgba(0,0,0,0.16),0_0_14px_rgba(214,176,62,0.34)] before:absolute before:left-[20%] before:top-[16%] before:h-[20%] before:w-[20%] before:rounded-full before:bg-white/75 before:content-[""] after:absolute after:left-1/2 after:top-[115%] after:h-[26%] after:w-[130%] after:-translate-x-1/2 after:rounded-full after:bg-black/12 after:blur-[2px] after:content-[""]'
+            />
           </button>
-          <h1 className='font-serif text-2xl font-semibold tracking-tight'>{_('Anotaciones')}</h1>
+          <h1
+            className='font-["Times_New_Roman",Times,serif] text-4xl font-semibold italic tracking-[0.02em] text-white sm:text-5xl'
+            style={{
+              WebkitTextStroke: '0.45px rgba(214,170,32,0.52)',
+              textShadow:
+                '0 1px 0 rgba(255,255,255,0.15), 0 2px 6px rgba(0,0,0,0.24), 0 0 10px rgba(214,170,32,0.12)',
+            }}
+          >
+            {_('Anotaciones')}
+          </h1>
         </div>
 
         <div className='relative mb-4'>
@@ -176,6 +188,7 @@ export default function AnotacionesGrid({ service }: AnotacionesGridProps) {
               <div key={annotation.id} role='listitem'>
                 <AnotacionTile
                   annotation={annotation}
+                  service={service}
                   isHighlighted={highlightedId === annotation.id}
                 />
               </div>

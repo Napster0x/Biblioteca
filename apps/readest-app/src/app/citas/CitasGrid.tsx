@@ -115,18 +115,32 @@ export default function CitasGrid({ service, appService: appServiceProp }: Citas
   ]);
 
   return (
-    <main className='text-base-content full-height flex flex-col bg-base-200'>
-      <section className='mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 py-6 sm:px-6'>
-        <div className='mb-6 flex items-center gap-3'>
+    <main className='text-base-content full-height flex flex-col overflow-y-auto bg-base-200 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'>
+      <section className='mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 pb-24 pt-5 sm:px-6 sm:pt-6'>
+        <div className='mb-6 flex items-center gap-4'>
           <button
             type='button'
             onClick={handleBack}
-            className='flex items-center justify-center rounded-full transition-colors hover:bg-black/10'
+            className='mt-1 flex self-center items-center justify-center rounded-full transition-colors hover:bg-black/10'
             aria-label={_('Back to Library')}
           >
-            <PiBookBookmark aria-hidden className='text-base-content/60 size-7' />
+            <span
+              aria-hidden='true'
+              className='relative inline-block size-7 rounded-full bg-[radial-gradient(circle_at_32%_28%,rgba(210,210,210,0.22)_0%,rgba(72,72,72,0.82)_18%,rgba(14,14,14,1)_60%,rgba(0,0,0,1)_100%)] shadow-[0_2px_4px_rgba(0,0,0,0.55),0_0_14px_rgba(123,36,28,0.24)] before:absolute before:left-[20%] before:top-[16%] before:h-[20%] before:w-[20%] before:rounded-full before:bg-white/28 before:content-[""]'
+            />
           </button>
-          <h1 className='font-serif text-2xl font-semibold tracking-tight'>{_('Citas')}</h1>
+          <div className='min-w-0'>
+            <h1
+              className='font-["Times_New_Roman",Times,serif] text-4xl font-semibold italic tracking-[0.02em] text-white sm:text-5xl'
+              style={{
+                WebkitTextStroke: '0.45px rgba(123,36,28,0.5)',
+                textShadow:
+                  '0 1px 0 rgba(255,255,255,0.12), 0 2px 6px rgba(0,0,0,0.28), 0 0 10px rgba(123,36,28,0.12)',
+              }}
+            >
+              {_('Citas')}
+            </h1>
+          </div>
         </div>
 
         <div className='relative mb-4'>
@@ -179,7 +193,7 @@ export default function CitasGrid({ service, appService: appServiceProp }: Citas
             )}
           </div>
         ) : (
-          <div className='flex flex-col gap-3' role='list' aria-label={_('Quotes')}>
+          <div className='flex flex-col gap-4' role='list' aria-label={_('Quotes')}>
             {filteredQuotes.map((quote) => (
               <div key={quote.id} role='listitem'>
                 <CitasTile quote={quote} isHighlighted={highlightedId === quote.id} />

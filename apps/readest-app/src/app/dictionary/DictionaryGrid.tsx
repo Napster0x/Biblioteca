@@ -23,11 +23,41 @@ import type { EnvConfigType } from '@/services/environment';
 import type { SystemSettings } from '@/types/settings';
 import type { AppService } from '@/types/system';
 import { navigateToLibrary } from '@/utils/nav';
-import DictionaryTile from './DictionaryTile';
+import DictionaryTile, { type DictionaryTileSize } from './DictionaryTile';
 
 interface DictionaryGridProps {
   service: DictionaryService;
   appService?: AppService | null;
+}
+
+const DICTIONARY_TILE_SIZE_KEY = 'dictionaryTileSize';
+
+function getInitialTileSize(): DictionaryTileSize {
+  if (typeof window === 'undefined') return 'normal';
+  const value = window.localStorage.getItem(DICTIONARY_TILE_SIZE_KEY);
+  return value === 'compact' || value === 'large' ? value : 'normal';
+}
+
+function getNextTileSize(size: DictionaryTileSize): DictionaryTileSize {
+  if (size === 'compact') return 'normal';
+  if (size === 'normal') return 'large';
+  return 'compact';
+}
+
+function getTileSizeLabel(size: DictionaryTileSize): string {
+  if (size === 'compact') return 'S';
+  if (size === 'large') return 'L';
+  return 'M';
+}
+
+function getDictionaryGridClassName(size: DictionaryTileSize): string {
+  if (size === 'compact') {
+    return 'grid grid-cols-3 gap-2 min-[480px]:grid-cols-4 sm:grid-cols-5 lg:grid-cols-8';
+  }
+  if (size === 'large') {
+    return 'grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-4';
+  }
+  return 'grid grid-cols-2 gap-3 min-[480px]:grid-cols-3 sm:grid-cols-4 lg:grid-cols-6';
 }
 
 export default function DictionaryGrid({ service, appService }: DictionaryGridProps) {
@@ -99,6 +129,7 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
   const [addWordDefinition, setAddWordDefinition] = useState('');
   const [addWordError, setAddWordError] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [tileSize, setTileSize] = useState<DictionaryTileSize>(getInitialTileSize);
   const termInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -106,6 +137,11 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
   }, [loadEntries, service]);
 
   const filteredEntries = entries;
+  const gridClassName = getDictionaryGridClassName(tileSize);
+
+  useEffect(() => {
+    window.localStorage.setItem(DICTIONARY_TILE_SIZE_KEY, tileSize);
+  }, [tileSize]);
 
   const handleSearchChange = useCallback(
     (nextSearch: string) => {
@@ -120,6 +156,10 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
     setAddWordDefinition('');
     setAddWordError(null);
     setShowAddWord(true);
+  }, []);
+
+  const handleCycleTileSize = useCallback(() => {
+    setTileSize((current) => getNextTileSize(current));
   }, []);
 
   const handleCloseAddWord = useCallback(() => {
@@ -167,7 +207,7 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
 
   if (isLoading && entries.length === 0 && !search) {
     return (
-      <main className='text-base-content full-height flex flex-col bg-base-200'>
+      <main className='text-base-content full-height flex flex-col overflow-y-auto bg-base-200 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'>
         <section className='mx-auto flex w-full max-w-5xl flex-1 flex-col items-center justify-center px-4 py-10 sm:px-6'>
           <PiSpinner aria-hidden className='mb-4 size-10 animate-spin' />
           <p className='text-base-content/60'>{_('Cargando…')}</p>
@@ -177,18 +217,30 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
   }
 
   return (
-    <main className='text-base-content full-height flex flex-col bg-base-200'>
-      <section className='mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 py-6 sm:px-6'>
-        <div className='mb-6 flex items-center gap-3'>
+    <main className='text-base-content full-height flex flex-col overflow-y-auto bg-base-200 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'>
+      <section className='mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 pb-24 pt-5 sm:px-6 sm:pt-6'>
+        <div className='mb-6 flex items-center gap-4'>
           <button
             type='button'
             onClick={() => navigateToLibrary(router)}
-            className='flex items-center justify-center rounded-full transition-colors hover:bg-black/10'
+            className='mt-1 flex self-center items-center justify-center rounded-full transition-colors hover:bg-black/10'
             aria-label={_('Volver a Biblioteca')}
           >
-            <PiBookBookmark aria-hidden className='text-base-content/60 size-7' />
+            <span
+              aria-hidden='true'
+              className='relative inline-block size-7 rounded-full bg-[radial-gradient(circle_at_32%_28%,rgba(255,255,255,0.94)_0%,rgba(220,245,255,0.98)_18%,rgba(128,202,241,0.96)_60%,rgba(43,114,168,0.92)_100%)] shadow-[0_2px_4px_rgba(0,0,0,0.26),0_7px_18px_rgba(0,0,0,0.16),0_0_14px_rgba(128,202,241,0.34)] before:absolute before:left-[20%] before:top-[16%] before:h-[20%] before:w-[20%] before:rounded-full before:bg-white/78 before:content-[""] after:absolute after:left-1/2 after:top-[115%] after:h-[26%] after:w-[130%] after:-translate-x-1/2 after:rounded-full after:bg-black/12 after:blur-[2px] after:content-[""]'
+            />
           </button>
-          <h1 className='font-serif text-2xl font-semibold tracking-tight'>{_('Diccionario')}</h1>
+          <h1
+            className='font-["Times_New_Roman",Times,serif] text-4xl font-semibold italic tracking-[0.02em] text-white sm:text-5xl'
+            style={{
+              WebkitTextStroke: '0.45px rgba(146,211,255,0.58)',
+              textShadow:
+                '0 1px 0 rgba(255,255,255,0.16), 0 2px 6px rgba(0,0,0,0.24), 0 0 10px rgba(146,211,255,0.14)',
+            }}
+          >
+            {_('Diccionario')}
+          </h1>
         </div>
 
         <div className='relative mb-4'>
@@ -198,7 +250,7 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
           />
           <input
             type='text'
-            className='eink-bordered input input-sm w-full bg-base-100 pl-9'
+            className='eink-bordered input input-sm w-full bg-base-100 pl-9 pr-32'
             placeholder={_('Buscar…')}
             value={search}
             onChange={(event) => handleSearchChange(event.target.value)}
@@ -223,6 +275,16 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
               title={_('Seleccionar')}
             >
               <PiSelectionAll aria-hidden className='size-4' />
+            </button>
+            <span className='bg-base-content/30 mx-0.5 h-4 w-px' />
+            <button
+              type='button'
+              onClick={handleCycleTileSize}
+              className='btn btn-ghost btn-xs eink-bordered flex h-7 min-w-7 items-center justify-center px-1 text-[0.65rem] font-semibold'
+              aria-label={_('Cambiar tamaño de mosaico')}
+              title={_('Tamaño de mosaico')}
+            >
+              {getTileSizeLabel(tileSize)}
             </button>
           </div>
         </div>
@@ -256,12 +318,13 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
             )}
           </div>
         ) : (
-          <div className='grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-6'>
+          <div className={gridClassName}>
             {filteredEntries.map((entry) => (
               <DictionaryTile
                 key={entry.id}
                 entry={entry}
                 imageUrl={imageUrls[entry.id]}
+                tileSize={tileSize}
                 isSelectMode={isSelectMode}
                 isSelected={selectedEntryIds.includes(entry.id)}
                 onToggleSelected={toggleSelectedEntry}

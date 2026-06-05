@@ -11,6 +11,7 @@ import { extractSentenceFromContext } from '@/utils/sentenceExtraction';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useFileSelector } from '@/hooks/useFileSelector';
 import { useImagePasteOnHover } from '@/hooks/useImagePasteOnHover';
+import { useDictionaryStore } from '@/store/dictionaryStore';
 import { eventDispatcher } from '@/utils/event';
 
 export interface CapturePopupBook {
@@ -55,6 +56,98 @@ interface SelectedImage {
  */
 const CAPTURE_WINDOW_SIZE = 300;
 
+const IGNORED_CONTEXT_TAGS = new Set(['STYLE', 'SCRIPT', 'NOSCRIPT', 'HEAD', 'TITLE', 'SVG']);
+const CONTEXT_BOUNDARY_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HEADER', 'NAV']);
+const STRUCTURAL_CONTEXT_BOUNDARY_TAGS = new Set([
+  'ARTICLE',
+  'ASIDE',
+  'BLOCKQUOTE',
+  'CAPTION',
+  'FIGCAPTION',
+  'FIGURE',
+  'FOOTER',
+  'FORM',
+  'HEADER',
+  'MAIN',
+  'NAV',
+  'TABLE',
+]);
+
+function getElementForNode(node: Node): Element | null {
+  return node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+}
+
+function isIgnoredContextNode(node: Node): boolean {
+  let element = getElementForNode(node);
+  while (element) {
+    if (IGNORED_CONTEXT_TAGS.has(element.tagName.toUpperCase())) return true;
+    element = element.parentElement;
+  }
+  return false;
+}
+
+function isContextBoundaryNode(node: Node): boolean {
+  const element = getElementForNode(node);
+  return !!element && CONTEXT_BOUNDARY_TAGS.has(element.tagName.toUpperCase());
+}
+
+function isStructuralContextBoundaryNode(node: Node): boolean {
+  const element = getElementForNode(node);
+  return !!element && STRUCTURAL_CONTEXT_BOUNDARY_TAGS.has(element.tagName.toUpperCase());
+}
+
+function collectTextFromSubtreeEnd(node: Node, charLimit: number): string {
+  const parts: string[] = [];
+  let remaining = charLimit;
+
+  const visit = (current: Node) => {
+    if (remaining <= 0) return;
+    if (isIgnoredContextNode(current)) return;
+    if (current.nodeType === Node.TEXT_NODE) {
+      const text = current.textContent ?? '';
+      if (!text) return;
+      const slice = text.slice(-remaining);
+      parts.unshift(slice);
+      remaining -= slice.length;
+      return;
+    }
+
+    for (let i = current.childNodes.length - 1; i >= 0 && remaining > 0; i -= 1) {
+      const child = current.childNodes[i];
+      if (child) visit(child);
+    }
+  };
+
+  visit(node);
+  return parts.join('');
+}
+
+function collectTextFromSubtreeStart(node: Node, charLimit: number): string {
+  const parts: string[] = [];
+  let remaining = charLimit;
+
+  const visit = (current: Node) => {
+    if (remaining <= 0) return;
+    if (isIgnoredContextNode(current)) return;
+    if (current.nodeType === Node.TEXT_NODE) {
+      const text = current.textContent ?? '';
+      if (!text) return;
+      const slice = text.slice(0, remaining);
+      parts.push(slice);
+      remaining -= slice.length;
+      return;
+    }
+
+    for (let i = 0; i < current.childNodes.length && remaining > 0; i += 1) {
+      const child = current.childNodes[i];
+      if (child) visit(child);
+    }
+  };
+
+  visit(node);
+  return parts.join('');
+}
+
 /**
  * Walk backward through the DOM tree collecting text from previous
  * siblings at every nesting level. Critical for PDF where each line
@@ -77,7 +170,10 @@ function collectSiblingTextBefore(node: Node, charLimit: number): string {
       current = current.parentNode;
       continue;
     }
-    const text = prev.textContent ?? '';
+    if (isContextBoundaryNode(prev) || isStructuralContextBoundaryNode(prev)) {
+      break;
+    }
+    const text = collectTextFromSubtreeEnd(prev, remaining);
     if (text.length > 0) {
       parts.unshift(text);
       remaining -= text.length;
@@ -106,7 +202,10 @@ function collectSiblingTextAfter(node: Node, charLimit: number): string {
       current = current.parentNode;
       continue;
     }
-    const text = next.textContent ?? '';
+    if (isContextBoundaryNode(next) || isStructuralContextBoundaryNode(next)) {
+      break;
+    }
+    const text = collectTextFromSubtreeStart(next, remaining);
     if (text.length > 0) {
       parts.push(text);
       remaining -= text.length;
@@ -267,7 +366,7 @@ const CapturePopup: React.FC<CapturePopupProps> = ({
       const { contextBefore, contextAfter } = extractCaptureContext(range, selectedText);
 
       // 3. Upsert the dictionary entry with manual definition (no enrichment)
-      const entry = await dictionaryService.upsertEntry({
+      let entry = await dictionaryService.upsertEntry({
         term: normalized.term,
         displayTerm: normalized.displayTerm,
         language: book.language,
@@ -278,7 +377,7 @@ const CapturePopup: React.FC<CapturePopupProps> = ({
       const highlightNoteId = await onCreateHighlight(cfi, selectedText, page, entry.id);
 
       // 5. Create the occurrence with context
-      await dictionaryService.createOccurrence({
+      const occurrence = await dictionaryService.createOccurrence({
         entryId: entry.id,
         bookHash: book.hash,
         bookTitle: book.title,
@@ -292,6 +391,10 @@ const CapturePopup: React.FC<CapturePopupProps> = ({
         highlightNoteId,
       });
 
+      const dictionaryStore = useDictionaryStore.getState();
+      dictionaryStore.setEntry(entry);
+      dictionaryStore.setOccurrences(entry.id, [occurrence]);
+
       // 6. If an image was selected, save it to the Dictionaries base
       if (selectedImage) {
         const ext = getFileExtension(selectedImage.name);
@@ -303,10 +406,11 @@ const CapturePopup: React.FC<CapturePopupProps> = ({
         await appService.writeFile(imagePath, 'Dictionaries' as BaseDir, bytes);
 
         // Update entry with image path
-        await dictionaryService.updateEntry({
+        entry = await dictionaryService.updateEntry({
           id: entry.id,
           imagePath,
         });
+        dictionaryStore.setEntry(entry);
       }
 
       // 7. Toast and dismiss

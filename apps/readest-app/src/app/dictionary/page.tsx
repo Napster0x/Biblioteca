@@ -4,12 +4,17 @@ import { useCallback, useEffect, useState } from 'react';
 import { PiWarningCircle } from 'react-icons/pi';
 import { useEnv } from '@/context/EnvContext';
 import { getDictionaryService } from '@/services/dictionary/dictionaryServiceCache';
+import type { AppService } from '@/types/system';
 import DictionaryGrid from './DictionaryGrid';
+
+type DictionaryServiceInstance = Awaited<ReturnType<typeof getDictionaryService>>;
+
+const resolvedServices = new WeakMap<AppService, DictionaryServiceInstance>();
 
 export default function DictionaryPage() {
   const { appService } = useEnv();
-  const [service, setService] = useState<Awaited<ReturnType<typeof getDictionaryService>> | null>(
-    null,
+  const [service, setService] = useState<DictionaryServiceInstance | null>(() =>
+    appService ? (resolvedServices.get(appService) ?? null) : null,
   );
   const [error, setError] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
@@ -21,6 +26,7 @@ export default function DictionaryPage() {
     getDictionaryService(appService)
       .then((svc) => {
         if (!cancelled) {
+          resolvedServices.set(appService, svc);
           setService(svc);
           setError(null);
         }

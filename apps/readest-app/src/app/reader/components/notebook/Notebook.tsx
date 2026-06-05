@@ -15,6 +15,7 @@ import { usePanelResize } from '@/hooks/usePanelResize';
 import { BookNote } from '@/types/book';
 import { uniqueId } from '@/utils/misc';
 import { eventDispatcher } from '@/utils/event';
+import { getTextFromRange } from '@/utils/sel';
 import { getBookDirFromLanguage } from '@/utils/book';
 import { Overlay } from '@/components/Overlay';
 import { saveSysSettings } from '@/helpers/settings';
@@ -201,6 +202,7 @@ const Notebook: React.FC = ({}) => {
 
     try {
       const svc = await getAnotacionesService(appService);
+      const annotationText = getTextFromRange(selection.range, ['rt']).trim() || selection.text;
       const annotacion = await useAnotacionesStore.getState().createAnnotation(
         {
           bookHash,
@@ -209,7 +211,7 @@ const Notebook: React.FC = ({}) => {
           cfi: selection.cfi,
           sectionHref: selection.href ?? progress?.sectionHref ?? null,
           page: selection.page ?? progress?.page ?? null,
-          text: selection.text,
+          text: annotationText,
           note,
           style: 'highlight',
           color: 'yellow',
@@ -217,7 +219,7 @@ const Notebook: React.FC = ({}) => {
         svc,
       );
       const finalAnnotation = createFinalAnnotationBookNote(
-        selection,
+        { ...selection, text: annotationText },
         annotacion.id,
         uniqueId(),
         Date.now(),
@@ -234,16 +236,21 @@ const Notebook: React.FC = ({}) => {
         saveConfig(envConfig, sideBarBookKey, updatedConfig, settings);
       }
 
-      const views = getViewsById(bookHash);
-      const temporary = createTemporaryAnnotationBookNote(selection, Date.now());
-      views.forEach((readerView) => {
-        removeBookNoteOverlays(readerView, temporary);
-        removeBookNoteOverlays(readerView, finalAnnotation);
-        readerView?.addAnnotation(finalAnnotation);
-        readerView?.deselect?.();
-      });
-      getView(sideBarBookKey)?.deselect?.();
       setNotebookNewAnnotation(null);
+
+      try {
+        const views = getViewsById(bookHash);
+        const temporary = createTemporaryAnnotationBookNote(selection, Date.now());
+        views.forEach((readerView) => {
+          removeBookNoteOverlays(readerView, temporary);
+          removeBookNoteOverlays(readerView, finalAnnotation);
+          readerView?.addAnnotation(finalAnnotation);
+          readerView?.deselect?.();
+        });
+        getView(sideBarBookKey)?.deselect?.();
+      } catch (error) {
+        console.warn('Annotation saved, but reader overlay sync failed:', error);
+      }
     } catch (err) {
       console.warn('Failed to persist annotation to SQL:', err);
       setAnnotationSaveError(_('Could not save annotation. Please try again.'));
@@ -252,7 +259,7 @@ const Notebook: React.FC = ({}) => {
     }
   };
 
-  const handleEditNote = (note: BookNote, isDelete: boolean) => {
+  const handleEditNote = async (note: BookNote, isDelete: boolean) => {
     if (!sideBarBookKey) return;
     const view = getView(sideBarBookKey);
     const config = getConfig(sideBarBookKey)!;
@@ -272,6 +279,23 @@ const Notebook: React.FC = ({}) => {
     if (updatedConfig) {
       saveConfig(envConfig, sideBarBookKey, updatedConfig, settings);
     }
+
+    if (note.annotationId && appService) {
+      try {
+        const svc = await getAnotacionesService(appService);
+        if (isDelete) {
+          await svc.deleteAnnotations([note.annotationId]);
+          useAnotacionesStore.getState().removeAnnotationsFromState([note.annotationId]);
+        } else {
+          await useAnotacionesStore
+            .getState()
+            .updateAnnotation(note.annotationId, note.note || '', svc);
+        }
+      } catch (error) {
+        console.warn('Failed to persist notebook annotation edit:', error);
+      }
+    }
+
     setNotebookEditAnnotation(null);
   };
 
@@ -336,6 +360,14 @@ const Notebook: React.FC = ({}) => {
             .map(resolveAnnotationNote)
         : annotationNotes,
     [annotationNotes, searchResults, isSearchBarVisible, anotacionNoteById, resolveAnnotationNote],
+  );
+
+  const visibleAnnotationNotes = useMemo(
+    () =>
+      notebookEditAnnotation
+        ? filteredAnnotationNotes.filter((note) => note.id !== notebookEditAnnotation.id)
+        : filteredAnnotationNotes,
+    [filteredAnnotationNotes, notebookEditAnnotation],
   );
 
   const filteredExcerptNotes = useMemo(
@@ -543,7 +575,7 @@ const Notebook: React.FC = ({}) => {
               />
             )}
             <ul>
-              {filteredAnnotationNotes.map((item, index) => (
+              {visibleAnnotationNotes.map((item, index) => (
                 <BooknoteItem key={`${index}-${item.cfi}`} bookKey={sideBarBookKey} item={item} />
               ))}
             </ul>

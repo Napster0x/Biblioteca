@@ -166,7 +166,7 @@ const BooknoteItem: React.FC<BooknoteItemProps> = ({ bookKey, item, isNearest, o
     );
   }
 
-  const isEditable = (!isAnotacionesHighlight && item.note) || item.type === 'bookmark';
+  const isEditable = Boolean(item.note || item.annotationId || item.type === 'bookmark');
 
   return (
     <li

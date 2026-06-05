@@ -29,6 +29,10 @@ nix = "0.20.2"
 glib = "0.20.0"
 
 [workspace.package]
+version = "1.0.0"
+authors = ["Napster0x"]
+homepage = "https://github.com/Napster0x/biblioteca"
+repository = "https://github.com/Napster0x/biblioteca"
 license = "AGPL-3.0"
 categories = []
 edition = "2021"

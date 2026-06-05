@@ -1,6 +1,6 @@
 [package]
 name = "Biblioteca"
-version = "0.90.0"
+version = "1.0.0"
 description = "Personal ebook reader based on Readest"
 license = "AGPL-3.0"
 edition = "2021"

@@ -38,6 +38,7 @@ export default function DictionaryDetailPage() {
   const [imageUrl, setImageUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
+  const [isEntryLoading, setIsEntryLoading] = useState(true);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const startedLoadingForRef = useRef<string | null>(null);
   const imagePreviewUrlRef = useRef<string | null>(null);
@@ -49,31 +50,42 @@ export default function DictionaryDetailPage() {
   const occurrences = useDictionaryStore(
     (s) => s.occurrencesByEntryId[entryId] ?? EMPTY_OCCURRENCES,
   );
-  const isLoading = useDictionaryStore((s) => s.isLoading);
-  const loadEntry = useDictionaryStore((s) => s.loadEntry);
-  const loadOccurrences = useDictionaryStore((s) => s.loadOccurrences);
+  const setEntry = useDictionaryStore((s) => s.setEntry);
+  const setOccurrences = useDictionaryStore((s) => s.setOccurrences);
   const updateEntry = useDictionaryStore((s) => s.updateEntry);
 
   useEffect(() => {
     if (!appService) return;
     let cancelled = false;
     startedLoadingForRef.current = entryId;
+    setIsEntryLoading(true);
     getDictionaryService(appService)
-      .then((svc) => {
+      .then(async (svc) => {
         if (cancelled) return;
         setService(svc);
         setError(null);
-        loadOccurrences(entryId, svc);
-        return loadEntry(entryId, svc);
+        let loadedEntry = await svc.getEntry(entryId);
+        if (!loadedEntry) {
+          await new Promise((resolve) => setTimeout(resolve, 75));
+          if (cancelled) return;
+          loadedEntry = await svc.getEntry(entryId);
+        }
+        if (cancelled) return;
+        if (loadedEntry) setEntry(loadedEntry);
+        setIsEntryLoading(false);
+
+        const loadedOccurrences = await svc.listOccurrences(entryId);
+        if (!cancelled) setOccurrences(entryId, loadedOccurrences);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : _('Error al abrir el diccionario'));
+        setIsEntryLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [_, appService, entryId, loadEntry, loadOccurrences]);
+  }, [_, appService, entryId, setEntry, setOccurrences]);
 
   useEffect(() => {
     if (!entry || entry.id !== entryId) return;
@@ -242,7 +254,7 @@ export default function DictionaryDetailPage() {
 
   if (!entry || entry.id !== entryId) {
     // Still loading if we haven't started for this entryId, or the store says in-flight
-    if (startedLoadingForRef.current !== entryId || isLoading) {
+    if (startedLoadingForRef.current !== entryId || isEntryLoading) {
       return (
         <main className='text-base-content flex min-h-dvh flex-col bg-base-200'>
           <section className='mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center px-4 py-10 sm:px-6'>
@@ -270,8 +282,8 @@ export default function DictionaryDetailPage() {
   }
 
   return (
-    <main className='text-base-content flex min-h-dvh flex-col bg-base-200'>
-      <section className='mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 pb-16 pt-6 sm:px-6'>
+    <main className='text-base-content flex min-h-dvh flex-col overflow-y-auto bg-base-200 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'>
+      <section className='mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 pb-24 pt-5 sm:px-6 sm:pt-6'>
         <button
           type='button'
           className='text-base-content/70 mb-4 flex items-center gap-1 text-sm hover:text-base-content'
@@ -282,10 +294,10 @@ export default function DictionaryDetailPage() {
           {_('Volver')}
         </button>
 
-        <div className='mb-8 grid grid-cols-[minmax(0,1fr)_minmax(8rem,14rem)] items-start gap-5 sm:gap-8'>
-          <div className='pt-10 sm:pt-16'>
+        <div className='mb-8 grid grid-cols-1 items-start gap-6 sm:grid-cols-[minmax(0,1fr)_minmax(8rem,14rem)] sm:gap-8'>
+          <div className='pt-3 sm:pt-16'>
             <h1
-              className='font-serif border-base-content/60 border-b pb-3 text-5xl font-semibold tracking-tight sm:text-6xl'
+              className='font-serif border-base-content/60 break-words border-b pb-3 text-4xl font-semibold tracking-tight sm:text-6xl'
               style={{
                 color: 'white',
                 WebkitTextStroke: '2px #000',
@@ -316,8 +328,8 @@ export default function DictionaryDetailPage() {
             type='button'
             className={
               imageUrl
-                ? 'group mx-auto flex w-fit max-w-full items-center justify-center border-2 border-black bg-transparent p-0 transition-opacity hover:opacity-85'
-                : 'group flex min-h-32 w-full items-center justify-center border-2 border-black bg-transparent p-2 transition-opacity hover:opacity-85'
+                ? 'group mx-auto flex w-fit max-w-full items-center justify-center border-2 border-black bg-transparent p-0 transition-opacity hover:opacity-85 sm:mt-12'
+                : 'group flex min-h-32 w-full items-center justify-center border-2 border-black bg-transparent p-2 transition-opacity hover:opacity-85 sm:mt-12'
             }
             onClick={() => imageInputRef.current?.click()}
             onMouseEnter={onImageButtonEnter}
@@ -330,7 +342,7 @@ export default function DictionaryDetailPage() {
                 src={imageUrl}
                 alt=''
                 aria-hidden
-                className='pointer-events-none max-h-48 max-w-full object-contain not-eink:drop-shadow-[0_0_14px_rgb(0_0_0_/_0.55)]'
+                className='pointer-events-none max-h-56 max-w-full object-contain not-eink:shadow-[0_0_14px_rgb(0_0_0_/_0.55)] sm:max-h-48'
                 draggable={false}
                 onError={() => setImageUrl('')}
               />
@@ -359,7 +371,7 @@ export default function DictionaryDetailPage() {
             data-testid='dictionary-quote-card'
           >
             <blockquote
-              className='font-serif line-clamp-3 text-base font-light italic leading-relaxed tracking-[0.01em]'
+              className='font-serif whitespace-pre-wrap break-words text-base font-light italic leading-relaxed tracking-[0.01em]'
               data-testid='dictionary-quote-text'
             >
               {primaryQuote?.sentenceBefore && <span>{primaryQuote.sentenceBefore} </span>}

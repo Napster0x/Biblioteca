@@ -14,7 +14,7 @@ Biblioteca parte del código de Readest como base técnica, pero se desarrolla c
 
 | Aspecto | Detalle |
 |---------|---------|
-| Versión | **v0.90.0** |
+| Versión | **v1.0.0** |
 | Basado en | Readest v0.11.x |
 | Plataforma objetivo | Arch Linux (escritorio) |
 | Licencia | AGPL-3.0 |
