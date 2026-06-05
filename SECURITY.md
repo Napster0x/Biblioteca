@@ -4,7 +4,7 @@
 
 ### Overview
 
-Readest is a cross-platform e-reader (macOS, Windows, Linux, Android, iOS, Web) built on Next.js and Tauri. It processes user-supplied ebook files, syncs data to the cloud, integrates with external services (OPDS catalogs, KOReader, DeepL, Yandex), and handles user authentication.
+Biblioteca is a personal ebook reader for Linux, built on Next.js and Tauri, based on Readest. It processes user-supplied ebook files and integrates with external services (OPDS catalogs, DeepL, Yandex).
 
 ### Assets
 
@@ -66,21 +66,16 @@ Readest is a cross-platform e-reader (macOS, Windows, Linux, Android, iOS, Web) 
 
 ## Supported Versions
 
-Readest does not currently maintain separate release channels. Security updates are provided only for the latest release series.
+Biblioteca is a personal project based on Readest. Security updates are provided only for the latest version.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.10.x  | :white_check_mark: |
-| < 0.10  | :x:                |
+| 0.90.x  | :white_check_mark: |
+| < 0.90  | :x:                |
 
 ## Reporting a Vulnerability
 
-Please report suspected vulnerabilities privately. Do not open a public GitHub
-issue or discussion for security-sensitive reports.
-
-Use GitHub's private vulnerability reporting for this repository:
-
-<https://github.com/readest/readest/security/advisories/new>
+This is a personal project. If you find a security vulnerability, please open an issue on the repository or contact the maintainer directly.
 
 When submitting a report, include:
 

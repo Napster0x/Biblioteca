@@ -28,7 +28,7 @@
       "identifier": "fs:scope-appdata-recursive",
       "allow": [
         {
-          "path": "$APPDATA/Readest/**/*"
+          "path": "$APPDATA/Biblioteca/**/*"
         }
       ],
       "deny": []
@@ -75,10 +75,10 @@
       "identifier": "fs:scope",
       "allow": [
         {
-          "path": "**/Readest"
+          "path": "**/Biblioteca"
         },
         {
-          "path": "**/Readest/**/*"
+          "path": "**/Biblioteca/**/*"
         },
         {
           "path": "**/com.github.johnfactotum.Foliate/**/*"
@@ -172,14 +172,14 @@
       "identifier": "shell:allow-spawn",
       "allow": [
         {
-          "name": "start-readest",
+          "name": "start-biblioteca",
           "cmd": "cmd",
           "args": [
             "/C",
             "start",
             "",
             {
-              "validator": "^.*Readest(.*)\\.exe$"
+              "validator": "^.*Biblioteca(.*)\\.exe$"
             }
           ]
         },
@@ -189,7 +189,7 @@
           "args": [
             "+x",
             {
-              "validator": "^.*Readest(.*)\\.AppImage$"
+              "validator": "^.*Biblioteca(.*)\\.AppImage$"
             }
           ]
         },
@@ -198,7 +198,7 @@
           "cmd": "setsid",
           "args": [
             {
-              "validator": "^.*Readest(.*)\\.AppImage$"
+              "validator": "^.*Biblioteca(.*)\\.AppImage$"
             }
           ]
         }

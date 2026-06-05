@@ -1,4 +1,4 @@
-# Skill Registry — Biblioteca (Readest)
+# Skill Registry — Biblioteca (based on Readest)
 
 Generated: 2026-05-29
 

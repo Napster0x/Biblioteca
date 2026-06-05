@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Readest",
-  "mainBinaryName": "readest",
-  "identifier": "com.bilingify.readest",
+  "productName": "Biblioteca",
+  "mainBinaryName": "biblioteca",
+  "identifier": "io.github.Napster0x.biblioteca",
   "version": "../package.json",
   "build": {
     "frontendDist": "../out",
@@ -30,7 +30,7 @@
             "$APPDATA/**/*",
             "$APPCACHE/**/*",
             "$TEMP/**/*",
-            "**/Readest/**/*",
+            "**/Biblioteca/**/*",
             "/private/var/mobile/Containers/Data/Application/**/*"
           ],
           "deny": []
@@ -133,7 +133,7 @@
       "requireLiteralLeadingDot": false
     },
     "cli": {
-      "description": "Readest CLI",
+      "description": "Biblioteca CLI",
       "args": [
         {
           "name": "file1",
@@ -160,10 +160,10 @@
     "deep-link": {
       "mobile": [
         { "scheme": ["https"], "host": "web.readest.com", "appLink": true },
-        { "scheme": ["readest"], "appLink": false }
+        { "scheme": ["biblioteca"], "appLink": false }
       ],
       "desktop": {
-        "schemes": ["readest"]
+        "schemes": ["biblioteca"]
       }
     },
     "updater": {

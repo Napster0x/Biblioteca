@@ -295,7 +295,7 @@ pub fn run() {
                 app.emit("single-instance", SingleInstancePayload { args: argv, cwd })
                     .unwrap();
             })
-            .dbus_id("com.bilingify.readest".to_owned())
+            .dbus_id("io.github.Napster0x.biblioteca".to_owned())
             .build(),
     );
 

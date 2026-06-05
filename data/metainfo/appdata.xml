@@ -1,31 +1,28 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>com.bilingify.readest</id>
+  <id>io.github.Napster0x.biblioteca</id>
 
-  <name>Readest</name>
-  <summary>Modern, feature-rich ebook reader</summary>
+  <name>Biblioteca</name>
+  <summary>Personal ebook reader based on Readest</summary>
 
   <description>
-    <p>Readest is a modern, feature-rich ebook reader designed for avid readers offering seamless cross-platform access, powerful tools, and an intuitive interface to elevate your reading experience.</p>
-    <p>Built as a modern rewrite of Foliate, Readest leverages Next.js 15 and Tauri v2 to deliver a smooth, cross-platform experience across macOS, Windows, Linux, Android, iOS, and the Web.</p>
-    <p>Whether you're analyzing complex texts, immersing yourself in stories, or exploring new ideas, Readest adapts to your needs with powerful features for deep, thoughtful reading.</p>
+    <p>Biblioteca is a personal ebook reader for desktop Linux, built upon Readest — an open source ebook reader.</p>
+    <p>Based on Next.js 16 and Tauri v2, Biblioteca offers a modern reading experience focused on deep, thoughtful reading.</p>
     <p>Key features include:</p>
     <ul>
-      <li>Multi-format support for EPUB, MOBI, KF8 (AZW3), FB2, CBZ, TXT, and PDF (experimental).</li>
-      <li>Switch between scrolling or paginated reading modes for your preferred reading style.</li>
-      <li>Full-text search across the entire book to find relevant sections quickly.</li>
-      <li>Add highlights, bookmarks, and notes to enhance your reading experience and learning.</li>
-      <li>Easily excerpt text from books for detailed notes and analysis.</li>
+      <li>Multi-format support for EPUB, MOBI, KF8 (AZW3), FB2, CBZ, TXT, and PDF.</li>
+      <li>Switch between scrolling or paginated reading modes.</li>
+      <li>Full-text search across the entire book.</li>
+      <li>Add highlights, bookmarks, and notes.</li>
       <li>Instantly look up words and terms with built-in dictionary and Wikipedia integration.</li>
-      <li>Translate selected text instantly using DeepL for accurate translations.</li>
-      <li>Parallel Reading: Read two books or documents simultaneously in a split-screen view, perfect for researchers, language learners, and multitaskers.</li>
-      <li>Customize fonts, layout, theme mode, and theme colors for a personalized reading experience.</li>
-      <li>Cross-platform synchronization of book files, reading progress, notes, and bookmarks across all supported platforms.</li>
-      <li>Text-to-Speech functionality for a more accessible reading experience.</li>
-      <li>Organize, sort, and manage your entire ebook library with advanced library management tools.</li>
-      <li>One-click file association to quickly open files in Readest from your file browser.</li>
+      <li>Translate selected text using DeepL and other providers.</li>
+      <li>Parallel Reading: Read two books simultaneously in split-screen view.</li>
+      <li>Customize fonts, layout, theme mode, and colors.</li>
+      <li>Text-to-Speech functionality.</li>
+      <li>Organize and manage your ebook library.</li>
+      <li>Custom dictionary module for personal vocabulary building.</li>
     </ul>
-    <p>Readest also includes custom CSS support for personalized styling, and code syntax highlighting for technical books. The application is designed to honor the legacy of deep reading while embracing modern technology for an enhanced experience.</p>
+    <p>Biblioteca is based on Readest, created by Bilingify LLC and the open source community.</p>
   </description>
 
   <categories>
@@ -35,7 +32,7 @@
   </categories>
 
   <keywords>
-    <keyword translate="no">readest</keyword>
+    <keyword translate="no">biblioteca</keyword>
     <keyword>ebook</keyword>
     <keyword>reader</keyword>
     <keyword>epub</keyword>
@@ -48,16 +45,14 @@
     <keyword>notes</keyword>
     <keyword>translation</keyword>
     <keyword>tts</keyword>
-    <keyword>sync</keyword>
+    <keyword>dictionary</keyword>
   </keywords>
 
-  <url type="homepage">https://github.com/readest/readest</url>
-  <url type="bugtracker">https://github.com/readest/readest/issues</url>
-  <url type="help">https://github.com/readest/readest/wiki</url>
-  <url type="donation">https://github.com/sponsors/readest</url>
-  <url type="vcs-browser">https://github.com/readest/readest</url>
+  <url type="homepage">https://github.com/Napster0x/biblioteca</url>
+  <url type="bugtracker">https://github.com/Napster0x/biblioteca/issues</url>
+  <url type="vcs-browser">https://github.com/Napster0x/biblioteca</url>
 
-  <launchable type="desktop-id">com.bilingify.readest.desktop</launchable>
+  <launchable type="desktop-id">io.github.Napster0x.biblioteca.desktop</launchable>
 
   <releases>
     <release version="0.11.1" date="2026-05-11">
@@ -236,13 +231,13 @@
   <metadata_license>FSFAP</metadata_license>
   <project_license>AGPL-3.0-or-later</project_license>
 
-  <developer id="com.readest">
-    <name>Readest Team</name>
+  <developer id="io.github.Napster0x">
+    <name>Napster0x</name>
   </developer>
 
   <screenshots>
     <screenshot type="default">
-      <caption>Readest main interface with annotation</caption>
+      <caption>Biblioteca reading interface</caption>
       <image type="source">https://raw.githubusercontent.com/readest/readest/refs/heads/main/data/screenshots/annotations.png</image>
     </screenshot>
     <screenshot>

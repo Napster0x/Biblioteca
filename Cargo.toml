@@ -29,10 +29,7 @@ nix = "0.20.2"
 glib = "0.20.0"
 
 [workspace.package]
-authors = ["Bilingify LLC"]
-homepage = "https://readest.com"
 license = "AGPL-3.0"
-repository = "https://github.com/readest/readest"
 categories = []
 edition = "2021"
 rust-version = "1.77.2"

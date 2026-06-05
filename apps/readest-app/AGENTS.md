@@ -1,6 +1,6 @@
 ## Project Overview
 
-Readest is a cross-platform ebook reader built as a **Next.js 16 + Tauri v2** hybrid app. It's part of a pnpm monorepo at `/apps/readest-app/`. The app runs on web (CloudFlare Workers), desktop (macOS/Windows/Linux via Tauri), and mobile (iOS/Android via Tauri).
+Biblioteca is a personal ebook reader for desktop Linux, built upon **Readest** — an open source ebook reader built as a **Next.js 16 + Tauri v2** hybrid app. It's part of a pnpm monorepo at `/apps/readest-app/`. The app runs on desktop (Linux via Tauri).
 
 ## Common Commands
 
