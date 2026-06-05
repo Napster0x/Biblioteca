@@ -13,7 +13,6 @@ import Alert from '@/components/Alert';
 import Dialog from '@/components/Dialog';
 import BookDetailView from './BookDetailView';
 import BookDetailEdit from './BookDetailEdit';
-import SourceSelector from './SourceSelector';
 import Spinner from '../Spinner';
 
 interface BookDetailModalProps {
@@ -52,16 +51,10 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
     fieldSources,
     lockedFields,
     fieldErrors,
-    searchLoading,
-    showSourceSelection,
-    availableSources,
     handleFieldChange,
     handleToggleFieldLock,
     handleLockAll,
     handleUnlockAll,
-    handleAutoRetrieve,
-    handleSourceSelection,
-    handleCloseSourceSelection,
     resetToOriginal,
   } = useMetadataEdit(bookMeta);
 
@@ -171,10 +164,8 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
                 fieldSources={fieldSources}
                 lockedFields={lockedFields}
                 fieldErrors={fieldErrors}
-                searchLoading={searchLoading}
                 onFieldChange={handleFieldChange}
                 onToggleFieldLock={handleToggleFieldLock}
-                onAutoRetrieve={handleAutoRetrieve}
                 onLockAll={handleLockAll}
                 onUnlockAll={handleUnlockAll}
                 onCancel={handleCancelEdit}
@@ -193,16 +184,6 @@ const BookDetailModal: React.FC<BookDetailModalProps> = ({
             )}
           </div>
         </Dialog>
-
-        {/* Source Selection Modal */}
-        {showSourceSelection && (
-          <SourceSelector
-            sources={availableSources}
-            isOpen={showSourceSelection}
-            onSelect={handleSourceSelection}
-            onClose={handleCloseSourceSelection}
-          />
-        )}
 
         {isLoading && (
           <div className='fixed inset-0 z-50 flex items-center justify-center'>

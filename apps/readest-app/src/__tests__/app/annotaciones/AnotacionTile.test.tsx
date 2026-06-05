@@ -33,7 +33,7 @@ vi.mock('@/hooks/useTranslation', () => ({
     key.replace('{{text}}', options?.['text'] ?? ''),
 }));
 
-import AnotacionTile from '@/app/annotaciones/AnotacionTile';
+import AnotacionTile from '@/app/anotaciones/AnotacionTile';
 
 function makeAnnotation(overrides: Partial<Annotacion> = {}): Annotacion {
   return {

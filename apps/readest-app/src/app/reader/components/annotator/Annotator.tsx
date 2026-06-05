@@ -79,6 +79,10 @@ import {
   convertMrexptEntriesToBookNotes,
   mergeImportedBookNotes,
 } from '@/services/annotation/providers/mrexpt';
+import {
+  createTemporaryAnnotationBookNote,
+  type PendingAnnotation,
+} from '../../utils/annotacionesCapture';
 
 interface HoveredDictionaryAnnotation {
   noteId: string;
@@ -115,6 +119,51 @@ interface PendingAnotacionDelete {
 }
 
 const dictionaryHighlightCloseButtonSize = 12;
+
+type AnnotationRect = Pick<DOMRect, 'left' | 'top' | 'right' | 'bottom'>;
+
+const getStableAnnotationRect = (
+  range: unknown,
+  fallbackRect: AnnotationRect,
+  event: MouseEvent,
+): AnnotationRect => {
+  if (!range || typeof (range as Range).getClientRects !== 'function') return fallbackRect;
+  const rawRects = Array.from((range as Range).getClientRects()).filter(
+    (rect) => rect.width > 0 && rect.height > 0,
+  );
+  if (rawRects.length === 0) return fallbackRect;
+
+  const tolerance = 5;
+  const hitRawRect = rawRects.find(
+    (rect) =>
+      rect.top <= event.clientY + tolerance &&
+      rect.left <= event.clientX + tolerance &&
+      rect.bottom >= event.clientY - tolerance &&
+      rect.right >= event.clientX - tolerance,
+  );
+  const scaleX = hitRawRect?.width
+    ? (fallbackRect.right - fallbackRect.left) / hitRawRect.width
+    : 1;
+  const scaleY = hitRawRect?.height
+    ? (fallbackRect.bottom - fallbackRect.top) / hitRawRect.height
+    : 1;
+  const anchorLeft = hitRawRect ? fallbackRect.left - hitRawRect.left * scaleX : 0;
+  const anchorTop = hitRawRect ? fallbackRect.top - hitRawRect.top * scaleY : 0;
+
+  const rects = rawRects.map((rect) => ({
+    left: anchorLeft + rect.left * scaleX,
+    top: anchorTop + rect.top * scaleY,
+    right: anchorLeft + rect.right * scaleX,
+    bottom: anchorTop + rect.bottom * scaleY,
+  }));
+
+  return {
+    left: Math.min(...rects.map((rect) => rect.left)),
+    top: Math.min(...rects.map((rect) => rect.top)),
+    right: Math.max(...rects.map((rect) => rect.right)),
+    bottom: Math.max(...rects.map((rect) => rect.bottom)),
+  };
+};
 
 const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
   const _ = useTranslation();
@@ -195,6 +244,8 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     settings.globalReadSettings.highlightStyles[selectedStyle],
   );
   const androidTouchEndRef = useRef(false);
+  const quoteHoverClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const anotacionHoverClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Holds a quick action that fired while the user is still touching the screen
   // (Android long-press selects text via selectionchange before touchend). The
   // pending action runs on touchend so popups don't open under an active touch.
@@ -364,6 +415,36 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     [bookKey, getConfig],
   );
 
+  const keepAnotacionHover = useCallback(() => {
+    if (anotacionHoverClearTimeoutRef.current) {
+      clearTimeout(anotacionHoverClearTimeoutRef.current);
+      anotacionHoverClearTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearAnotacionHoverSoon = useCallback(() => {
+    keepAnotacionHover();
+    anotacionHoverClearTimeoutRef.current = setTimeout(() => {
+      setHoveredAnotacionAnnotation(null);
+      anotacionHoverClearTimeoutRef.current = null;
+    }, 150);
+  }, [keepAnotacionHover]);
+
+  const keepQuoteHover = useCallback(() => {
+    if (quoteHoverClearTimeoutRef.current) {
+      clearTimeout(quoteHoverClearTimeoutRef.current);
+      quoteHoverClearTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearQuoteHoverSoon = useCallback(() => {
+    keepQuoteHover();
+    quoteHoverClearTimeoutRef.current = setTimeout(() => {
+      setHoveredQuoteAnnotation(null);
+      quoteHoverClearTimeoutRef.current = null;
+    }, 150);
+  }, [keepQuoteHover]);
+
   const handleDictionaryHighlightHover = useCallback(
     (doc: Document, index: number, event: MouseEvent) => {
       const content = view?.renderer
@@ -411,7 +492,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
         ?.find(
           (item: { index?: number; doc?: Document }) => item.index === index && item.doc === doc,
         );
-      const [value, , rect] = content?.overlayer?.hitTest?.(event) ?? [];
+      const [value, range, rect] = content?.overlayer?.hitTest?.(event) ?? [];
       if (!value || typeof value !== 'string' || value.startsWith('search#') || !rect) {
         setHoveredQuoteAnnotation(null);
         return;
@@ -426,20 +507,24 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
       const frameRect = doc.defaultView?.frameElement?.getBoundingClientRect();
       const offsetLeft = frameRect?.left ?? 0;
       const offsetTop = frameRect?.top ?? 0;
+      const stableRect = getStableAnnotationRect(range, rect, event);
 
       doc.body.style.cursor = 'pointer';
+      keepQuoteHover();
+      setHoveredDictionaryAnnotation(null);
+      setHoveredAnotacionAnnotation(null);
       setHoveredQuoteAnnotation({
         noteId: annotation.id,
         citeId: annotation.citeId,
         rect: {
-          left: offsetLeft + rect.left,
-          top: offsetTop + rect.top,
-          right: offsetLeft + rect.right,
-          bottom: offsetTop + rect.bottom,
+          left: offsetLeft + stableRect.left,
+          top: offsetTop + stableRect.top,
+          right: offsetLeft + stableRect.right,
+          bottom: offsetTop + stableRect.bottom,
         },
       });
     },
-    [bookKey, findAnnotationByValue, view],
+    [bookKey, findAnnotationByValue, keepQuoteHover, view],
   );
 
   const handleAnotacionHighlightHover = useCallback(
@@ -449,7 +534,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
         ?.find(
           (item: { index?: number; doc?: Document }) => item.index === index && item.doc === doc,
         );
-      const [value, , rect] = content?.overlayer?.hitTest?.(event) ?? [];
+      const [value, range, rect] = content?.overlayer?.hitTest?.(event) ?? [];
       if (!value || typeof value !== 'string' || value.startsWith('search#') || !rect) {
         setHoveredAnotacionAnnotation(null);
         return;
@@ -464,20 +549,24 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
       const frameRect = doc.defaultView?.frameElement?.getBoundingClientRect();
       const offsetLeft = frameRect?.left ?? 0;
       const offsetTop = frameRect?.top ?? 0;
+      const stableRect = getStableAnnotationRect(range, rect, event);
 
       doc.body.style.cursor = 'pointer';
+      keepAnotacionHover();
+      setHoveredDictionaryAnnotation(null);
+      setHoveredQuoteAnnotation(null);
       setHoveredAnotacionAnnotation({
         noteId: annotation.id,
         annotationId: annotation.annotationId,
         rect: {
-          left: offsetLeft + rect.left,
-          top: offsetTop + rect.top,
-          right: offsetLeft + rect.right,
-          bottom: offsetTop + rect.bottom,
+          left: offsetLeft + stableRect.left,
+          top: offsetTop + stableRect.top,
+          right: offsetLeft + stableRect.right,
+          bottom: offsetTop + stableRect.bottom,
         },
       });
     },
-    [bookKey, findAnnotationByValue, view],
+    [bookKey, findAnnotationByValue, keepAnotacionHover, view],
   );
 
   const onLoad = (event: Event) => {
@@ -532,9 +621,9 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     );
     detail.doc?.addEventListener('mouseleave', () => setHoveredDictionaryAnnotation(null));
     detail.doc?.addEventListener('mousemove', handleQuoteHighlightHover.bind(null, doc, index));
-    detail.doc?.addEventListener('mouseleave', () => setHoveredQuoteAnnotation(null));
+    detail.doc?.addEventListener('mouseleave', clearQuoteHoverSoon);
     detail.doc?.addEventListener('mousemove', handleAnotacionHighlightHover.bind(null, doc, index));
-    detail.doc?.addEventListener('mouseleave', () => setHoveredAnotacionAnnotation(null));
+    detail.doc?.addEventListener('mouseleave', clearAnotacionHoverSoon);
     detail.doc?.addEventListener('pointercancel', handlePointerCancel.bind(null, doc, index));
     detail.doc?.addEventListener('pointerup', handlePointerUp.bind(null, doc, index));
     detail.doc?.addEventListener('selectionchange', handleSelectionchange.bind(null, doc, index));
@@ -625,7 +714,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     const hexColor = getHighlightColorHex(settings, color);
     const einkBgColor = isDarkMode ? '#000000' : '#ffffff';
     const einkFgColor = isDarkMode ? '#ffffff' : '#000000';
-    if (annotation.note) {
+    if (annotation.note && !style) {
       const { defaultView } = doc;
       const node = range.startContainer;
       const el = node.nodeType === 1 ? node : node.parentElement;
@@ -1099,59 +1188,31 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     }
   };
 
-  const handleAnnotate = async () => {
+  const handleAnnotate = () => {
     if (!selection || !selection.text) return;
     const { sectionHref: href } = progress;
-    selection.href = href;
-    handleHighlight(true);
-
-    // Force 'yellow' color on the just-created annotation BookNote and
-    // persist an Anotacion row in the SQL database.  We search for the
-    // annotation by CFI and type because handleHighlight may have created
-    // a new note or updated an existing one.
     const cfi = view?.getCFI(selection.index, selection.range);
-    if (cfi) {
-      const latestConfig = getConfig(bookKey);
-      if (latestConfig) {
-        const { booknotes: storedNotes = [] } = latestConfig;
-        const noteIdx = storedNotes.findIndex(
-          (n) => n.type === 'annotation' && n.style && !n.deletedAt && n.cfi === cfi,
-        );
-        if (noteIdx !== -1) {
-          const note = storedNotes[noteIdx]!;
-          note.color = 'yellow';
+    if (!cfi) return;
 
-          if (appService) {
-            try {
-              const svc = await getAnotacionesService(appService);
-              const annotacion = await svc.createAnnotation({
-                bookHash: bookData.book?.hash ?? bookKey.split('-')[0]!,
-                bookTitle: bookData.book?.title ?? null,
-                bookAuthor: bookData.book?.author ?? null,
-                cfi: note.cfi,
-                sectionHref: progress.sectionHref ?? null,
-                page: progress.page,
-                text: note.text ?? '',
-                note: note.note,
-                style: note.style ?? 'highlight',
-                color: 'yellow',
-              });
-              note.annotationId = annotacion.id;
-            } catch (err) {
-              console.warn('Failed to persist annotation to SQL:', err);
-            }
-          }
-
-          const updatedConfig = updateBooknotes(bookKey, storedNotes);
-          if (updatedConfig) {
-            saveConfig(envConfig, bookKey, updatedConfig, settings);
-          }
-        }
-      }
-    }
+    const temporaryBookNoteId = uniqueId();
+    const pending: PendingAnnotation = {
+      key: bookKey,
+      cfi,
+      href: href ?? null,
+      text: selection.text,
+      page: progress.page,
+      range: selection.range,
+      index: selection.index,
+      temporaryBookNoteId,
+      createdTemporaryOverlay: true,
+    };
+    const temporaryOverlay = createTemporaryAnnotationBookNote(pending, Date.now());
+    const views = getViewsById(bookKey.split('-')[0]!);
+    views.forEach((v) => v?.addAnnotation(temporaryOverlay));
 
     setNotebookVisible(true);
-    setNotebookNewAnnotation(selection);
+    setNotebookNewAnnotation(pending);
+    view?.deselect?.();
     handleDismissPopup();
   };
 
@@ -1954,6 +2015,8 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
               hoveredQuoteAnnotation.rect.top - dictionaryHighlightCloseButtonSize / 2,
             ),
           }}
+          onMouseEnter={keepQuoteHover}
+          onMouseLeave={clearQuoteHoverSoon}
           onClick={handleRemoveQuoteHighlight}
         >
           ×
@@ -1972,6 +2035,8 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
               hoveredAnotacionAnnotation.rect.top - dictionaryHighlightCloseButtonSize / 2,
             ),
           }}
+          onMouseEnter={keepAnotacionHover}
+          onMouseLeave={clearAnotacionHoverSoon}
           onClick={handleRemoveAnotacionHighlight}
         >
           ×

@@ -96,7 +96,7 @@ vi.mock('@/hooks/useTranslation', () => ({
     key.replace('{{count}}', options?.['count'] ?? ''),
 }));
 
-import AnotacionesGrid from '@/app/annotaciones/AnotacionesGrid';
+import AnotacionesGrid from '@/app/anotaciones/AnotacionesGrid';
 
 const mockService = {} as AnotacionesService;
 
@@ -177,14 +177,18 @@ describe('AnotacionesGrid', () => {
     ).toBeTruthy();
   });
 
-  it('filters annotations by search query client-side', () => {
+  it('filters annotations by text, note, book title, and author client-side', () => {
     mockAnnotations = [
-      makeAnnotation({ id: 'annot-1', text: 'Biblioteca de Babel', bookAuthor: 'Borges' }),
-      makeAnnotation({ id: 'annot-2', text: 'El jardin de senderos', bookAuthor: 'Bioy' }),
+      makeAnnotation({ id: 'annot-1', text: 'Biblioteca de Babel', bookTitle: 'Ficciones' }),
+      makeAnnotation({
+        id: 'annot-2',
+        text: 'El jardin de senderos',
+        bookTitle: 'Plan de evasión',
+      }),
     ];
 
     render(<AnotacionesGrid service={mockService} />);
-    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'Borges' } });
+    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'ficciones' } });
 
     expect(screen.getByText('Biblioteca de Babel')).toBeTruthy();
     expect(screen.queryByText('El jardin de senderos')).toBeNull();

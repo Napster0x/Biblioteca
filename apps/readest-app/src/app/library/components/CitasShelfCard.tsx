@@ -2,12 +2,15 @@ import clsx from 'clsx';
 import { useState } from 'react';
 import { PiBookBookmark } from 'react-icons/pi';
 
-import { useTranslation } from '@/hooks/useTranslation';
 import type { CitasShelfItem } from '@/types/citas';
 import type { LibraryViewModeType } from '@/types/settings';
 
+interface CitasShelfCardProps {
+  item: CitasShelfItem;
+  mode: LibraryViewModeType;
+}
+
 const CitasShelfCard = ({ item, mode }: CitasShelfCardProps) => {
-  const _ = useTranslation();
   const [coverError, setCoverError] = useState(false);
 
   return (
@@ -57,7 +60,7 @@ const CitasShelfCard = ({ item, mode }: CitasShelfCardProps) => {
             {item.title}
           </h4>
           {mode === 'list' && (
-            <p className='text-neutral-content line-clamp-1 text-sm'>{_('Saved passages')}</p>
+            <p className='text-neutral-content line-clamp-1 text-sm'>{item.author}</p>
           )}
         </div>
         {mode === 'grid' && <div className='placeholder' style={{ height: 15 }} />}

@@ -1,3 +1,5 @@
+import type { Book } from './book';
+
 /**
  * Domain types for the Citas (Quotes) module.
  *
@@ -32,20 +34,27 @@ export type CiteInput = Omit<Cite, 'id' | 'contentHash' | 'createdAt' | 'updated
 
 export type CiteUpdate = Pick<Cite, 'id'> & Partial<Omit<CiteInput, 'bookHash'>>;
 
-export interface CitasShelfItem {
+export interface CitasShelfItem extends Book {
   type: 'citas-shelf-item';
   id: 'citas';
   title: string;
+  hash: 'citas';
 }
 
 export const CITAS_SHELF_ITEM: CitasShelfItem = {
   type: 'citas-shelf-item',
   id: 'citas',
+  hash: 'citas',
+  format: 'EPUB',
   // Re-bound at render time via useTranslation. Keeping a stable string here
   // mirrors DICTIONARY_SHELF_ITEM (DictionaryShelfCard re-reads item.title
   // before rendering, so the literal value matters only for static analyses
   // and tests that import the constant directly).
   title: 'Citas',
+  author: 'Mateo Galiano',
+  coverImageUrl: '/images/citas-cover.png',
+  createdAt: 0,
+  updatedAt: 0,
 };
 
 export function isCitasShelfItem(value: unknown): value is CitasShelfItem {

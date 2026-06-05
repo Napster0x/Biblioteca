@@ -43,6 +43,7 @@ export default function CitasGrid({ service, appService: appServiceProp }: Citas
     return quotes.filter(
       (quote) =>
         quote.text.toLowerCase().includes(query) ||
+        (quote.bookTitle ?? '').toLowerCase().includes(query) ||
         (quote.bookAuthor ?? '').toLowerCase().includes(query),
     );
   }, [quotes, search]);

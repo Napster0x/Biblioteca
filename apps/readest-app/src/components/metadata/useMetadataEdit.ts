@@ -7,17 +7,11 @@ import {
   validateISBN,
   ValidationResult,
 } from '@/utils/validation';
-import { MetadataSource } from './SourceSelector';
-
 export const useMetadataEdit = (metadata: BookMetadata | null) => {
   const [editedMeta, setEditedMeta] = useState<BookMetadata>({} as BookMetadata);
   const [fieldSources, setFieldSources] = useState<Record<string, string>>({});
   const [lockedFields, setLockedFields] = useState<Record<string, boolean>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-
-  const searchLoading = false;
-  const [showSourceSelection, setShowSourceSelection] = useState(false);
-  const [availableSources, setAvailableSources] = useState<MetadataSource[]>([]);
 
   const lockableFields = [
     'title',
@@ -174,53 +168,11 @@ export const useMetadataEdit = (metadata: BookMetadata | null) => {
     setLockedFields(allUnlocked);
   };
 
-  const handleAutoRetrieve = async () => {
-    setAvailableSources([]);
-    setShowSourceSelection(false);
-  };
-
-  const handleSourceSelection = (selectedSource: MetadataSource) => {
-    const newMeta = { ...editedMeta } as { [key: string]: unknown };
-    const newSources = { ...fieldSources };
-
-    Object.entries(selectedSource.data).forEach(([key, value]) => {
-      if (lockedFields[key] || !value) {
-        return;
-      }
-      switch (key) {
-        case 'identifier': {
-          const candidate = String(value);
-          const isbnValidation = validateISBN(candidate);
-          if (!lockedFields['isbn'] && isbnValidation.isValid) {
-            newMeta['isbn'] = candidate;
-            newSources['isbn'] = `${selectedSource.sourceName}-${selectedSource.confidence}`;
-          } else {
-            newMeta[key] = value;
-            newSources[key] = `${selectedSource.sourceName}-${selectedSource.confidence}`;
-          }
-          return;
-        }
-        default:
-          newMeta[key] = value;
-      }
-      newSources[key] = `${selectedSource.sourceName}-${selectedSource.confidence}`;
-    });
-
-    setEditedMeta(newMeta as BookMetadata);
-    setFieldSources(newSources);
-    setShowSourceSelection(false);
-  };
-
-  const handleCloseSourceSelection = () => {
-    setShowSourceSelection(false);
-  };
-
   const resetToOriginal = () => {
     if (metadata) {
       setEditedMeta({ ...metadata });
     }
     setFieldSources({});
-    setShowSourceSelection(false);
     handleUnlockAll();
   };
 
@@ -229,17 +181,11 @@ export const useMetadataEdit = (metadata: BookMetadata | null) => {
     fieldSources,
     lockedFields,
     fieldErrors,
-    searchLoading,
-    showSourceSelection,
-    availableSources,
     handleFieldChange,
     handleFieldValidation,
     handleToggleFieldLock,
     handleLockAll,
     handleUnlockAll,
-    handleAutoRetrieve,
-    handleSourceSelection,
-    handleCloseSourceSelection,
     resetToOriginal,
   };
 };

@@ -132,11 +132,11 @@ describe('AnotacionesService', () => {
     expect(all[1]?.text).toBe('first');
   });
 
-  it('searches annotations by text and note using LIKE', async () => {
+  it('searches annotations by text, note, book title, and book author using LIKE', async () => {
     await service.createAnnotation({
       bookHash: 'b1',
-      bookTitle: null,
-      bookAuthor: null,
+      bookTitle: 'Don Quijote',
+      bookAuthor: 'Miguel de Cervantes',
       cfi: null,
       sectionHref: null,
       page: null,
@@ -167,6 +167,14 @@ describe('AnotacionesService', () => {
     const byNote = await service.searchAnnotations('Cervantes');
     expect(byNote).toHaveLength(1);
     expect(byNote[0]?.note).toBe('nota sobre Cervantes');
+
+    const byTitle = await service.searchAnnotations('quijote');
+    expect(byTitle).toHaveLength(1);
+    expect(byTitle[0]?.bookTitle).toBe('Don Quijote');
+
+    const byAuthor = await service.searchAnnotations('miguel');
+    expect(byAuthor).toHaveLength(1);
+    expect(byAuthor[0]?.bookAuthor).toBe('Miguel de Cervantes');
 
     // No match
     const noMatch = await service.searchAnnotations('xyzzy');

@@ -40,6 +40,7 @@ interface MockDictionaryStoreState {
   isSelectMode: boolean;
   selectedEntryIds: string[];
   loadEntries: typeof mocks.loadEntries;
+  searchEntries: typeof mocks.loadEntries;
   loadEntry: typeof mocks.loadEntry;
   loadOccurrences: typeof mocks.loadOccurrences;
   updateEntry: typeof mocks.updateEntry;
@@ -73,6 +74,7 @@ vi.mock('@/store/dictionaryStore', () => ({
       isSelectMode: mockIsSelectMode,
       selectedEntryIds: mockSelectedEntryIds,
       loadEntries: mocks.loadEntries,
+      searchEntries: mocks.loadEntries,
       loadEntry: mocks.loadEntry,
       loadOccurrences: mocks.loadOccurrences,
       updateEntry: mocks.updateEntry,
@@ -190,17 +192,22 @@ describe('DictionaryGrid', () => {
     );
   });
 
-  it('filters tiles by word and definition', () => {
+  it('delegates tile search by word and definition to the dictionary store', () => {
     mockEntries = [
       makeEntry({ id: 'entry-1', displayTerm: 'serendipia', definition: 'Hallazgo afortunado' }),
       makeEntry({ id: 'entry-2', displayTerm: 'efímero', definition: 'Dura poco' }),
     ];
 
-    render(<DictionaryGrid service={mockService} />);
+    const { rerender } = render(<DictionaryGrid service={mockService} />);
     fireEvent.change(screen.getByLabelText('Buscar'), { target: { value: 'afortunado' } });
+    mockEntries = [
+      makeEntry({ id: 'entry-1', displayTerm: 'serendipia', definition: 'Hallazgo afortunado' }),
+    ];
+    rerender(<DictionaryGrid service={mockService} />);
 
     expect(screen.getByRole('link', { name: /serendipia/i })).toBeTruthy();
     expect(screen.queryByRole('link', { name: /efímero/i })).toBeNull();
+    expect(mocks.loadEntries).toHaveBeenCalledWith('afortunado', mockService);
   });
 
   it('renders dictionary tiles as toggle buttons when select mode is active', () => {
@@ -236,6 +243,20 @@ describe('DictionaryGrid', () => {
     render(<DictionaryGrid service={mockService} />);
 
     expect(screen.getByText(/cargando/i)).toBeTruthy();
+  });
+
+  it('keeps the search input mounted while a search is loading with no results', () => {
+    const { rerender } = render(<DictionaryGrid service={mockService} />);
+
+    fireEvent.change(screen.getByLabelText('Buscar'), { target: { value: 'borges' } });
+    mockIsLoading = true;
+    mockEntries = [];
+    rerender(<DictionaryGrid service={mockService} />);
+
+    const searchInput = screen.getByLabelText('Buscar') as HTMLInputElement;
+    expect(searchInput.value).toBe('borges');
+    expect(screen.queryByText(/cargando/i)).toBeNull();
+    expect(screen.getByText('Actualizando…')).toBeTruthy();
   });
 
   it('renders toolbar Add (PiPlus) and Select action buttons on the right side', () => {
@@ -310,8 +331,10 @@ describe('DictionaryGrid', () => {
   it('shows toolbar actions alongside no-results empty state when search has no matches', () => {
     mockEntries = [makeEntry({ id: 'entry-1', displayTerm: 'serendipia' })];
 
-    render(<DictionaryGrid service={mockService} />);
+    const { rerender } = render(<DictionaryGrid service={mockService} />);
     fireEvent.change(screen.getByLabelText('Buscar'), { target: { value: 'xyzzy' } });
+    mockEntries = [];
+    rerender(<DictionaryGrid service={mockService} />);
 
     expect(screen.getByText('Sin resultados')).toBeTruthy();
     // Toolbar actions remain usable
@@ -398,7 +421,7 @@ describe('DictionaryGrid', () => {
     expect(mocks.deleteSelectedEntries).not.toHaveBeenCalled();
   });
 
-  it('preserves search and filter behavior alongside toolbar actions', () => {
+  it('preserves search wiring alongside toolbar actions', () => {
     mockEntries = [
       makeEntry({ id: 'entry-1', displayTerm: 'serendipia', definition: 'Hallazgo afortunado' }),
       makeEntry({ id: 'entry-2', displayTerm: 'efímero', definition: 'Dura poco' }),
@@ -410,10 +433,19 @@ describe('DictionaryGrid', () => {
     expect(screen.getByRole('button', { name: 'Añadir palabra' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Seleccionar' })).toBeTruthy();
 
-    // Search still works
+    // Search is delegated to the dictionary store/service so occurrence metadata
+    // such as book title and author can participate in the same search.
     fireEvent.change(screen.getByLabelText('Buscar'), { target: { value: 'afortunado' } });
     expect(screen.getByRole('link', { name: /serendipia/i })).toBeTruthy();
-    expect(screen.queryByRole('link', { name: /efímero/i })).toBeNull();
+    expect(mocks.loadEntries).toHaveBeenCalledWith('afortunado', mockService);
+  });
+
+  it('searches dictionary entries through the store action when the user types', () => {
+    render(<DictionaryGrid service={mockService} />);
+
+    fireEvent.change(screen.getByLabelText('Buscar'), { target: { value: 'Borges' } });
+
+    expect(mocks.loadEntries).toHaveBeenCalledWith('Borges', mockService);
   });
 
   it('shows book-only actions never appear in dictionary toolbar groups', () => {

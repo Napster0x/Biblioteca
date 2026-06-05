@@ -193,6 +193,30 @@ export class DictionaryService {
     return rows.map(entryFromRow);
   }
 
+  async searchEntries(query: string): Promise<DictionaryEntry[]> {
+    const pattern = `%${query}%`;
+    const rows = await this.db.select<DictionaryEntryRow>(
+      `SELECT ${ENTRY_COLUMNS}
+       FROM dictionary_entries AS entry
+       WHERE entry.term LIKE ?
+          OR entry.display_term LIKE ?
+          OR entry.definition LIKE ?
+          OR EXISTS (
+            SELECT 1
+            FROM dictionary_occurrences AS occurrence
+            WHERE occurrence.entry_id = entry.id
+              AND (
+                occurrence.selected_text LIKE ?
+                OR occurrence.book_title LIKE ?
+                OR occurrence.book_author LIKE ?
+              )
+          )
+       ORDER BY entry.updated_at DESC, entry.display_term ASC`,
+      [pattern, pattern, pattern, pattern, pattern, pattern],
+    );
+    return rows.map(entryFromRow);
+  }
+
   async listOccurrences(entryId: string): Promise<DictionaryOccurrence[]> {
     const rows = await this.db.select<DictionaryOccurrenceRow>(
       `SELECT id, entry_id, book_hash, book_title, book_author, cfi, section_href, page, selected_text,

@@ -14,17 +14,9 @@ import {
   type ListProps,
 } from 'react-virtuoso';
 import { Book, BooksGroup, ReadingStatus } from '@/types/book';
-import {
-  ANOTACIONES_SHELF_ITEM,
-  AnotacionesShelfItem,
-  isAnotacionesShelfItem,
-} from '@/types/annotaciones';
-import { CITAS_SHELF_ITEM, CitasShelfItem, isCitasShelfItem } from '@/types/citas';
-import {
-  DICTIONARY_SHELF_ITEM,
-  DictionaryShelfItem,
-  isDictionaryShelfItem,
-} from '@/types/dictionary';
+import { AnotacionesShelfItem, isAnotacionesShelfItem } from '@/types/annotaciones';
+import { CitasShelfItem, isCitasShelfItem } from '@/types/citas';
+import { DictionaryShelfItem, isDictionaryShelfItem } from '@/types/dictionary';
 import {
   LibraryCoverFitType,
   LibraryGroupByType,
@@ -51,6 +43,8 @@ import {
   getBookSortValue,
   getGroupSortValue,
   compareSortValues,
+  createBookshelfSourceItems,
+  isSpecialShelfBook,
 } from '../utils/libraryUtils';
 import { eventDispatcher } from '@/utils/event';
 
@@ -99,6 +93,23 @@ type BookshelfShelfItem =
   | AnotacionesShelfItem
   | DictionaryShelfItem
   | CitasShelfItem;
+
+const SHELF_ITEM_ORDER = ['dictionary', 'citas', 'anotaciones'] as const;
+
+const isSpecialShelfItem = (
+  item: Book | BooksGroup,
+): item is DictionaryShelfItem | CitasShelfItem | AnotacionesShelfItem =>
+  'format' in item && isSpecialShelfBook(item);
+
+const pinSpecialShelfItems = (items: (Book | BooksGroup)[]): BookshelfShelfItem[] => {
+  const specialItems = items.filter(isSpecialShelfItem);
+  const regularItems = items.filter((item) => !isSpecialShelfItem(item));
+  const orderedSpecialItems = SHELF_ITEM_ORDER.flatMap((id) =>
+    specialItems.filter((item) => item.id === id),
+  );
+
+  return [...orderedSpecialItems, ...regularItems];
+};
 
 const BookshelfGridList: GridComponents<BookshelfListContext>['List'] = React.forwardRef<
   HTMLDivElement,
@@ -215,10 +226,17 @@ const Bookshelf: React.FC<BookshelfProps> = ({
     [router, searchParams],
   );
 
+  const bookshelfSourceItems = useMemo<Book[]>(
+    () => createBookshelfSourceItems(libraryBooks),
+    [libraryBooks],
+  );
+
   const filteredBooks = useMemo(() => {
     const bookFilter = createBookFilter(queryTerm);
-    return queryTerm ? libraryBooks.filter((book) => bookFilter(book)) : libraryBooks;
-  }, [libraryBooks, queryTerm]);
+    return queryTerm
+      ? bookshelfSourceItems.filter((book) => bookFilter(book))
+      : bookshelfSourceItems;
+  }, [bookshelfSourceItems, queryTerm]);
 
   const currentBookshelfItems = useMemo(() => {
     if (groupBy === LibraryGroupByType.Group) {
@@ -318,15 +336,16 @@ const Bookshelf: React.FC<BookshelfProps> = ({
     return allItems;
   }, [sortOrder, sortBy, groupBy, groupId, uiLanguage, currentBookshelfItems]);
 
-  const pinnedBookshelfItems = useMemo<BookshelfShelfItem[]>(
-    () => [
-      DICTIONARY_SHELF_ITEM,
-      CITAS_SHELF_ITEM,
-      ANOTACIONES_SHELF_ITEM,
-      ...sortedBookshelfItems,
-    ],
-    [sortedBookshelfItems],
-  );
+  const pinnedBookshelfItems = useMemo<BookshelfShelfItem[]>(() => {
+    const shouldPinSpecialItems =
+      !queryTerm &&
+      !groupId &&
+      (groupBy === LibraryGroupByType.None || groupBy === LibraryGroupByType.Group);
+
+    return shouldPinSpecialItems
+      ? pinSpecialShelfItems(sortedBookshelfItems)
+      : sortedBookshelfItems;
+  }, [groupBy, groupId, queryTerm, sortedBookshelfItems]);
 
   useEffect(() => {
     if (isImportingBook.current) return;
@@ -466,7 +485,9 @@ const Bookshelf: React.FC<BookshelfProps> = ({
       setShowSelectModeActions(true);
       if (isSelectAll) {
         setSelectedBooks(
-          currentBookshelfItems.map((item) => ('hash' in item ? item.hash : item.id)),
+          currentBookshelfItems
+            .filter((item) => !isSpecialShelfItem(item))
+            .map((item) => ('hash' in item ? item.hash : item.id)),
         );
       } else if (isSelectNone) {
         setSelectedBooks([]);
@@ -525,7 +546,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
   // In grid mode the Import-Books "+" tile is rendered as an extra grid cell
   // after all books. We represent it to Virtuoso as an extra index past the
   // last book; list mode doesn't have an import tile.
-  const gridTotalCount = hasItems ? pinnedBookshelfItems.length + 1 : 0;
+  const gridTotalCount = pinnedBookshelfItems.length + 1;
 
   const listContext = useMemo<BookshelfListContext>(
     () => ({
@@ -633,7 +654,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
       className='bookshelf min-h-0 flex-grow focus:outline-none'
     >
       <div ref={osRootRef} data-overlayscrollbars-initialize='' className='h-full'>
-        {hasItems && isGridMode && (
+        {isGridMode && (
           <VirtuosoGrid<unknown, BookshelfListContext>
             overscan={200}
             totalCount={gridTotalCount}

@@ -1,3 +1,5 @@
+import type { Book } from './book';
+
 export type EnrichmentStatus = 'none' | 'pending' | 'ready' | 'failed';
 
 export interface DictionaryEntry {
@@ -29,16 +31,23 @@ export interface DictionaryOccurrence {
   createdAt: number;
 }
 
-export interface DictionaryShelfItem {
+export interface DictionaryShelfItem extends Book {
   type: 'dictionary-shelf-item';
   id: 'dictionary';
   title: string;
+  hash: 'dictionary';
 }
 
 export const DICTIONARY_SHELF_ITEM: DictionaryShelfItem = {
   type: 'dictionary-shelf-item',
   id: 'dictionary',
+  hash: 'dictionary',
+  format: 'EPUB',
   title: 'Diccionario',
+  author: 'Mateo Galiano',
+  coverImageUrl: '/images/dictionary-cover.png',
+  createdAt: 0,
+  updatedAt: 0,
 };
 
 export function isDictionaryShelfItem(value: unknown): value is DictionaryShelfItem {

@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as React from 'react';
 
 import Bookshelf from '@/app/library/components/Bookshelf';
+import { createBookshelfSourceItems, createBookGroups } from '@/app/library/utils/libraryUtils';
 import { DEFAULT_SYSTEM_SETTINGS } from '@/services/constants';
 import type { Book } from '@/types/book';
+import { LibraryGroupByType } from '@/types/settings';
 
 const { pushMock, navigateToReaderMock } = vi.hoisted(() => ({
   pushMock: vi.fn(),
@@ -170,7 +172,7 @@ afterEach(() => {
 });
 
 describe('Bookshelf dictionary entry', () => {
-  it('pins Diccionario before sorted books while search filters the real books', () => {
+  it('filters false books out when search matches only a real book', () => {
     searchParams = new URLSearchParams('q=alpha&sort=title&order=asc');
 
     renderBookshelf([
@@ -182,13 +184,7 @@ describe('Bookshelf dictionary entry', () => {
       .getAllByRole('button')
       .map((button) => button.getAttribute('aria-label'))
       .filter((label) => label !== 'Show Book Details');
-    expect(itemLabels).toEqual([
-      'Diccionario',
-      'Citas',
-      'Anotaciones',
-      'Alpha field notes',
-      'Import Books',
-    ]);
+    expect(itemLabels).toEqual(['Alpha field notes', 'Import Books']);
     expect(screen.queryByRole('button', { name: 'Zeta handbook' })).toBeNull();
   });
 
@@ -208,7 +204,7 @@ describe('Bookshelf dictionary entry', () => {
     expect(itemLabels.slice(0, 4)).toEqual(['Diccionario', 'Citas', 'Anotaciones', 'Fiction']);
   });
 
-  it('keeps Diccionario visible when search filters out every book', () => {
+  it('filters Diccionario, Citas and Anotaciones when search filters out every book', () => {
     searchParams = new URLSearchParams('q=missing');
 
     renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
@@ -216,8 +212,51 @@ describe('Bookshelf dictionary entry', () => {
     const itemLabels = screen
       .getAllByRole('button')
       .map((button) => button.getAttribute('aria-label'));
-    expect(itemLabels).toEqual(['Diccionario', 'Citas', 'Anotaciones', 'Import Books']);
+    expect(itemLabels).toEqual(['Import Books']);
     expect(screen.queryByRole('button', { name: 'Alpha field notes' })).toBeNull();
+  });
+
+  it('finds the false books by their shared author', () => {
+    searchParams = new URLSearchParams('q=Mateo Galiano');
+
+    renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
+
+    const itemLabels = screen
+      .getAllByRole('button')
+      .map((button) => button.getAttribute('aria-label'));
+    expect(itemLabels).toEqual(['Anotaciones', 'Citas', 'Diccionario', 'Import Books']);
+    expect(screen.queryByRole('button', { name: 'Alpha field notes' })).toBeNull();
+  });
+
+  it('groups the false books under Mateo Galiano when grouping by author', () => {
+    searchParams = new URLSearchParams('groupBy=author');
+
+    renderBookshelf([
+      makeBook({ hash: 'alpha', title: 'Alpha field notes', author: 'Other Author' }),
+    ]);
+
+    const itemLabels = screen
+      .getAllByRole('button')
+      .map((button) => button.getAttribute('aria-label'))
+      .filter((label) => label !== 'Show Book Details');
+    expect(itemLabels).toContain('Mateo Galiano');
+  });
+
+  it('groups future real Mateo Galiano books together with the false books', () => {
+    const groups = createBookGroups(
+      createBookshelfSourceItems([
+        makeBook({ hash: 'mateo-real', title: 'Real Mateo book', author: 'Mateo Galiano' }),
+      ]),
+      LibraryGroupByType.Author,
+    );
+
+    const mateoGroup = groups.find(
+      (item) => 'books' in item && item.displayName === 'Mateo Galiano',
+    );
+
+    expect(
+      mateoGroup && 'books' in mateoGroup ? mateoGroup.books.map((book) => book.hash) : [],
+    ).toEqual(expect.arrayContaining(['dictionary', 'citas', 'anotaciones', 'mateo-real']));
   });
 
   it('opens the dictionary route without invoking reader navigation', () => {

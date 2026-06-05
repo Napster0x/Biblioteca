@@ -234,9 +234,9 @@ export class CitasService {
     const rows = await this.db.select<QuoteRow>(
       `SELECT ${QUOTE_COLUMNS}
        FROM quotes
-       WHERE text LIKE ? OR book_author LIKE ?
+       WHERE text LIKE ? OR book_title LIKE ? OR book_author LIKE ?
        ORDER BY created_at DESC`,
-      [pattern, pattern],
+      [pattern, pattern, pattern],
     );
     return rows.map(quoteFromRow);
   }

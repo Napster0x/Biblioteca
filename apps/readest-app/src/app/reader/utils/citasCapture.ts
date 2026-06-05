@@ -6,7 +6,7 @@ import type { EnvConfigType } from '@/services/environment';
 import type { SystemSettings } from '@/types/settings';
 import type { AppService } from '@/types/system';
 
-export const CITAS_HIGHLIGHT_FALLBACK = '#fecaca';
+export const CITAS_HIGHLIGHT_FALLBACK = '#fca5a5';
 
 interface CaptureQuoteBook {
   hash: string;

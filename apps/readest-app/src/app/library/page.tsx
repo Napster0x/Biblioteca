@@ -64,6 +64,7 @@ import { useDragDropImport } from './hooks/useDragDropImport';
 import { useAppRouter } from '@/hooks/useAppRouter';
 import { Toast } from '@/components/Toast';
 import {
+  createBookshelfSourceItems,
   createBookGroups,
   ensureLibraryGroupByType,
   findGroupById,
@@ -572,7 +573,7 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
     ) {
       // Find the group to get its name
       const allGroups = createBookGroups(
-        libraryBooks.filter((b) => !b.deletedAt),
+        createBookshelfSourceItems(libraryBooks).filter((b) => !b.deletedAt),
         groupBy,
       );
       const targetGroup = findGroupById(allGroups, groupId);

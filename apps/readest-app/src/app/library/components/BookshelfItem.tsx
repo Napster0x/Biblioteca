@@ -21,6 +21,7 @@ import { LibraryCoverFitType, LibraryViewModeType } from '@/types/settings';
 import { BOOK_UNGROUPED_ID, BOOK_UNGROUPED_NAME } from '@/services/constants';
 import { FILE_REVEAL_LABELS, FILE_REVEAL_PLATFORMS } from '@/utils/os';
 import { Book, BooksGroup, ReadingStatus } from '@/types/book';
+import { isSpecialShelfBook } from '../utils/libraryUtils';
 import { AnotacionesShelfItem, isAnotacionesShelfItem } from '@/types/annotaciones';
 import { CitasShelfItem, isCitasShelfItem } from '@/types/citas';
 import { DictionaryShelfItem, isDictionaryShelfItem } from '@/types/dictionary';
@@ -299,7 +300,9 @@ const BookshelfItem: React.FC<BookshelfItemProps> = ({
         // rendered rollup and already includes books from nested sub-
         // folders, so the deletion path doesn't need to re-derive what
         // belongs to the group from the id alone.
-        const ids = group.books.filter((book) => !book.deletedAt).map((book) => book.hash);
+        const ids = group.books
+          .filter((book) => !book.deletedAt && !isSpecialShelfBook(book))
+          .map((book) => book.hash);
         eventDispatcher.dispatch('delete-books', { ids });
       },
     });

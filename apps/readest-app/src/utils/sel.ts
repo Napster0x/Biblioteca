@@ -29,6 +29,8 @@ export interface TextSelection {
   range: Range;
   index: number;
   cfi?: string;
+  bookNoteId?: string;
+  cleanupOnCancel?: boolean;
   href?: string;
   annotated?: boolean;
   rect?: Rect;

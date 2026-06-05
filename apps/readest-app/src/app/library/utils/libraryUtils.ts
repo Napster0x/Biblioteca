@@ -1,7 +1,30 @@
 import { Book, BooksGroup } from '@/types/book';
+import { ANOTACIONES_SHELF_ITEM } from '@/types/annotaciones';
+import { CITAS_SHELF_ITEM } from '@/types/citas';
+import { DICTIONARY_SHELF_ITEM } from '@/types/dictionary';
 import { LibraryGroupByType, LibrarySortByType } from '@/types/settings';
 import { formatAuthors, formatTitle } from '@/utils/book';
 import { md5Fingerprint } from '@/utils/md5';
+
+export const SPECIAL_SHELF_ITEMS = [
+  DICTIONARY_SHELF_ITEM,
+  CITAS_SHELF_ITEM,
+  ANOTACIONES_SHELF_ITEM,
+] as const;
+
+export const createBookshelfSourceItems = (libraryBooks: Book[]): Book[] => [
+  ...SPECIAL_SHELF_ITEMS,
+  ...libraryBooks,
+];
+
+export const isSpecialShelfBook = (book: Book): boolean => {
+  const itemType = (book as { type?: unknown }).type;
+  return (
+    itemType === 'dictionary-shelf-item' ||
+    itemType === 'citas-shelf-item' ||
+    itemType === 'anotaciones-shelf-item'
+  );
+};
 
 /** Valid sort types for the library */
 const VALID_SORT_TYPES: LibrarySortByType[] = Object.values(LibrarySortByType);
@@ -76,7 +99,7 @@ export const expandBookshelfSelection = (ids: string[], items: (Book | BooksGrou
     const group = findGroupById(items, id);
     if (group) {
       for (const book of group.books) {
-        if (!book.deletedAt) hashes.add(book.hash);
+        if (!book.deletedAt && !isSpecialShelfBook(book)) hashes.add(book.hash);
       }
     } else {
       hashes.add(id);

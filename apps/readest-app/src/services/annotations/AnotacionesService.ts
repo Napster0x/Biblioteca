@@ -93,9 +93,9 @@ export class AnotacionesService {
     const rows = await this.db.select<AnnotacionRow>(
       `SELECT ${ANNOTATION_COLUMNS}
        FROM annotations
-       WHERE text LIKE ? OR note LIKE ?
+       WHERE text LIKE ? OR note LIKE ? OR book_title LIKE ? OR book_author LIKE ?
        ORDER BY created_at DESC`,
-      [pattern, pattern],
+      [pattern, pattern, pattern, pattern],
     );
     return rows.map(annotationFromRow);
   }

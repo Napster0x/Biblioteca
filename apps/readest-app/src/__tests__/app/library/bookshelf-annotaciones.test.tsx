@@ -210,7 +210,7 @@ describe('Bookshelf Anotaciones entry', () => {
     ]);
   });
 
-  it('opens /annotaciones without invoking reader navigation', () => {
+  it('opens /anotaciones without invoking reader navigation', () => {
     renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
 
     fireEvent.click(screen.getByRole('button', { name: 'Anotaciones' }));
@@ -219,12 +219,12 @@ describe('Bookshelf Anotaciones entry', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
-  it('renders the Anotaciones list subtitle through the flat i18n key', () => {
+  it('renders the Anotaciones author in list mode', () => {
     libraryViewMode = 'list';
 
     renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
 
-    expect(screen.getByText('Saved annotations')).toBeTruthy();
+    expect(screen.getAllByText('Mateo Galiano')).toHaveLength(3);
   });
 
   it('ignores selection attempts on Anotaciones', () => {

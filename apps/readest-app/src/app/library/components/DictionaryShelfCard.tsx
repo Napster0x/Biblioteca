@@ -60,9 +60,7 @@ const DictionaryShelfCard = ({ item, mode }: DictionaryShelfCardProps) => {
             {item.title}
           </h4>
           {mode === 'list' && (
-            <p className='text-neutral-content line-clamp-1 text-sm'>
-              Palabras guardadas desde tus lecturas
-            </p>
+            <p className='text-neutral-content line-clamp-1 text-sm'>{item.author}</p>
           )}
         </div>
         {mode === 'grid' && <div className='placeholder' style={{ height: 15 }} />}

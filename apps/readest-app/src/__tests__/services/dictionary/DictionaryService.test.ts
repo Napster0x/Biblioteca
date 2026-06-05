@@ -107,6 +107,27 @@ describe('DictionaryService', () => {
     expect(occurrences).toEqual([]);
   });
 
+  it('searches entries by term, definition, occurrence text, book title, and book author', async () => {
+    const entry = await service.upsertEntry({
+      term: 'Aleph',
+      definition: 'A point containing all points.',
+    });
+    await service.createOccurrence({
+      entryId: entry.id,
+      bookHash: 'book-1',
+      bookTitle: 'Ficciones',
+      bookAuthor: 'Borges',
+      cfi: '/6/2',
+      selectedText: 'El Aleph',
+    });
+
+    expect((await service.searchEntries('aleph')).map((item) => item.id)).toEqual([entry.id]);
+    expect((await service.searchEntries('points')).map((item) => item.id)).toEqual([entry.id]);
+    expect((await service.searchEntries('ficciones')).map((item) => item.id)).toEqual([entry.id]);
+    expect((await service.searchEntries('borges')).map((item) => item.id)).toEqual([entry.id]);
+    expect(await service.searchEntries('xyzzy')).toEqual([]);
+  });
+
   it('deletes selected entries and cascades their occurrences', async () => {
     const keep = await service.upsertEntry({ term: 'anchor', language: 'en' });
     const removeOne = await service.upsertEntry({ term: 'beacon', language: 'en' });

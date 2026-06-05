@@ -496,14 +496,14 @@ describe('Annotator dictionary capture wiring', () => {
 
 describe('Annotator Citas quote capture wiring', () => {
   it('persists a Cite and draws a cite-linked quote highlight when the C action is clicked', async () => {
-    document.documentElement.style.setProperty('--citas-highlight', '#fecaca');
+    document.documentElement.style.setProperty('--citas-highlight', '#fca5a5');
     const gridCell = document.createElement('div');
     gridCell.id = 'gridcell-book-1';
     document.body.appendChild(gridCell);
 
     render(<Annotator bookKey='book-1' />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'C' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Citas' }));
 
     await waitFor(() => {
       expect(annotatorMocks.getCitasService).toHaveBeenCalledWith(annotatorMocks.appService);
@@ -526,14 +526,14 @@ describe('Annotator Citas quote capture wiring', () => {
           type: 'annotation',
           cfi: 'epubcfi(/6/2!/4/2)',
           style: 'highlight',
-          color: '#fecaca',
+          color: '#fca5a5',
           citeId: 'cite-1',
           text: 'serendipity',
         }),
       );
       expect(annotatorMocks.updateBooknotes).toHaveBeenCalledWith(
         'book-1',
-        expect.arrayContaining([expect.objectContaining({ citeId: 'cite-1', color: '#fecaca' })]),
+        expect.arrayContaining([expect.objectContaining({ citeId: 'cite-1', color: '#fca5a5' })]),
       );
       expect(annotatorMocks.saveConfig).toHaveBeenCalled();
     });
@@ -549,7 +549,7 @@ describe('Annotator Citas quote capture wiring', () => {
 
     render(<Annotator bookKey='book-1' />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'C' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Citas' }));
 
     await waitFor(() => {
       expect(annotatorMocks.getCitasService).not.toHaveBeenCalled();
@@ -575,7 +575,7 @@ describe('Annotator Citas quote capture wiring', () => {
 
     render(<Annotator bookKey='book-1' />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'C' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Citas' }));
 
     await waitFor(() => {
       expect(annotatorMocks.createQuoteInStore).toHaveBeenCalled();
@@ -597,7 +597,7 @@ describe('Annotator Citas quote capture wiring', () => {
         id: 'note-quote-1',
         dictionaryEntryId: undefined,
         citeId: 'cite-1',
-        color: '#fecaca',
+        color: '#fca5a5',
       },
     ];
     render(<Annotator bookKey='book-1' />);
@@ -624,7 +624,7 @@ describe('Annotator Citas quote capture wiring', () => {
     // Dictionary × does NOT appear
     expect(screen.queryByRole('button', { name: 'Remove dictionary highlight' })).toBeNull();
 
-    // onShowAnnotation still routes to normal annotation popup in Phase 3
+    // Quote highlights navigate to Citas with the linked quote highlighted.
     annotatorMocks.foliateHandlers.current.onShowAnnotation?.(
       new CustomEvent('show-annotation', {
         detail: {
@@ -635,10 +635,10 @@ describe('Annotator Citas quote capture wiring', () => {
       }),
     );
 
-    expect(annotatorMocks.router.push).not.toHaveBeenCalled();
+    expect(annotatorMocks.router.push).toHaveBeenCalledWith('/citas?highlight=cite-1');
     expect(annotatorMocks.dictionaryService.deleteEntries).not.toHaveBeenCalled();
     expect(annotatorMocks.removeBookNoteOverlays).not.toHaveBeenCalled();
-    expect(annotatorMocks.handleUpToPopup).toHaveBeenCalled();
+    expect(annotatorMocks.handleUpToPopup).not.toHaveBeenCalled();
   });
 });
 
@@ -650,7 +650,7 @@ describe('Annotator quote highlight hover × + delete modal', () => {
         id: 'note-quote-2',
         dictionaryEntryId: undefined,
         citeId: 'cite-99',
-        color: '#fecaca',
+        color: '#fca5a5',
       },
     ];
     render(<Annotator bookKey='book-1' />);
@@ -681,7 +681,7 @@ describe('Annotator quote highlight hover × + delete modal', () => {
         id: 'note-quote-3',
         dictionaryEntryId: undefined,
         citeId: 'cite-42',
-        color: '#fecaca',
+        color: '#fca5a5',
       },
     ];
     render(<Annotator bookKey='book-1' />);
@@ -938,14 +938,14 @@ describe('Annotator clear-annotations Citas sync', () => {
         id: 'note-cite-a',
         dictionaryEntryId: undefined,
         citeId: 'cite-a',
-        color: '#fecaca',
+        color: '#fca5a5',
       },
       {
         ...annotatorMocks.config.booknotes[0]!,
         id: 'note-cite-b',
         dictionaryEntryId: undefined,
         citeId: 'cite-b',
-        color: '#fecaca',
+        color: '#fca5a5',
       },
       {
         ...annotatorMocks.config.booknotes[0]!,

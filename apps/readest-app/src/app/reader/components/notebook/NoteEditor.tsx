@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useNotebookStore } from '@/store/notebookStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useResponsiveSize } from '@/hooks/useResponsiveSize';
-import { TextSelection } from '@/utils/sel';
+import type { PendingAnnotation } from '@/app/reader/utils/annotacionesCapture';
 import { md5Fingerprint } from '@/utils/md5';
 import { BookNote } from '@/types/book';
 import useShortcuts from '@/hooks/useShortcuts';
@@ -10,16 +10,24 @@ import TextEditor, { TextEditorRef } from '@/components/TextEditor';
 import TextButton from '@/components/TextButton';
 
 interface NoteEditorProps {
-  onSave: (selection: TextSelection, note: string) => void;
+  onSave: (selection: PendingAnnotation, note: string) => Promise<void>;
   onEdit: (annotation: BookNote) => void;
+  onCancel: () => void;
+  isSaving?: boolean;
+  error?: string | null;
 }
 
-const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onEdit }) => {
+const NoteEditor: React.FC<NoteEditorProps> = ({
+  onSave,
+  onEdit,
+  onCancel,
+  isSaving = false,
+  error = null,
+}) => {
   const _ = useTranslation();
   const {
     notebookNewAnnotation,
     notebookEditAnnotation,
-    setNotebookNewAnnotation,
     setNotebookEditAnnotation,
     saveNotebookAnnotationDraft,
     getNotebookAnnotationDraft,
@@ -65,11 +73,11 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onEdit }) => {
     }
   };
 
-  const handleSaveNote = () => {
+  const handleSaveNote = async () => {
     const currentValue = editorRef.current?.getValue();
     if (currentValue) {
       if (notebookNewAnnotation) {
-        onSave(notebookNewAnnotation, currentValue);
+        await onSave(notebookNewAnnotation, currentValue);
       } else if (notebookEditAnnotation) {
         notebookEditAnnotation.note = currentValue;
         onEdit(notebookEditAnnotation);
@@ -79,7 +87,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onEdit }) => {
 
   const handleEscape = () => {
     if (notebookNewAnnotation) {
-      setNotebookNewAnnotation(null);
+      onCancel();
     }
     if (notebookEditAnnotation) {
       setNotebookEditAnnotation(null);
@@ -89,8 +97,8 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onEdit }) => {
   useShortcuts({
     onSaveNote: () => {
       const currentValue = editorRef.current?.getValue();
-      if (currentValue) {
-        handleSaveNote();
+      if (currentValue && !isSaving) {
+        void handleSaveNote();
       }
     },
     onEscape: handleEscape,
@@ -99,19 +107,24 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onEdit }) => {
   const canSave = Boolean(note.trim());
 
   return (
-    <div className='content booknote-item note-editor-container bg-base-100 mt-2 rounded-md p-2'>
+    <div className='note-editor-container bg-base-100 mt-2 rounded-md p-2'>
       <div className='flex w-full'>
         <TextEditor
           ref={editorRef}
           value={note}
           onChange={handleNoteChange}
           onBlur={handleBlur}
-          onSave={handleSaveNote}
+          onSave={() => void handleSaveNote()}
           onEscape={handleEscape}
           placeholder={_('Add your notes here...')}
           spellCheck={false}
         />
       </div>
+      {error && (
+        <p className='text-error px-1 pt-2 text-sm' role='alert'>
+          {error}
+        </p>
+      )}
 
       <div className='flex items-center pt-2'>
         <div
@@ -120,14 +133,19 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onEdit }) => {
             minWidth: `${separatorWidth}px`,
           }}
         ></div>
-        <div className='content font-size-sm line-clamp-3'>
-          <span className='content font-size-xs text-gray-500'>{getAnnotationText()}</span>
+        <div
+          data-testid='annotation-preview'
+          className='line-clamp-3 text-sm leading-relaxed text-gray-500'
+        >
+          <span>{getAnnotationText()}</span>
         </div>
       </div>
 
       <div className='flex justify-end space-x-3 p-2' dir='ltr'>
-        <TextButton onClick={handleEscape}>{_('Cancel')}</TextButton>
-        <TextButton onClick={handleSaveNote} disabled={!canSave}>
+        <TextButton onClick={handleEscape} disabled={isSaving}>
+          {_('Cancel')}
+        </TextButton>
+        <TextButton onClick={() => void handleSaveNote()} disabled={!canSave || isSaving}>
           {_('Save')}
         </TextButton>
       </div>

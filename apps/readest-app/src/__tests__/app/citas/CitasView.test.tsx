@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, act } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CitasService } from '@/services/citas/CitasService';
 import type { Cite } from '@/types/citas';
@@ -229,14 +229,14 @@ describe('CitasGrid', () => {
     expect(screen.getByText('Ficciones ~ Borges')).toBeTruthy();
   });
 
-  it('keeps existing text and author search results in the row layout', () => {
+  it('keeps existing text, book title, and author search results in the row layout', () => {
     mockQuotes = [
-      makeQuote({ id: 'cite-1', text: 'Biblioteca secreta', bookAuthor: 'Borges' }),
-      makeQuote({ id: 'cite-2', text: 'Jardín visible', bookAuthor: 'Bioy' }),
+      makeQuote({ id: 'cite-1', text: 'Biblioteca secreta', bookTitle: 'Ficciones' }),
+      makeQuote({ id: 'cite-2', text: 'Jardín visible', bookTitle: 'Plan de evasión' }),
     ];
 
     render(<CitasGrid service={mockService} />);
-    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'borges' } });
+    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'ficciones' } });
 
     expect(screen.getByText('Biblioteca secreta')).toBeTruthy();
     expect(screen.queryByText('Jardín visible')).toBeNull();
@@ -372,8 +372,6 @@ describe('CitasGrid', () => {
   });
 
   describe('?highlight= param', () => {
-    const origPushState = window.history.pushState.bind(window.history);
-
     beforeEach(() => {
       // Ensure no highlight param by default
       window.history.pushState({}, '', '/citas');

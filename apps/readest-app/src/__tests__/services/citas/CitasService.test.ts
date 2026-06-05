@@ -219,7 +219,7 @@ describe('CitasService', () => {
     expect(found).toBeNull();
   });
 
-  it('searchQuotes does a case-insensitive LIKE on text and bookAuthor', async () => {
+  it('searchQuotes does a case-insensitive LIKE on text, bookTitle, and bookAuthor', async () => {
     await service.createQuote({
       bookHash: 'b1',
       bookTitle: 'Mancha',
@@ -233,7 +233,7 @@ describe('CitasService', () => {
     });
     await service.createQuote({
       bookHash: 'b2',
-      bookTitle: 'Sur',
+      bookTitle: 'Ficciones',
       bookAuthor: 'Borges',
       cfi: null,
       sectionHref: null,
@@ -254,6 +254,9 @@ describe('CitasService', () => {
     // (uppercase) matches the title-case author "Borges".
     const byAuthor = await service.searchQuotes('BORGES');
     expect(byAuthor.map((q) => q.bookAuthor)).toEqual(['Borges']);
+
+    const byTitle = await service.searchQuotes('ficciones');
+    expect(byTitle.map((q) => q.bookTitle)).toEqual(['Ficciones']);
 
     const noMatch = await service.searchQuotes('xyzzy');
     expect(noMatch).toEqual([]);

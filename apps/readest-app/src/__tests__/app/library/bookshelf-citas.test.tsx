@@ -5,7 +5,10 @@ import type * as React from 'react';
 import Bookshelf from '@/app/library/components/Bookshelf';
 import { DEFAULT_SYSTEM_SETTINGS } from '@/services/constants';
 import type { Book } from '@/types/book';
-import type { CitasService } from '@/services/citas/CitasService';
+
+interface MockBookDeleteService {
+  deleteBook: (book: Book) => Promise<void>;
+}
 
 const {
   pushMock,
@@ -238,12 +241,12 @@ describe('Bookshelf Citas entry', () => {
     ]);
   });
 
-  it('keeps Citas visible in second position when search filters out every book', () => {
+  it('filters Citas out when search filters out every book', () => {
     searchParams = new URLSearchParams('q=missing');
 
     renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
 
-    expect(bookshelfLabels()).toEqual(['Diccionario', 'Citas', 'Anotaciones', 'Import Books']);
+    expect(bookshelfLabels()).toEqual(['Import Books']);
     expect(screen.queryByRole('button', { name: 'Alpha field notes' })).toBeNull();
   });
 
@@ -258,12 +261,12 @@ describe('Bookshelf Citas entry', () => {
     expect(saveBookConfigMock).not.toHaveBeenCalled();
   });
 
-  it('renders the Citas list subtitle through the flat i18n key', () => {
+  it('renders the Citas author in list mode', () => {
     libraryViewMode = 'list';
 
     renderBookshelf([makeBook({ hash: 'alpha', title: 'Alpha field notes' })]);
 
-    expect(screen.getByText('Saved passages')).toBeTruthy();
+    expect(screen.getAllByText('Mateo Galiano')).toHaveLength(3);
     expect(screen.queryByText('Citas guardadas desde tus lecturas')).toBeNull();
   });
 
@@ -301,7 +304,7 @@ describe('Cascade delete of quotes on book deletion', () => {
   });
 
   it('calls deleteQuotesByBook with bookHash on successful book deletion', async () => {
-    const mockAppService = {
+    const mockAppService: MockBookDeleteService = {
       deleteBook: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -313,7 +316,7 @@ describe('Cascade delete of quotes on book deletion', () => {
     const handleDelete = () => {
       return async (book: Book) => {
         try {
-          await (mockAppService as any)?.deleteBook(book);
+          await mockAppService.deleteBook(book);
           if (mockAppService) {
             const cs = await getCitasServiceMock(mockAppService);
             const deletedIds = await cs.deleteQuotesByBook(book.hash);
@@ -335,7 +338,7 @@ describe('Cascade delete of quotes on book deletion', () => {
   });
 
   it('does NOT call deleteQuotesByBook when book deletion fails', async () => {
-    const mockAppService = {
+    const mockAppService: MockBookDeleteService = {
       deleteBook: vi.fn().mockRejectedValue(new Error('delete failed')),
     };
 
@@ -346,7 +349,7 @@ describe('Cascade delete of quotes on book deletion', () => {
     const handleDelete = () => {
       return async (book: Book) => {
         try {
-          await (mockAppService as any)?.deleteBook(book);
+          await mockAppService.deleteBook(book);
           return true;
         } catch {
           return false;
@@ -361,7 +364,7 @@ describe('Cascade delete of quotes on book deletion', () => {
   });
 
   it('logs a warning when cascade delete fails but still returns success', async () => {
-    const mockAppService = {
+    const mockAppService: MockBookDeleteService = {
       deleteBook: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -373,7 +376,7 @@ describe('Cascade delete of quotes on book deletion', () => {
     const handleDelete = () => {
       return async (book: Book) => {
         try {
-          await (mockAppService as any)?.deleteBook(book);
+          await mockAppService.deleteBook(book);
           if (mockAppService) {
             try {
               const cs = await getCitasServiceMock(mockAppService);

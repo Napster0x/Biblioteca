@@ -31,6 +31,7 @@ export interface DictionaryStoreState {
   cancelSelectMode: () => void;
   toggleSelectedEntry: (id: string) => void;
   loadEntries: (service: DictionaryService) => Promise<void>;
+  searchEntries: (query: string, service: DictionaryService) => Promise<void>;
   loadEntry: (id: string, service: DictionaryService) => Promise<void>;
   loadOccurrences: (entryId: string, service: DictionaryService) => Promise<void>;
   addEntry: (input: ManualDictionaryEntryInput, service: DictionaryService) => Promise<void>;
@@ -89,6 +90,18 @@ export const useDictionaryStore = create<DictionaryStoreState>((set) => ({
     set({ isLoading: true });
     try {
       const entries = await service.listEntries();
+      set({ entries, isLoading: false });
+    } catch {
+      set({ isLoading: false });
+    }
+  },
+
+  async searchEntries(query, service) {
+    set({ isLoading: true });
+    try {
+      const entries = query.trim()
+        ? await service.searchEntries(query)
+        : await service.listEntries();
       set({ entries, isLoading: false });
     } catch {
       set({ isLoading: false });

@@ -12,7 +12,6 @@ import { useThemeStore } from '@/store/themeStore';
 import { useEnv } from '@/context/EnvContext';
 import { useSwipeToDismiss } from '@/hooks/useSwipeToDismiss';
 import { usePanelResize } from '@/hooks/usePanelResize';
-import { TextSelection } from '@/utils/sel';
 import { BookNote } from '@/types/book';
 import { uniqueId } from '@/utils/misc';
 import { eventDispatcher } from '@/utils/event';
@@ -21,6 +20,14 @@ import { Overlay } from '@/components/Overlay';
 import { saveSysSettings } from '@/helpers/settings';
 import { NOTE_PREFIX } from '@/types/view';
 import useShortcuts from '@/hooks/useShortcuts';
+import { removeBookNoteOverlays } from '@/app/reader/utils/annotatorUtil';
+import { getAnotacionesService } from '@/services/annotations/annotacionesServiceCache';
+import { useAnotacionesStore } from '@/store/annotacionesStore';
+import {
+  createFinalAnnotationBookNote,
+  createTemporaryAnnotationBookNote,
+  type PendingAnnotation,
+} from '@/app/reader/utils/annotacionesCapture';
 import BooknoteItem from '../sidebar/BooknoteItem';
 import AIAssistant from './AIAssistant';
 import NotebookHeader from './Header';
@@ -41,18 +48,22 @@ const Notebook: React.FC = ({}) => {
     useNotebookStore();
   const { notebookNewAnnotation, notebookEditAnnotation, setNotebookPin } = useNotebookStore();
   const { getBookData, getConfig, saveConfig, updateBooknotes } = useBookDataStore();
-  const { getView, getProgress, getViewSettings } = useReaderStore();
+  const { getView, getProgress, getViewSettings, getViewsById } = useReaderStore();
   const { getNotebookWidth, setNotebookWidth, setNotebookVisible, toggleNotebookPin } =
     useNotebookStore();
   const { setNotebookNewAnnotation, setNotebookEditAnnotation, setNotebookActiveTab } =
     useNotebookStore();
   const { activeConversationId } = useAIChatStore();
+  const anotaciones = useAnotacionesStore((state) => state.annotations);
 
   const [isSearchBarVisible, setIsSearchBarVisible] = useState(false);
   const [searchResults, setSearchResults] = useState<BookNote[] | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const isMobile = window.innerWidth < 640;
   const [isFullHeightInMobile, setIsFullHeightInMobile] = useState(isMobile);
+
+  const [isSavingAnnotation, setIsSavingAnnotation] = useState(false);
+  const [annotationSaveError, setAnnotationSaveError] = useState<string | null>(null);
 
   const {
     panelRef: notebookRef,
@@ -117,6 +128,10 @@ const Notebook: React.FC = ({}) => {
     }
   }, [isNotebookVisible, notebookNewAnnotation, notebookEditAnnotation]);
 
+  useEffect(() => {
+    setAnnotationSaveError(null);
+  }, [notebookNewAnnotation]);
+
   const handleNotebookResize = (newWidth: string) => {
     setNotebookWidth(newWidth);
     settings.globalReadSettings.notebookWidth = newWidth;
@@ -142,32 +157,99 @@ const Notebook: React.FC = ({}) => {
     setNotebookEditAnnotation(null);
   };
 
-  const handleSaveNote = (selection: TextSelection, note: string) => {
-    if (!sideBarBookKey) return;
-    const view = getView(sideBarBookKey);
-    const config = getConfig(sideBarBookKey)!;
+  const removePendingOverlay = useCallback(
+    (pending: PendingAnnotation) => {
+      if (!pending.createdTemporaryOverlay) return;
+      if (!sideBarBookKey) return;
+      const bookHash = getBookData(sideBarBookKey)?.book?.hash ?? sideBarBookKey?.split('-')[0];
+      if (!bookHash) return;
+      const temporary = createTemporaryAnnotationBookNote(pending, Date.now());
+      getViewsById(bookHash).forEach((readerView) => removeBookNoteOverlays(readerView, temporary));
+    },
+    [getBookData, getViewsById, sideBarBookKey],
+  );
 
-    const cfi = view?.getCFI(selection.index, selection.range);
-    if (!cfi) return;
-
-    const { booknotes: annotations = [] } = config;
-    const annotation: BookNote = {
-      id: uniqueId(),
-      type: 'annotation',
-      cfi,
-      note,
-      page: selection.page,
-      text: selection.text,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    view?.addAnnotation({ ...annotation, value: `${NOTE_PREFIX}${annotation.cfi}` });
-    annotations.push(annotation);
-    const updatedConfig = updateBooknotes(sideBarBookKey, annotations);
-    if (updatedConfig) {
-      saveConfig(envConfig, sideBarBookKey, updatedConfig, settings);
+  const handleCancelAnnotation = useCallback(() => {
+    if (notebookNewAnnotation) {
+      removePendingOverlay(notebookNewAnnotation);
     }
+    if (sideBarBookKey) {
+      getView(sideBarBookKey)?.deselect?.();
+    }
+    setAnnotationSaveError(null);
     setNotebookNewAnnotation(null);
+  }, [
+    getView,
+    notebookNewAnnotation,
+    removePendingOverlay,
+    setNotebookNewAnnotation,
+    sideBarBookKey,
+  ]);
+
+  const handleSaveNote = async (selection: PendingAnnotation, note: string) => {
+    if (!sideBarBookKey) return;
+    if (!appService) {
+      setAnnotationSaveError(_('Could not save annotation. Please try again.'));
+      return;
+    }
+    const config = getConfig(sideBarBookKey)!;
+    const bookData = getBookData(sideBarBookKey);
+    const progress = getProgress(sideBarBookKey);
+    const bookHash = bookData?.book?.hash ?? sideBarBookKey.split('-')[0]!;
+    setIsSavingAnnotation(true);
+    setAnnotationSaveError(null);
+
+    try {
+      const svc = await getAnotacionesService(appService);
+      const annotacion = await useAnotacionesStore.getState().createAnnotation(
+        {
+          bookHash,
+          bookTitle: bookData?.book?.title ?? null,
+          bookAuthor: bookData?.book?.author ?? null,
+          cfi: selection.cfi,
+          sectionHref: selection.href ?? progress?.sectionHref ?? null,
+          page: selection.page ?? progress?.page ?? null,
+          text: selection.text,
+          note,
+          style: 'highlight',
+          color: 'yellow',
+        },
+        svc,
+      );
+      const finalAnnotation = createFinalAnnotationBookNote(
+        selection,
+        annotacion.id,
+        uniqueId(),
+        Date.now(),
+      );
+      const { booknotes: annotations = [] } = config;
+      const nextAnnotations = annotations.filter(
+        (item) =>
+          item.id !== selection.temporaryBookNoteId &&
+          !(item.annotationId === annotacion.id && item.type === 'annotation'),
+      );
+      nextAnnotations.push(finalAnnotation);
+      const updatedConfig = updateBooknotes(sideBarBookKey, nextAnnotations);
+      if (updatedConfig) {
+        saveConfig(envConfig, sideBarBookKey, updatedConfig, settings);
+      }
+
+      const views = getViewsById(bookHash);
+      const temporary = createTemporaryAnnotationBookNote(selection, Date.now());
+      views.forEach((readerView) => {
+        removeBookNoteOverlays(readerView, temporary);
+        removeBookNoteOverlays(readerView, finalAnnotation);
+        readerView?.addAnnotation(finalAnnotation);
+        readerView?.deselect?.();
+      });
+      getView(sideBarBookKey)?.deselect?.();
+      setNotebookNewAnnotation(null);
+    } catch (err) {
+      console.warn('Failed to persist annotation to SQL:', err);
+      setAnnotationSaveError(_('Could not save annotation. Please try again.'));
+    } finally {
+      setIsSavingAnnotation(false);
+    }
   };
 
   const handleEditNote = (note: BookNote, isDelete: boolean) => {
@@ -204,8 +286,30 @@ const Notebook: React.FC = ({}) => {
 
   const config = getConfig(sideBarBookKey);
   const { booknotes: allNotes = [] } = config || {};
+  const anotacionNoteById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const annotation of anotaciones) {
+      map.set(annotation.id, annotation.note);
+    }
+    return map;
+  }, [anotaciones]);
+  const resolveAnnotationNote = useCallback(
+    (note: BookNote): BookNote => {
+      if (!note.annotationId) return note;
+      const annotationNote = anotacionNoteById.get(note.annotationId);
+      if (!annotationNote) return note;
+      return { ...note, note: annotationNote };
+    },
+    [anotacionNoteById],
+  );
   const annotationNotes = allNotes
-    .filter((note) => note.type === 'annotation' && note.note && !note.deletedAt)
+    .filter(
+      (note) =>
+        note.type === 'annotation' &&
+        !note.deletedAt &&
+        (note.note || (note.annotationId && anotacionNoteById.has(note.annotationId))),
+    )
+    .map(resolveAnnotationNote)
     .sort((a, b) => b.createdAt - a.createdAt);
   const excerptNotes = allNotes
     .filter((note) => note.type === 'excerpt' && note.text && !note.deletedAt)
@@ -222,9 +326,16 @@ const Notebook: React.FC = ({}) => {
   const filteredAnnotationNotes = useMemo(
     () =>
       isSearchBarVisible && searchResults
-        ? searchResults.filter((note) => note.type === 'annotation' && note.note && !note.deletedAt)
+        ? searchResults
+            .filter(
+              (note) =>
+                note.type === 'annotation' &&
+                !note.deletedAt &&
+                (note.note || (note.annotationId && anotacionNoteById.has(note.annotationId))),
+            )
+            .map(resolveAnnotationNote)
         : annotationNotes,
-    [annotationNotes, searchResults, isSearchBarVisible],
+    [annotationNotes, searchResults, isSearchBarVisible, anotacionNoteById, resolveAnnotationNote],
   );
 
   const filteredExcerptNotes = useMemo(
@@ -423,7 +534,13 @@ const Notebook: React.FC = ({}) => {
               )}
             </div>
             {(notebookNewAnnotation || notebookEditAnnotation) && !isSearchBarVisible && (
-              <NoteEditor onSave={handleSaveNote} onEdit={(item) => handleEditNote(item, false)} />
+              <NoteEditor
+                onSave={handleSaveNote}
+                onEdit={(item) => handleEditNote(item, false)}
+                onCancel={handleCancelAnnotation}
+                isSaving={isSavingAnnotation}
+                error={annotationSaveError}
+              />
             )}
             <ul>
               {filteredAnnotationNotes.map((item, index) => (

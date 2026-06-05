@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   PiBookBookmark,
@@ -40,6 +40,7 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
   const isSelectMode = useDictionaryStore((s) => s.isSelectMode);
   const selectedEntryIds = useDictionaryStore((s) => s.selectedEntryIds);
   const loadEntries = useDictionaryStore((s) => s.loadEntries);
+  const searchEntries = useDictionaryStore((s) => s.searchEntries);
   const toggleSelectedEntry = useDictionaryStore((s) => s.toggleSelectedEntry);
   const addEntry = useDictionaryStore((s) => s.addEntry);
   const enterSelectMode = useDictionaryStore((s) => s.enterSelectMode);
@@ -104,15 +105,15 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
     loadEntries(service);
   }, [loadEntries, service]);
 
-  const filteredEntries = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return entries;
-    return entries.filter(
-      (entry) =>
-        entry.displayTerm.toLowerCase().includes(query) ||
-        (entry.definition ?? '').toLowerCase().includes(query),
-    );
-  }, [entries, search]);
+  const filteredEntries = entries;
+
+  const handleSearchChange = useCallback(
+    (nextSearch: string) => {
+      setSearch(nextSearch);
+      void searchEntries(nextSearch, service);
+    },
+    [searchEntries, service],
+  );
 
   const handleOpenAddWord = useCallback(() => {
     setAddWordTerm('');
@@ -164,7 +165,7 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
     }
   }, [showAddWord]);
 
-  if (isLoading && entries.length === 0) {
+  if (isLoading && entries.length === 0 && !search) {
     return (
       <main className='text-base-content full-height flex flex-col bg-base-200'>
         <section className='mx-auto flex w-full max-w-5xl flex-1 flex-col items-center justify-center px-4 py-10 sm:px-6'>
@@ -200,7 +201,7 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
             className='eink-bordered input input-sm w-full bg-base-100 pl-9'
             placeholder={_('Buscar…')}
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => handleSearchChange(event.target.value)}
             aria-label={_('Buscar')}
           />
           <div className='absolute end-2 top-1/2 flex -translate-y-1/2 items-center gap-1'>

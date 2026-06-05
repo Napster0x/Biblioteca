@@ -144,7 +144,7 @@ export const navigateToAnotaciones = (
   queryParams?: string,
   navOptions?: { scroll?: boolean },
 ) => {
-  const href = `/annotaciones${queryParams ? `?${queryParams}` : ''}`;
+  const href = `/anotaciones${queryParams ? `?${queryParams}` : ''}`;
   if (navOptions) {
     router.push(href, navOptions);
   } else {

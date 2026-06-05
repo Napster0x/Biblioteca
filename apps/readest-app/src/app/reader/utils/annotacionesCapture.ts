@@ -6,6 +6,59 @@ import type { EnvConfigType } from '@/services/environment';
 import type { SystemSettings } from '@/types/settings';
 import type { AppService } from '@/types/system';
 
+export type AnnotationFlowStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'cancelled' | 'error';
+
+export interface PendingAnnotation {
+  key: string;
+  cfi: string;
+  href: string | null;
+  text: string;
+  page: number;
+  range: Range;
+  index: number;
+  temporaryBookNoteId?: string;
+  createdTemporaryOverlay: boolean;
+}
+
+export function createTemporaryAnnotationBookNote(
+  pending: PendingAnnotation,
+  timestamp: number,
+): BookNote {
+  return {
+    id: pending.temporaryBookNoteId ?? pending.cfi,
+    type: 'annotation',
+    cfi: pending.cfi,
+    style: 'highlight',
+    color: 'yellow',
+    text: pending.text,
+    note: '',
+    page: pending.page,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
+export function createFinalAnnotationBookNote(
+  pending: PendingAnnotation,
+  annotationId: string,
+  id: string,
+  timestamp: number,
+): BookNote {
+  return {
+    id,
+    type: 'annotation',
+    annotationId,
+    cfi: pending.cfi,
+    style: 'highlight',
+    color: 'yellow',
+    text: pending.text,
+    note: '',
+    page: pending.page,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
 export async function softDeleteAnotacionesHighlights(
   annotations: readonly Annotacion[],
   ids: readonly string[],

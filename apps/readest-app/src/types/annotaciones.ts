@@ -1,3 +1,5 @@
+import type { Book } from './book';
+
 /**
  * Domain types for the Anotaciones (Annotations) module.
  *
@@ -28,16 +30,23 @@ export interface Annotacion {
 
 export type AnnotacionInput = Omit<Annotacion, 'id' | 'createdAt' | 'updatedAt'>;
 
-export interface AnotacionesShelfItem {
+export interface AnotacionesShelfItem extends Book {
   type: 'anotaciones-shelf-item';
   id: 'anotaciones';
   title: string;
+  hash: 'anotaciones';
 }
 
 export const ANOTACIONES_SHELF_ITEM: AnotacionesShelfItem = {
   type: 'anotaciones-shelf-item',
   id: 'anotaciones',
+  hash: 'anotaciones',
+  format: 'EPUB',
   title: 'Anotaciones',
+  author: 'Mateo Galiano',
+  coverImageUrl: '/images/annotaciones-cover.png',
+  createdAt: 0,
+  updatedAt: 0,
 };
 
 export function isAnotacionesShelfItem(value: unknown): value is AnotacionesShelfItem {

@@ -117,12 +117,14 @@ function TileContent({
           aria-hidden='true'
         />
         <div className='relative flex min-w-0 flex-1 flex-col gap-2'>
-          <blockquote className='font-serif text-base font-light italic leading-relaxed tracking-[0.01em] text-base-content'>
+          {annotation.note && (
+            <p className='font-serif text-base leading-relaxed text-base-content'>
+              {annotation.note}
+            </p>
+          )}
+          <blockquote className='text-base-content/60 text-sm italic leading-relaxed'>
             {annotation.text}
           </blockquote>
-          {annotation.note && (
-            <p className='text-base-content/60 text-sm italic'>&ldquo;{annotation.note}&rdquo;</p>
-          )}
           <div className='text-base-content/50 flex flex-wrap items-center gap-x-2 text-xs'>
             {metadata && <span>{metadata}</span>}
             {annotation.page != null && <span>p.&nbsp;{annotation.page}</span>}

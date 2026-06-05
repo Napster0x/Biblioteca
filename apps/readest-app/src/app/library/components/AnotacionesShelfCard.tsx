@@ -2,7 +2,6 @@ import clsx from 'clsx';
 import { useState } from 'react';
 import { PiBookBookmark } from 'react-icons/pi';
 
-import { useTranslation } from '@/hooks/useTranslation';
 import type { AnotacionesShelfItem } from '@/types/annotaciones';
 import type { LibraryViewModeType } from '@/types/settings';
 
@@ -12,7 +11,6 @@ interface AnotacionesShelfCardProps {
 }
 
 const AnotacionesShelfCard = ({ item, mode }: AnotacionesShelfCardProps) => {
-  const _ = useTranslation();
   const [coverError, setCoverError] = useState(false);
 
   return (
@@ -45,7 +43,7 @@ const AnotacionesShelfCard = ({ item, mode }: AnotacionesShelfCardProps) => {
           <img
             src='/images/annotaciones-cover.png'
             alt='Anotaciones'
-            className='absolute inset-0 h-full w-full object-cover'
+            className='absolute inset-0 h-full w-full object-cover object-center'
             onError={() => setCoverError(true)}
           />
         )}
@@ -62,7 +60,7 @@ const AnotacionesShelfCard = ({ item, mode }: AnotacionesShelfCardProps) => {
             {item.title}
           </h4>
           {mode === 'list' && (
-            <p className='text-neutral-content line-clamp-1 text-sm'>{_('Saved annotations')}</p>
+            <p className='text-neutral-content line-clamp-1 text-sm'>{item.author}</p>
           )}
         </div>
         {mode === 'grid' && <div className='placeholder' style={{ height: 15 }} />}

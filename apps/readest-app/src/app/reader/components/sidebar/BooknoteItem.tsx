@@ -49,6 +49,7 @@ const BooknoteItem: React.FC<BooknoteItemProps> = ({ bookKey, item, isNearest, o
 
   const progress = getProgress(bookKey);
   const { isCurrent, viewRef } = useScrollToItem(cfi, progress, isNearest);
+  const isAnotacionesHighlight = Boolean(item.annotationId);
 
   const handleClickItem = (event: React.MouseEvent | React.KeyboardEvent) => {
     event.preventDefault();
@@ -80,30 +81,30 @@ const BooknoteItem: React.FC<BooknoteItemProps> = ({ bookKey, item, isNearest, o
 
     // Sync deletion to Citas store if this note has a citeId
     if (note.citeId) {
+      const citeId = note.citeId;
       try {
-        useCitasStore.getState().removeQuotesFromState([note.citeId]);
+        useCitasStore.getState().removeQuotesFromState([citeId]);
       } catch (err) {
         console.warn('Failed to remove quote from Citas state:', err);
       }
       if (appService) {
         getCitasService(appService)
-          .then((citasService) =>
-            useCitasStore.getState().deleteQuotes([note.citeId], citasService),
-          )
+          .then((citasService) => useCitasStore.getState().deleteQuotes([citeId], citasService))
           .catch((err) => console.warn('Failed to persist sidebar quote deletion:', err));
       }
     }
 
     // Sync deletion to Anotaciones store if this note has an annotationId
     if (note.annotationId) {
+      const annotationId = note.annotationId;
       try {
-        useAnotacionesStore.getState().removeAnnotationsFromState([note.annotationId]);
+        useAnotacionesStore.getState().removeAnnotationsFromState([annotationId]);
       } catch (err) {
         console.warn('Failed to remove annotation from Anotaciones state:', err);
       }
       if (appService) {
         getAnotacionesService(appService)
-          .then((svc) => svc.deleteAnnotations([note.annotationId]))
+          .then((svc) => svc.deleteAnnotations([annotationId]))
           .catch((err) => console.warn('Failed to persist sidebar annotation deletion:', err));
       }
     }
@@ -165,7 +166,7 @@ const BooknoteItem: React.FC<BooknoteItemProps> = ({ bookKey, item, isNearest, o
     );
   }
 
-  const isEditable = item.note || item.type === 'bookmark';
+  const isEditable = (!isAnotacionesHighlight && item.note) || item.type === 'bookmark';
 
   return (
     <li
@@ -174,9 +175,11 @@ const BooknoteItem: React.FC<BooknoteItemProps> = ({ bookKey, item, isNearest, o
       ref={viewRef}
       className={clsx(
         'booknote-item border-base-300 content group relative my-2 cursor-pointer rounded-lg p-2',
-        isCurrent
-          ? 'bg-base-300/85 hover:bg-base-300 focus:bg-base-300'
-          : 'hover:bg-base-300/55 focus:bg-base-300/55 bg-base-100',
+        isAnotacionesHighlight
+          ? 'bg-base-100 hover:bg-base-300/55 focus:bg-base-300/55'
+          : isCurrent
+            ? 'bg-base-300/85 hover:bg-base-300 focus:bg-base-300'
+            : 'hover:bg-base-300/55 focus:bg-base-300/55 bg-base-100',
         'transition-all duration-300 ease-in-out',
       )}
       tabIndex={0}
@@ -214,19 +217,29 @@ const BooknoteItem: React.FC<BooknoteItemProps> = ({ bookKey, item, isNearest, o
               }}
             ></div>
           )}
-          <div className={clsx('content font-size-sm line-clamp-3', item.note && 'mt-2')}>
+          <div
+            className={clsx(
+              'content font-size-sm max-h-[4.5em] overflow-hidden transition-[max-height] duration-300 ease-in-out group-focus-within:max-h-[60rem] group-focus-within:overflow-visible group-hover:max-h-[60rem] group-hover:overflow-visible',
+              item.note && 'mt-2',
+            )}
+          >
             <span
               className={clsx(
                 'booknote-text inline leading-normal',
-                item.note && 'content font-size-xs text-gray-500',
+                item.note &&
+                  (isAnotacionesHighlight
+                    ? 'content font-size-xs text-base-content transition-colors duration-300 group-focus-within:text-gray-500 group-hover:text-gray-500'
+                    : 'content font-size-xs text-gray-500'),
                 (item.style === 'underline' || item.style === 'squiggly') &&
                   'underline decoration-2',
-                item.style === 'highlight' && 'rounded-[4px] px-[2px] py-[1px]',
+                item.style === 'highlight' &&
+                  !isAnotacionesHighlight &&
+                  'rounded-[4px] px-[2px] py-[1px]',
                 item.style === 'squiggly' && 'decoration-wavy',
               )}
               style={
                 {
-                  ...(item.style === 'highlight'
+                  ...(item.style === 'highlight' && !isAnotacionesHighlight
                     ? {
                         backgroundColor: `color-mix(in srgb, ${customColors[item.color as HighlightColor] || item.color} calc(var(--overlayer-highlight-opacity, 0.3) * 100%), transparent)`,
                       }

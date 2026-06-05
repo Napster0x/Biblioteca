@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import React, { useState } from 'react';
-import { MdEdit, MdDelete, MdLock, MdLockOpen, MdOutlineSearch } from 'react-icons/md';
+import { MdEdit, MdDelete, MdLock, MdLockOpen } from 'react-icons/md';
 
 import { Book } from '@/types/book';
 import { BookMetadata } from '@/libs/document';
@@ -17,10 +17,8 @@ interface BookDetailEditProps {
   fieldSources: Record<string, string>;
   lockedFields: Record<string, boolean>;
   fieldErrors: Record<string, string>;
-  searchLoading: boolean;
   onFieldChange: (field: string, value: string | undefined) => void;
   onToggleFieldLock: (field: string) => void;
-  onAutoRetrieve: () => void;
   onLockAll: () => void;
   onUnlockAll: () => void;
   onCancel: () => void;
@@ -36,10 +34,8 @@ const BookDetailEdit: React.FC<BookDetailEditProps> = ({
   fieldSources,
   lockedFields,
   fieldErrors,
-  searchLoading,
   onFieldChange,
   onToggleFieldLock,
-  onAutoRetrieve,
   onLockAll,
   onUnlockAll,
   onCancel,
@@ -308,50 +304,33 @@ const BookDetailEdit: React.FC<BookDetailEditProps> = ({
       {/* Action Buttons */}
       <div className='flex flex-col items-center justify-between gap-4'>
         <div className='flex w-full items-center gap-2'>
-          <button
-            onClick={onAutoRetrieve}
-            disabled={searchLoading}
-            className='flex items-center gap-2 rounded-md bg-blue-500 px-4 py-2 text-sm text-white hover:bg-blue-600 disabled:opacity-50'
-            title={_('Auto-Retrieve Metadata')}
-          >
-            {searchLoading ? (
-              <span className='loading loading-spinner h-4 w-4'></span>
-            ) : (
-              <MdOutlineSearch className='mt-[1px] h-4 w-4' />
-            )}
-            <span className='sm:hidden'>{_('Auto')}</span>
-            <span className='hidden sm:inline'>{_('Auto-Retrieve')}</span>
-          </button>
-
           {/* Lock/Unlock All Buttons */}
-          <div className='flex items-center gap-1 border-l border-gray-300 pl-2'>
-            <button
-              onClick={onUnlockAll}
-              disabled={!hasLockedFields}
-              className={clsx(
-                'hover:bg-base-200 flex items-center gap-1 rounded px-2 py-1 text-sm',
-                'disabled:cursor-not-allowed disabled:opacity-80',
-                'text-yellow-600 hover:text-yellow-700',
-              )}
-              title={_('Unlock all fields')}
-            >
-              <MdLockOpen className='h-3 w-3' />
-              {_('Unlock All')}
-            </button>
-            <button
-              onClick={onLockAll}
-              disabled={allFieldsLocked}
-              className={clsx(
-                'hover:bg-base-200 flex items-center gap-1 rounded px-2 py-1 text-sm',
-                'disabled:cursor-not-allowed disabled:opacity-80',
-                'text-green-600 hover:text-green-700',
-              )}
-              title={_('Lock all fields')}
-            >
-              <MdLock className='h-3 w-3' />
-              {_('Lock All')}
-            </button>
-          </div>
+          <button
+            onClick={onUnlockAll}
+            disabled={!hasLockedFields}
+            className={clsx(
+              'hover:bg-base-200 flex items-center gap-1 rounded px-2 py-1 text-sm',
+              'disabled:cursor-not-allowed disabled:opacity-80',
+              'text-yellow-600 hover:text-yellow-700',
+            )}
+            title={_('Unlock all fields')}
+          >
+            <MdLockOpen className='h-3 w-3' />
+            {_('Unlock All')}
+          </button>
+          <button
+            onClick={onLockAll}
+            disabled={allFieldsLocked}
+            className={clsx(
+              'hover:bg-base-200 flex items-center gap-1 rounded px-2 py-1 text-sm',
+              'disabled:cursor-not-allowed disabled:opacity-80',
+              'text-green-600 hover:text-green-700',
+            )}
+            title={_('Lock all fields')}
+          >
+            <MdLock className='h-3 w-3' />
+            {_('Lock All')}
+          </button>
         </div>
 
         <div className='flex w-full justify-end gap-4'>

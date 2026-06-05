@@ -55,6 +55,69 @@ interface SelectedImage {
  */
 const CAPTURE_WINDOW_SIZE = 300;
 
+/**
+ * Walk backward through the DOM tree collecting text from previous
+ * siblings at every nesting level. Critical for PDF where each line
+ * is a separate text node inside a <span> — the text node itself has
+ * no siblings, so we must climb to the parent and walk at that level.
+ *
+ * Stops when `charLimit` is reached or the tree root is hit.
+ */
+function collectSiblingTextBefore(node: Node, charLimit: number): string {
+  const parts: string[] = [];
+  let remaining = charLimit;
+  let current: Node | null = node;
+
+  while (remaining > 0 && current) {
+    const prev = current.previousSibling;
+    if (!prev) {
+      // No previous sibling at this level — climb up one level.
+      // Do NOT collect the parent's textContent (it includes the subtree
+      // we are trying to get context BEFORE).
+      current = current.parentNode;
+      continue;
+    }
+    const text = prev.textContent ?? '';
+    if (text.length > 0) {
+      parts.unshift(text);
+      remaining -= text.length;
+    }
+    current = prev;
+  }
+
+  const result = parts.join('');
+  return result.length > charLimit ? result.slice(-charLimit) : result;
+}
+
+/**
+ * Walk forward through the DOM tree collecting text from next siblings
+ * at every nesting level. Mirror of collectSiblingTextBefore for the
+ * forward direction.
+ */
+function collectSiblingTextAfter(node: Node, charLimit: number): string {
+  const parts: string[] = [];
+  let remaining = charLimit;
+  let current: Node | null = node;
+
+  while (remaining > 0 && current) {
+    const next = current.nextSibling;
+    if (!next) {
+      // No next sibling at this level — climb up one level.
+      current = current.parentNode;
+      continue;
+    }
+    const text = next.textContent ?? '';
+    if (text.length > 0) {
+      parts.push(text);
+      remaining -= text.length;
+    }
+    current = next;
+  }
+
+  const result = parts.join('');
+  return result.length > charLimit ? result.slice(0, charLimit) : result;
+}
+
 export function extractCaptureContext(
   range: Range,
   selectedText: string,
@@ -70,21 +133,43 @@ export function extractCaptureContext(
 
   if (startNode.nodeType === Node.TEXT_NODE) {
     const text = startNode.textContent ?? '';
-    contextBefore = text.slice(
+    // Text before the selection within the same text node
+    const localBefore = text.slice(
       Math.max(0, range.startOffset - CAPTURE_WINDOW_SIZE),
       range.startOffset,
     );
+    // Text from previous sibling nodes (critical for PDF where each
+    // line is a separate text node — the sentence may start above).
+    const siblingBefore = collectSiblingTextBefore(startNode, CAPTURE_WINDOW_SIZE);
+    contextBefore = siblingBefore + localBefore;
+    if (contextBefore.length > CAPTURE_WINDOW_SIZE) {
+      contextBefore = contextBefore.slice(-CAPTURE_WINDOW_SIZE);
+    }
   }
 
   if (endNode.nodeType === Node.TEXT_NODE && endNode === startNode) {
     const text = endNode.textContent ?? '';
-    contextAfter = text.slice(
+    const localAfter = text.slice(
       range.endOffset,
       Math.min(text.length, range.endOffset + CAPTURE_WINDOW_SIZE),
     );
+    // Text from next sibling nodes (critical for PDF — sentence may
+    // continue on the following line).
+    const siblingAfter = collectSiblingTextAfter(endNode, CAPTURE_WINDOW_SIZE);
+    contextAfter = localAfter + siblingAfter;
+    if (contextAfter.length > CAPTURE_WINDOW_SIZE) {
+      contextAfter = contextAfter.slice(0, CAPTURE_WINDOW_SIZE);
+    }
   } else if (endNode.nodeType === Node.TEXT_NODE) {
     const text = endNode.textContent ?? '';
-    contextAfter = text.slice(0, CAPTURE_WINDOW_SIZE);
+    // End node differs from start node — take from the beginning of
+    // endNode plus any following siblings.
+    const localAfter = text.slice(0, CAPTURE_WINDOW_SIZE);
+    const siblingAfter = collectSiblingTextAfter(endNode, CAPTURE_WINDOW_SIZE);
+    contextAfter = localAfter + siblingAfter;
+    if (contextAfter.length > CAPTURE_WINDOW_SIZE) {
+      contextAfter = contextAfter.slice(0, CAPTURE_WINDOW_SIZE);
+    }
   }
 
   const { sentenceBefore, sentenceAfter } = extractSentenceFromContext({

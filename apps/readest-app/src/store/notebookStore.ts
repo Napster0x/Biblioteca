@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { BookNote } from '@/types/book';
-import { TextSelection } from '@/utils/sel';
+import type { PendingAnnotation } from '@/app/reader/utils/annotacionesCapture';
 
 export type NotebookTab = 'notes' | 'ai';
 
@@ -9,7 +9,7 @@ interface NotebookState {
   isNotebookVisible: boolean;
   isNotebookPinned: boolean;
   notebookActiveTab: NotebookTab;
-  notebookNewAnnotation: TextSelection | null;
+  notebookNewAnnotation: PendingAnnotation | null;
   notebookEditAnnotation: BookNote | null;
   notebookAnnotationDrafts: { [key: string]: string };
   getIsNotebookVisible: () => boolean;
@@ -20,7 +20,7 @@ interface NotebookState {
   setNotebookVisible: (visible: boolean) => void;
   setNotebookPin: (pinned: boolean) => void;
   setNotebookActiveTab: (tab: NotebookTab) => void;
-  setNotebookNewAnnotation: (selection: TextSelection | null) => void;
+  setNotebookNewAnnotation: (selection: PendingAnnotation | null) => void;
   setNotebookEditAnnotation: (note: BookNote | null) => void;
   saveNotebookAnnotationDraft: (key: string, note: string) => void;
   getNotebookAnnotationDraft: (key: string) => string | undefined;
@@ -42,7 +42,7 @@ export const useNotebookStore = create<NotebookState>((set, get) => ({
   setNotebookVisible: (visible: boolean) => set({ isNotebookVisible: visible }),
   setNotebookPin: (pinned: boolean) => set({ isNotebookPinned: pinned }),
   setNotebookActiveTab: (tab: NotebookTab) => set({ notebookActiveTab: tab }),
-  setNotebookNewAnnotation: (selection: TextSelection | null) =>
+  setNotebookNewAnnotation: (selection: PendingAnnotation | null) =>
     set({ notebookNewAnnotation: selection }),
   setNotebookEditAnnotation: (note: BookNote | null) => set({ notebookEditAnnotation: note }),
   saveNotebookAnnotationDraft: (key: string, note: string) =>
