@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { PiGear, PiSun, PiMoon } from 'react-icons/pi';
 import { TbSunMoon } from 'react-icons/tb';
 
@@ -17,7 +17,9 @@ import { tauriHandleSetAlwaysOnTop, tauriHandleToggleFullScreen } from '@/utils/
 import { setAboutDialogVisible } from '@/components/AboutWindow';
 import { setMigrateDataDirDialogVisible } from '@/app/library/components/MigrateDataWindow';
 import { requestStoragePermission } from '@/utils/permission';
-import { saveSysSettings } from '@/helpers/settings';
+import { saveSysSettings, saveViewSettings } from '@/helpers/settings';
+import { getDirFromLanguage } from '@/utils/rtl';
+import { TRANSLATED_LANGS } from '@/services/constants';
 import { selectDirectory } from '@/utils/bridge';
 import MenuItem from '@/components/MenuItem';
 import Menu from '@/components/Menu';
@@ -37,7 +39,7 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onPullLibrary, setIsDropdow
   const _ = useTranslation();
   const { envConfig, appService } = useEnv();
   const { themeMode, setThemeMode } = useThemeStore();
-  const { settings, setSettingsDialogOpen } = useSettingsStore();
+  const { settings, setSettingsDialogOpen, applyUILanguage } = useSettingsStore();
   const [isAutoCheckUpdates, setIsAutoCheckUpdates] = useState(settings.autoCheckUpdates);
   const [isAlwaysOnTop, setIsAlwaysOnTop] = useState(settings.alwaysOnTop);
   const [isAlwaysShowStatusBar, setIsAlwaysShowStatusBar] = useState(settings.alwaysShowStatusBar);
@@ -204,6 +206,24 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onPullLibrary, setIsDropdow
   const coverDir = savedBookCoverPath ? savedBookCoverPath.split('/').pop() : 'Images';
   const savedBookCoverDescription = `💾 ${coverDir}/last-book-cover.png`;
 
+  // Language selector
+  const [uiLanguage, setUILanguage] = useState(settings.globalViewSettings.uiLanguage ?? '');
+
+  const handleLanguageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setUILanguage(e.target.value);
+  };
+
+  useEffect(() => {
+    if (uiLanguage === settings.globalViewSettings.uiLanguage) return;
+    const sameDir =
+      getDirFromLanguage(uiLanguage) === getDirFromLanguage(settings.globalViewSettings.uiLanguage);
+    applyUILanguage(uiLanguage);
+    saveViewSettings(envConfig, '', 'uiLanguage', uiLanguage, false, false).then(() => {
+      if (!sameDir) window.location.reload();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uiLanguage]);
+
   return (
     <Menu
       className={clsx(
@@ -301,6 +321,24 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ onPullLibrary, setIsDropdow
             />
           )}
         </ul>
+      </MenuItem>
+      <hr aria-hidden='true' className='border-base-200 my-1' />
+      <MenuItem label={_('Language')}>
+        <select
+          value={uiLanguage}
+          onChange={handleLanguageChange}
+          className='select select-ghost select-sm w-full'
+          aria-label={_('Language')}
+        >
+          <option value=''>{_('System Language')}</option>
+          {Object.entries(TRANSLATED_LANGS)
+            .sort((a, b) => a[1].localeCompare(b[1]))
+            .map(([code, name]) => (
+              <option key={code} value={code}>
+                {name}
+              </option>
+            ))}
+        </select>
       </MenuItem>
       <hr aria-hidden='true' className='border-base-200 my-1' />
       <MenuItem label={_('About Biblioteca')} onClick={showAboutBiblioteca} />

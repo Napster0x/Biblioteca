@@ -5,12 +5,9 @@ import { useSettingsStore } from '@/store/settingsStore';
 import { useResponsiveSize } from '@/hooks/useResponsiveSize';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useCommandPalette } from '@/components/command-palette';
-import { RiFontSize, RiShareLine } from 'react-icons/ri';
-import { RiDashboardLine, RiTranslate } from 'react-icons/ri';
+import { RiFontSize, RiDashboardLine } from 'react-icons/ri';
 import { VscSymbolColor } from 'react-icons/vsc';
-import { PiDotsThreeVerticalBold, PiRobot, PiSpeakerHigh } from 'react-icons/pi';
 import { LiaHandPointerSolid } from 'react-icons/lia';
-import { IoAccessibilityOutline } from 'react-icons/io5';
 import {
   MdArrowBackIosNew,
   MdArrowForwardIos,
@@ -24,26 +21,10 @@ import { getCommandPaletteShortcut } from '@/services/environment';
 import FontPanel from './FontPanel';
 import LayoutPanel from './LayoutPanel';
 import ColorPanel from './ColorPanel';
-import IntegrationsPanel from './IntegrationsPanel';
-import Dropdown from '@/components/Dropdown';
 import Dialog from '@/components/Dialog';
-import DialogMenu from './DialogMenu';
 import ControlPanel from './ControlPanel';
-import LangPanel from './LangPanel';
-import MiscPanel from './MiscPanel';
-import AIPanel from './AIPanel';
-import TTSPanel from './TTSPanel';
 
-export type SettingsPanelType =
-  | 'Font'
-  | 'Layout'
-  | 'Color'
-  | 'Control'
-  | 'TTS'
-  | 'Language'
-  | 'AI'
-  | 'Integrations'
-  | 'Custom';
+export type SettingsPanelType = 'Font' | 'Layout' | 'Color' | 'Control';
 export type SettingsPanelPanelProp = {
   bookKey: string;
   onRegisterReset: (resetFn: () => void) => void;
@@ -101,32 +82,6 @@ const SettingsDialog: React.FC<{ bookKey: string }> = ({ bookKey }) => {
       icon: LiaHandPointerSolid,
       label: _('Behavior'),
     },
-    {
-      tab: 'Language',
-      icon: RiTranslate,
-      label: _('Language'),
-    },
-    {
-      tab: 'TTS',
-      icon: PiSpeakerHigh,
-      label: _('TTS'),
-    },
-    {
-      tab: 'AI',
-      icon: PiRobot,
-      label: _('AI Assistant'),
-      disabled: process.env.NODE_ENV === 'production',
-    },
-    {
-      tab: 'Integrations',
-      icon: RiShareLine,
-      label: _('Integrations'),
-    },
-    {
-      tab: 'Custom',
-      icon: IoAccessibilityOutline,
-      label: _('Custom'),
-    },
   ] as TabConfig[];
 
   const [activePanel, setActivePanel] = useState<SettingsPanelType>(() => {
@@ -169,29 +124,19 @@ const SettingsDialog: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     }
   }, [activePanel, setFontPanelView]);
 
-  const [resetFunctions, setResetFunctions] = useState<
+  // State for panel reset functions — stored but not directly read
+  // (registerResetFunction only uses setResetFunctions, not resetFunctions itself)
+  const [_resetFunctions, setResetFunctions] = useState<
     Record<SettingsPanelType, (() => void) | null>
   >({
     Font: null,
     Layout: null,
     Color: null,
     Control: null,
-    TTS: null,
-    Language: null,
-    AI: null,
-    Integrations: null,
-    Custom: null,
   });
 
   const registerResetFunction = (panel: SettingsPanelType, resetFn: () => void) => {
     setResetFunctions((prev) => ({ ...prev, [panel]: resetFn }));
-  };
-
-  const handleResetCurrentPanel = () => {
-    const resetFn = resetFunctions[activePanel];
-    if (resetFn) {
-      resetFn();
-    }
   };
 
   const handleClose = () => {
@@ -210,11 +155,6 @@ const SettingsDialog: React.FC<{ bookKey: string }> = ({ bookKey }) => {
         layout: 'Layout',
         color: 'Color',
         control: 'Control',
-        tts: 'TTS',
-        language: 'Language',
-        ai: 'AI',
-        integrations: 'Integrations',
-        custom: 'Custom',
       };
       const panelKey = parts[1]?.toLowerCase();
       const targetPanel = panelMap[panelKey || ''];
@@ -318,21 +258,6 @@ const SettingsDialog: React.FC<{ bookKey: string }> = ({ bookKey }) => {
       >
         <FiSearch />
       </button>
-      <Dropdown
-        label={_('Settings Menu')}
-        className='dropdown-bottom dropdown-end'
-        buttonClassName='btn btn-ghost h-8 min-h-8 w-8 p-0 flex items-center justify-center'
-        toggleButton={<PiDotsThreeVerticalBold />}
-      >
-        <DialogMenu
-          bookKey={bookKey}
-          activePanel={activePanel}
-          onReset={handleResetCurrentPanel}
-          resetLabel={
-            currentPanel ? _('Reset {{settings}}', { settings: currentPanel.label }) : undefined
-          }
-        />
-      </Dropdown>
       <button
         onClick={handleClose}
         aria-label={_('Close')}
@@ -456,23 +381,6 @@ const SettingsDialog: React.FC<{ bookKey: string }> = ({ bookKey }) => {
           <ControlPanel
             bookKey={bookKey}
             onRegisterReset={(fn) => registerResetFunction('Control', fn)}
-          />
-        )}
-        {activePanel === 'TTS' && (
-          <TTSPanel bookKey={bookKey} onRegisterReset={(fn) => registerResetFunction('TTS', fn)} />
-        )}
-        {activePanel === 'Language' && (
-          <LangPanel
-            bookKey={bookKey}
-            onRegisterReset={(fn) => registerResetFunction('Language', fn)}
-          />
-        )}
-        {activePanel === 'AI' && <AIPanel />}
-        {activePanel === 'Integrations' && <IntegrationsPanel />}
-        {activePanel === 'Custom' && (
-          <MiscPanel
-            bookKey={bookKey}
-            onRegisterReset={(fn) => registerResetFunction('Custom', fn)}
           />
         )}
       </div>

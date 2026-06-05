@@ -85,8 +85,6 @@ describe('buildCommandRegistry', () => {
     expect(panels.has('Layout')).toBe(true);
     expect(panels.has('Color')).toBe(true);
     expect(panels.has('Control')).toBe(true);
-    expect(panels.has('Language')).toBe(true);
-    expect(panels.has('Custom')).toBe(true);
   });
 
   it('should include action items', () => {
@@ -172,13 +170,6 @@ describe('buildCommandRegistry', () => {
     const items = buildCommandRegistry(createMockOptions());
     const ids = items.map((i) => i.id);
     expect(new Set(ids).size).toBe(ids.length);
-  });
-
-  it('should include AI panel items in non-production', () => {
-    const items = buildCommandRegistry(createMockOptions());
-    const aiItems = items.filter((i) => i.panel === 'AI');
-    // In test environment (not production), AI items should be included
-    expect(aiItems.length).toBeGreaterThan(0);
   });
 
   it('should give each settings item keywords and section', () => {
