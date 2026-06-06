@@ -1,5 +1,9 @@
+import DictionaryDetailPage from './DictionaryDetailPage';
+
 export function generateStaticParams() {
   return [];
 }
 
-export { default } from './DictionaryDetailPage';
+export default function Page() {
+  return <DictionaryDetailPage />;
+}
