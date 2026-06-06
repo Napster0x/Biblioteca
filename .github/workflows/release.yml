@@ -2,6 +2,16 @@ name: Release Biblioteca
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Build target to run
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - android
+          - linux
   release:
     types: [published]
 
@@ -123,14 +133,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config:
-          - os: ubuntu-latest
-            release: android
-            rust_target: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
-          - os: ubuntu-22.04
-            release: linux
-            arch: x86_64
-            rust_target: x86_64-unknown-linux-gnu
+        config: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.target == 'android' && '[{"os":"ubuntu-latest","release":"android","rust_target":"aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android"}]' || github.event_name == 'workflow_dispatch' && inputs.target == 'linux' && '[{"os":"ubuntu-22.04","release":"linux","arch":"x86_64","rust_target":"x86_64-unknown-linux-gnu"}]' || '[{"os":"ubuntu-latest","release":"android","rust_target":"aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android"},{"os":"ubuntu-22.04","release":"linux","arch":"x86_64","rust_target":"x86_64-unknown-linux-gnu"}]') }}
 
     runs-on: ${{ matrix.config.os }}
     timeout-minutes: 60
@@ -386,4 +389,3 @@ jobs:
 
           echo "Uploading updated latest.json to GitHub release"
           gh release upload ${{ needs.get-release.outputs.release_tag }} latest.json --clobber
-
