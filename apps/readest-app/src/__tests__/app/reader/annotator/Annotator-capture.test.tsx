@@ -4,6 +4,17 @@ import type { ReactNode } from 'react';
 
 import { createDictionaryCaptureHighlight } from '@/app/reader/utils/dictionaryCapture';
 import { eventDispatcher } from '@/utils/event';
+import type { BookNote } from '@/types/book';
+
+function withoutDictionaryEntryId(note: BookNote): Omit<BookNote, 'dictionaryEntryId'> {
+  const { dictionaryEntryId: _dictionaryEntryId, ...rest } = note;
+  return rest;
+}
+
+function withoutCiteId(note: BookNote): Omit<BookNote, 'citeId'> {
+  const { citeId: _citeId, ...rest } = note;
+  return rest;
+}
 
 // ---------------------------------------------------------------------------
 // Minimal mocks required for Annotator to load
@@ -35,7 +46,7 @@ const annotatorMocks = vi.hoisted(() => {
   const citasService = { createQuote: vi.fn().mockResolvedValue(quote) };
   const createQuoteInStore = vi.fn().mockResolvedValue(quote);
   const router = { push: vi.fn() };
-  const booknote = {
+  const booknote: BookNote = {
     id: 'note-dict-1',
     type: 'annotation' as const,
     cfi: 'epubcfi(/6/2!/4/2)',
@@ -47,7 +58,7 @@ const annotatorMocks = vi.hoisted(() => {
     createdAt: 1000,
     updatedAt: 1000,
   };
-  const config = { booknotes: [booknote] };
+  const config: { booknotes: BookNote[] } = { booknotes: [booknote] };
   const saveConfig = vi.fn();
   const updateBooknotes = vi.fn((_key, notes) => ({ booknotes: notes }));
   const addAnnotation = vi.fn();
@@ -58,7 +69,9 @@ const annotatorMocks = vi.hoisted(() => {
   const deleteCitasQuotes = vi.fn().mockResolvedValue(undefined);
   const removeQuotesFromState = vi.fn();
   const citasQuotes: (typeof quote)[] = [];
-  const foliateHandlers: { current: Record<string, (event: Event) => void> } = { current: {} };
+  const foliateHandlers: {
+    current: Record<string, (event: CustomEvent<unknown>) => void | Promise<void>>;
+  } = { current: {} };
   return {
     appService,
     dictionaryService,
@@ -461,8 +474,9 @@ afterEach(() => {
   vi.clearAllMocks();
   annotatorMocks.config.booknotes = [
     {
-      ...annotatorMocks.config.booknotes[0]!,
-      deletedAt: undefined,
+      ...withoutCiteId(annotatorMocks.config.booknotes[0]!),
+      id: 'note-dict-1',
+      deletedAt: null,
       dictionaryEntryId: 'entry-1',
     },
   ];
@@ -593,9 +607,8 @@ describe('Annotator Citas quote capture wiring', () => {
   it('shows a quote × button on hover over a citeId highlight and routes clicks to normal annotation popup', async () => {
     annotatorMocks.config.booknotes = [
       {
-        ...annotatorMocks.config.booknotes[0]!,
+        ...withoutDictionaryEntryId(annotatorMocks.config.booknotes[0]!),
         id: 'note-quote-1',
-        dictionaryEntryId: undefined,
         citeId: 'cite-1',
         color: '#fca5a5',
       },
@@ -607,7 +620,7 @@ describe('Annotator Citas quote capture wiring', () => {
       { left: 20, top: 40, right: 80, bottom: 60 },
     ]);
 
-    annotatorMocks.foliateHandlers.current.onLoad?.(
+    annotatorMocks.foliateHandlers.current['onLoad']?.(
       new CustomEvent('load', {
         detail: { doc: document, index: 0 },
       }),
@@ -625,7 +638,7 @@ describe('Annotator Citas quote capture wiring', () => {
     expect(screen.queryByRole('button', { name: 'Remove dictionary highlight' })).toBeNull();
 
     // Quote highlights navigate to Citas with the linked quote highlighted.
-    annotatorMocks.foliateHandlers.current.onShowAnnotation?.(
+    annotatorMocks.foliateHandlers.current['onShowAnnotation']?.(
       new CustomEvent('show-annotation', {
         detail: {
           value: 'epubcfi(/6/2!/4/2)',
@@ -646,9 +659,8 @@ describe('Annotator quote highlight hover × + delete modal', () => {
   it('opens the delete modal when the quote × is clicked', async () => {
     annotatorMocks.config.booknotes = [
       {
-        ...annotatorMocks.config.booknotes[0]!,
+        ...withoutDictionaryEntryId(annotatorMocks.config.booknotes[0]!),
         id: 'note-quote-2',
-        dictionaryEntryId: undefined,
         citeId: 'cite-99',
         color: '#fca5a5',
       },
@@ -660,7 +672,7 @@ describe('Annotator quote highlight hover × + delete modal', () => {
       { left: 20, top: 40, right: 80, bottom: 60 },
     ]);
 
-    annotatorMocks.foliateHandlers.current.onLoad?.(
+    annotatorMocks.foliateHandlers.current['onLoad']?.(
       new CustomEvent('load', { detail: { doc: document, index: 0 } }),
     );
     fireEvent.mouseMove(document, { clientX: 50, clientY: 50 });
@@ -677,9 +689,8 @@ describe('Annotator quote highlight hover × + delete modal', () => {
   it('confirming delete removes the highlight and calls deleteQuotes on citasStore', async () => {
     annotatorMocks.config.booknotes = [
       {
-        ...annotatorMocks.config.booknotes[0]!,
+        ...withoutDictionaryEntryId(annotatorMocks.config.booknotes[0]!),
         id: 'note-quote-3',
-        dictionaryEntryId: undefined,
         citeId: 'cite-42',
         color: '#fca5a5',
       },
@@ -691,7 +702,7 @@ describe('Annotator quote highlight hover × + delete modal', () => {
       { left: 20, top: 40, right: 80, bottom: 60 },
     ]);
 
-    annotatorMocks.foliateHandlers.current.onLoad?.(
+    annotatorMocks.foliateHandlers.current['onLoad']?.(
       new CustomEvent('load', { detail: { doc: document, index: 0 } }),
     );
     fireEvent.mouseMove(document, { clientX: 50, clientY: 50 });
@@ -721,10 +732,8 @@ describe('Annotator quote highlight hover × + delete modal', () => {
   it('does not show the quote × for highlights without citeId', async () => {
     annotatorMocks.config.booknotes = [
       {
-        ...annotatorMocks.config.booknotes[0]!,
+        ...withoutDictionaryEntryId(annotatorMocks.config.booknotes[0]!),
         id: 'note-plain-1',
-        dictionaryEntryId: undefined,
-        citeId: undefined,
         color: '#fef08a',
       },
     ];
@@ -735,7 +744,7 @@ describe('Annotator quote highlight hover × + delete modal', () => {
       { left: 20, top: 40, right: 80, bottom: 60 },
     ]);
 
-    annotatorMocks.foliateHandlers.current.onLoad?.(
+    annotatorMocks.foliateHandlers.current['onLoad']?.(
       new CustomEvent('load', { detail: { doc: document, index: 0 } }),
     );
     fireEvent.mouseMove(document, { clientX: 50, clientY: 50 });
@@ -749,7 +758,7 @@ describe('Annotator dictionary highlight interaction', () => {
   it('routes dictionary highlights to the entry detail without opening annotation UI', async () => {
     render(<Annotator bookKey='book-1' />);
 
-    annotatorMocks.foliateHandlers.current.onShowAnnotation?.(
+    annotatorMocks.foliateHandlers.current['onShowAnnotation']?.(
       new CustomEvent('show-annotation', {
         detail: {
           value: 'epubcfi(/6/2!/4/2)',
@@ -767,11 +776,11 @@ describe('Annotator dictionary highlight interaction', () => {
 
   it('keeps normal highlights on the existing annotation popup path', async () => {
     annotatorMocks.config.booknotes = [
-      { ...annotatorMocks.config.booknotes[0]!, dictionaryEntryId: undefined },
+      { ...withoutDictionaryEntryId(annotatorMocks.config.booknotes[0]!) },
     ];
     render(<Annotator bookKey='book-1' />);
 
-    annotatorMocks.foliateHandlers.current.onShowAnnotation?.(
+    annotatorMocks.foliateHandlers.current['onShowAnnotation']?.(
       new CustomEvent('show-annotation', {
         detail: {
           value: 'epubcfi(/6/2!/4/2)',
@@ -793,7 +802,7 @@ describe('Annotator dictionary highlight interaction', () => {
       { left: 20, top: 40, right: 80, bottom: 60 },
     ]);
 
-    annotatorMocks.foliateHandlers.current.onLoad?.(
+    annotatorMocks.foliateHandlers.current['onLoad']?.(
       new CustomEvent('load', {
         detail: {
           doc: document,
@@ -834,7 +843,7 @@ describe('Annotator dictionary highlight interaction', () => {
       { left: 20, top: 40, right: 80, bottom: 60 },
     ]);
 
-    annotatorMocks.foliateHandlers.current.onLoad?.(
+    annotatorMocks.foliateHandlers.current['onLoad']?.(
       new CustomEvent('load', {
         detail: { doc: document, index: 0 },
       }),
@@ -861,7 +870,7 @@ describe('Annotator dictionary highlight interaction', () => {
       { left: 20, top: 40, right: 80, bottom: 60 },
     ]);
 
-    annotatorMocks.foliateHandlers.current.onLoad?.(
+    annotatorMocks.foliateHandlers.current['onLoad']?.(
       new CustomEvent('load', {
         detail: { doc: document, index: 0 },
       }),
@@ -934,31 +943,26 @@ describe('Annotator clear-annotations Citas sync', () => {
   it('calls removeQuotesFromState for each citeId annotation when clear-annotations is confirmed', async () => {
     annotatorMocks.config.booknotes = [
       {
-        ...annotatorMocks.config.booknotes[0]!,
+        ...withoutDictionaryEntryId(annotatorMocks.config.booknotes[0]!),
         id: 'note-cite-a',
-        dictionaryEntryId: undefined,
         citeId: 'cite-a',
         color: '#fca5a5',
       },
       {
-        ...annotatorMocks.config.booknotes[0]!,
+        ...withoutDictionaryEntryId(annotatorMocks.config.booknotes[0]!),
         id: 'note-cite-b',
-        dictionaryEntryId: undefined,
         citeId: 'cite-b',
         color: '#fca5a5',
       },
       {
-        ...annotatorMocks.config.booknotes[0]!,
+        ...withoutCiteId(withoutDictionaryEntryId(annotatorMocks.config.booknotes[0]!)),
         id: 'note-plain-1',
-        dictionaryEntryId: undefined,
-        citeId: undefined,
         color: '#fef08a',
       },
       {
-        ...annotatorMocks.config.booknotes[0]!,
+        ...withoutCiteId(annotatorMocks.config.booknotes[0]!),
         id: 'note-dict-1',
         dictionaryEntryId: 'entry-1',
-        citeId: undefined,
         color: '#bae6fd',
       },
     ];
@@ -970,9 +974,7 @@ describe('Annotator clear-annotations Citas sync', () => {
 
     // Get the clear-annotations handler registered via eventDispatcher.on
     const onMock = vi.mocked(eventDispatcher.on);
-    const clearCall = onMock.mock.calls.find(
-      ([eventName]: [string]) => eventName === 'clear-annotations',
-    );
+    const clearCall = onMock.mock.calls.find(([eventName]) => eventName === 'clear-annotations');
     expect(clearCall).toBeTruthy();
     const handler = clearCall![1] as (event: CustomEvent) => void;
     handler(new CustomEvent('clear-annotations', { detail: { bookKey: 'book-1' } }));
@@ -993,10 +995,8 @@ describe('Annotator clear-annotations Citas sync', () => {
   it('does not call removeQuotesFromState when no citeId annotations are cleared', async () => {
     annotatorMocks.config.booknotes = [
       {
-        ...annotatorMocks.config.booknotes[0]!,
+        ...withoutCiteId(withoutDictionaryEntryId(annotatorMocks.config.booknotes[0]!)),
         id: 'note-plain-2',
-        dictionaryEntryId: undefined,
-        citeId: undefined,
         color: '#fef08a',
       },
     ];
@@ -1007,9 +1007,7 @@ describe('Annotator clear-annotations Citas sync', () => {
     render(<Annotator bookKey='book-1' />);
 
     const onMock = vi.mocked(eventDispatcher.on);
-    const clearCall = onMock.mock.calls.find(
-      ([eventName]: [string]) => eventName === 'clear-annotations',
-    );
+    const clearCall = onMock.mock.calls.find(([eventName]) => eventName === 'clear-annotations');
     expect(clearCall).toBeTruthy();
     const handler = clearCall![1] as (event: CustomEvent) => void;
     handler(new CustomEvent('clear-annotations', { detail: { bookKey: 'book-1' } }));

@@ -72,7 +72,9 @@ const mockDictionaryService = {
   upsertEntry: vi.fn().mockResolvedValue({ id: 'entry-1' }),
   createOccurrence: vi.fn().mockResolvedValue({ id: 'occurrence-1' }),
   updateEntry: vi.fn().mockResolvedValue({}),
-} as unknown as DictionaryService;
+} satisfies Pick<DictionaryService, 'upsertEntry' | 'createOccurrence' | 'updateEntry'>;
+
+const dictionaryService = mockDictionaryService as unknown as DictionaryService;
 
 const mockAppService = {
   writeFile: vi.fn().mockResolvedValue(undefined),
@@ -95,7 +97,7 @@ const defaultProps = {
   popupWidth: 480,
   popupHeight: 360,
   appService: mockAppService,
-  dictionaryService: mockDictionaryService,
+  dictionaryService,
   onCreateHighlight: mockOnCreateHighlight,
   onDismiss: mockOnDismiss,
 };
@@ -219,9 +221,11 @@ describe('CapturePopup', () => {
         12,
         'entry-1',
       );
-      expect(mockDictionaryService.upsertEntry.mock.invocationCallOrder[0]).toBeLessThan(
-        mockOnCreateHighlight.mock.invocationCallOrder[0],
-      );
+      const upsertCallOrder = mockDictionaryService.upsertEntry.mock.invocationCallOrder[0];
+      const highlightCallOrder = mockOnCreateHighlight.mock.invocationCallOrder[0];
+      expect(upsertCallOrder).toBeDefined();
+      expect(highlightCallOrder).toBeDefined();
+      expect(upsertCallOrder!).toBeLessThan(highlightCallOrder!);
 
       // Should create occurrence with context trimmed (extracted from the surrounding text)
       expect(mockDictionaryService.createOccurrence).toHaveBeenCalledWith({
@@ -303,16 +307,24 @@ describe('CapturePopup', () => {
   });
 
   describe('Paste image (mouse hover + Ctrl+V)', () => {
+    type PasteEventWithClipboard = Event & {
+      clipboardData: {
+        items: Array<{ kind: string; type: string; getAsFile: () => File | null }>;
+      };
+    };
+
     // Build a synthetic ClipboardEvent with a fake clipboardData.items list.
     // jsdom's real `paste` event has no useful clipboard data, so we attach
     // a shim that mimics the real DataTransferItemList contract used here.
-    function buildPasteEventWithItem(item: { kind: string; type: string; file: File | null }) {
-      const event = new Event('paste', { bubbles: true, cancelable: true }) as unknown as {
-        clipboardData: {
-          items: Array<{ kind: string; type: string; getAsFile: () => File | null }>;
-        };
-        preventDefault: () => void;
-      };
+    function buildPasteEventWithItem(item: {
+      kind: string;
+      type: string;
+      file: File | null;
+    }): PasteEventWithClipboard {
+      const event = new Event('paste', {
+        bubbles: true,
+        cancelable: true,
+      }) as PasteEventWithClipboard;
       event.clipboardData = {
         items: [
           {
@@ -322,7 +334,7 @@ describe('CapturePopup', () => {
           },
         ],
       };
-      event.preventDefault = vi.fn();
+      vi.spyOn(event, 'preventDefault');
       return event;
     }
 

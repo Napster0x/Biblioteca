@@ -5,7 +5,6 @@ import { RxSlider as SliderIcon } from 'react-icons/rx';
 import { RiFontFamily as FontIcon } from 'react-icons/ri';
 import { PiSun as ColorIcon } from 'react-icons/pi';
 import { useEnv } from '@/context/EnvContext';
-import { useReaderStore } from '@/store/readerStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useResponsiveSize } from '@/hooks/useResponsiveSize';
 import Button from '@/components/Button';
@@ -20,7 +19,6 @@ interface NavigationBarProps {
 }
 
 export const NavigationBar: React.FC<NavigationBarProps> = ({
-  bookKey,
   actionTab,
   gridInsets,
   forceMobileLayout,

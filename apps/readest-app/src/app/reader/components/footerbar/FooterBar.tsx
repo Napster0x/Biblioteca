@@ -8,6 +8,7 @@ import { useBookDataStore } from '@/store/bookDataStore';
 import { FIXED_LAYOUT_FORMATS } from '@/types/book';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useDeviceControlStore } from '@/store/deviceStore';
+import { eventDispatcher } from '@/utils/event';
 import type { FooterBarProps, NavigationHandlers, FooterBarChildProps } from './types';
 import { debounce } from '@/utils/debounce';
 import { RSVPControl } from '../rsvp';
@@ -26,14 +27,13 @@ const FooterBar: React.FC<FooterBarProps> = ({
   const { appService } = useEnv();
   const { getConfig, setConfig, getBookData } = useBookDataStore();
   const { hoveredBookKey, setHoveredBookKey } = useReaderStore();
-  const { getView, getProgress, getViewSettings } = useReaderStore();
+  const { getView, getViewSettings } = useReaderStore();
   const { isSideBarVisible, setSideBarVisible } = useSidebarStore();
   const { acquireBackKeyInterception, releaseBackKeyInterception } = useDeviceControlStore();
 
   const view = getView(bookKey);
   const config = getConfig(bookKey);
   const bookData = getBookData(bookKey);
-  const progress = getProgress(bookKey);
   const viewSettings = getViewSettings(bookKey);
 
   const [userSelectedTab, setUserSelectedTab] = useState('');

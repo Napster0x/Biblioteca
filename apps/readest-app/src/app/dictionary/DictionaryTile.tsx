@@ -141,6 +141,7 @@ function TileContent({
         className='absolute inset-0 flex items-center justify-center p-3 transition-transform duration-500 group-hover:scale-110'
       >
         <span
+          data-word-sizing='cqi'
           className='font-serif text-center font-bold leading-tight break-words'
           style={{
             fontSize: `${fontSizePx}px`,

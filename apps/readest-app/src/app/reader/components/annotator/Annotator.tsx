@@ -84,6 +84,15 @@ import {
   type PendingAnnotation,
 } from '../../utils/annotacionesCapture';
 
+type FoliateHitTestResult = [unknown, Range | undefined, DOMRectReadOnly | undefined];
+type FoliateContentWithOverlayer = {
+  index?: number;
+  doc?: Document;
+  overlayer?: {
+    hitTest?: (event: MouseEvent) => FoliateHitTestResult;
+  };
+};
+
 interface HoveredDictionaryAnnotation {
   noteId: string;
   entryId: string;
@@ -449,9 +458,9 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     (doc: Document, index: number, event: MouseEvent) => {
       const content = view?.renderer
         ?.getContents?.()
-        ?.find(
-          (item: { index?: number; doc?: Document }) => item.index === index && item.doc === doc,
-        );
+        ?.find((item) => item.index === index && item.doc === doc) as
+        | FoliateContentWithOverlayer
+        | undefined;
       const [value, , rect] = content?.overlayer?.hitTest?.(event) ?? [];
       if (!value || typeof value !== 'string' || value.startsWith('search#') || !rect) {
         doc.body.style.cursor = '';
@@ -489,9 +498,9 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     (doc: Document, index: number, event: MouseEvent) => {
       const content = view?.renderer
         ?.getContents?.()
-        ?.find(
-          (item: { index?: number; doc?: Document }) => item.index === index && item.doc === doc,
-        );
+        ?.find((item) => item.index === index && item.doc === doc) as
+        | FoliateContentWithOverlayer
+        | undefined;
       const [value, range, rect] = content?.overlayer?.hitTest?.(event) ?? [];
       if (!value || typeof value !== 'string' || value.startsWith('search#') || !rect) {
         setHoveredQuoteAnnotation(null);
@@ -531,9 +540,9 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     (doc: Document, index: number, event: MouseEvent) => {
       const content = view?.renderer
         ?.getContents?.()
-        ?.find(
-          (item: { index?: number; doc?: Document }) => item.index === index && item.doc === doc,
-        );
+        ?.find((item) => item.index === index && item.doc === doc) as
+        | FoliateContentWithOverlayer
+        | undefined;
       const [value, range, rect] = content?.overlayer?.hitTest?.(event) ?? [];
       if (!value || typeof value !== 'string' || value.startsWith('search#') || !rect) {
         setHoveredAnotacionAnnotation(null);

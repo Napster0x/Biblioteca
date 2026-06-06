@@ -28,7 +28,7 @@ const {
   menuItemNewMock: vi.fn(async () => ({})),
   loadBookConfigMock: vi.fn(),
   saveBookConfigMock: vi.fn(),
-  deleteQuotesByBookMock: vi.fn<[string], Promise<string[]>>(),
+  deleteQuotesByBookMock: vi.fn<(bookHash: string) => Promise<string[]>>(),
   getCitasServiceMock: vi.fn(),
   removeQuotesFromStateMock: vi.fn(),
   consoleWarnMock: vi.fn(),

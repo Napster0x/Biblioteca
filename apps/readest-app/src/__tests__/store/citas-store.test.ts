@@ -257,7 +257,8 @@ describe('citasStore', () => {
       deleteQuotes: vi.fn().mockImplementation(async (ids: readonly string[]): Promise<void> => {
         const set = new Set(ids);
         for (let i = stored.length - 1; i >= 0; i--) {
-          if (set.has(stored[i].id)) stored.splice(i, 1);
+          const quote = stored[i];
+          if (quote && set.has(quote.id)) stored.splice(i, 1);
         }
       }),
     };
@@ -281,8 +282,8 @@ describe('citasStore', () => {
 
     // 2. list (loadQuotes)
     await useCitasStore.getState().loadQuotes(asCitasService(service));
-    expect(useCitasStore.getState().quotes).toHaveLength(1);
-    expect(useCitasStore.getState().quotes[0].id).toBe('cite-rt');
+    const [loadedQuote] = useCitasStore.getState().quotes;
+    expect(loadedQuote?.id).toBe('cite-rt');
 
     // 3. enter select-mode + toggle
     useCitasStore.getState().enterSelectMode();

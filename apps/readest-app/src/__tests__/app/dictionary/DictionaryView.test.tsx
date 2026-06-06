@@ -1,7 +1,43 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DictionaryService } from '@/services/dictionary/DictionaryService';
 import type { DictionaryEntry, DictionaryOccurrence } from '@/types/dictionary';
+
+// jsdom provides window.localStorage by default, but some error-recovery test
+// flows can leave it undefined. Stub it at the file level to avoid cascading
+// "Cannot read properties of undefined" failures from DictionaryGrid.tsx:37.
+if (typeof window !== 'undefined' && !window.localStorage) {
+  Object.defineProperty(window, 'localStorage', {
+    value: (() => {
+      const store: Record<string, string> = {};
+      return {
+        getItem: (key: string) => store[key] ?? null,
+        setItem: (key: string, value: string) => {
+          store[key] = value;
+        },
+        removeItem: (key: string) => {
+          delete store[key];
+        },
+        clear: () => {
+          Object.keys(store).forEach((k) => delete store[k]);
+        },
+      };
+    })(),
+    writable: true,
+    configurable: true,
+  });
+}
+
+// jsdom does not implement ResizeObserver. DictionaryGrid uses useContainerSize
+// which creates a ResizeObserver internally. Provide a no-op stub so the
+// component renders without throwing.
+if (typeof window !== 'undefined' && !window.ResizeObserver) {
+  window.ResizeObserver = class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}
 
 const mocks = vi.hoisted(() => ({
   back: vi.fn(),
@@ -20,6 +56,8 @@ const mocks = vi.hoisted(() => ({
   enterSelectMode: vi.fn(),
   cancelSelectMode: vi.fn(),
   deleteSelectedEntries: vi.fn(),
+  setEntry: vi.fn(),
+  setOccurrences: vi.fn(),
   getDictionaryService: vi.fn(),
   appService: { platform: 'test', createDir: vi.fn(), writeFile: vi.fn(), readFile: vi.fn() },
 }));
@@ -49,6 +87,8 @@ interface MockDictionaryStoreState {
   enterSelectMode: typeof mocks.enterSelectMode;
   cancelSelectMode: typeof mocks.cancelSelectMode;
   deleteSelectedEntries: typeof mocks.deleteSelectedEntries;
+  setEntry: typeof mocks.setEntry;
+  setOccurrences: typeof mocks.setOccurrences;
 }
 
 vi.mock('next/navigation', () => ({
@@ -83,6 +123,8 @@ vi.mock('@/store/dictionaryStore', () => ({
       enterSelectMode: mocks.enterSelectMode,
       cancelSelectMode: mocks.cancelSelectMode,
       deleteSelectedEntries: mocks.deleteSelectedEntries,
+      setEntry: mocks.setEntry,
+      setOccurrences: mocks.setOccurrences,
     }),
 }));
 
@@ -104,6 +146,7 @@ import DictionaryDetailPage from '@/app/dictionary/[id]/page';
 import DictionaryPage from '@/app/dictionary/page';
 
 const mockService = {
+  getEntry: vi.fn().mockResolvedValue(makeEntry()),
   listOccurrences: vi.fn().mockResolvedValue([]),
 } as unknown as DictionaryService;
 
@@ -155,7 +198,10 @@ describe('DictionaryGrid', () => {
     mocks.enterSelectMode.mockReset();
     mocks.cancelSelectMode.mockReset();
     mocks.deleteSelectedEntries.mockReset();
+    mocks.setEntry.mockReset();
+    mocks.setOccurrences.mockReset();
     vi.mocked(mockService.listOccurrences).mockResolvedValue([]);
+    vi.mocked(mockService.getEntry).mockResolvedValue(makeEntry());
     mocks.getDictionaryService.mockReset();
     mocks.getDictionaryService.mockResolvedValue(mockService);
   });
@@ -501,9 +547,13 @@ describe('DictionaryPage', () => {
     mockOccurrencesByEntryId = {};
     mockIsLoading = false;
     mocks.loadEntries.mockReset();
+    mocks.setEntry.mockReset();
+    mocks.setOccurrences.mockReset();
     mocks.getDictionaryService.mockReset();
     mocks.back.mockReset();
     mocks.replace.mockReset();
+    vi.mocked(mockService.getEntry).mockResolvedValue(makeEntry());
+    vi.mocked(mockService.listOccurrences).mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -741,16 +791,27 @@ describe('DictionaryDetailPage', () => {
   });
 
   describe('Paste image (mouse hover + Ctrl+V)', () => {
+    // Increase timeout for paste tests which involve async file operations
+    // through the component's saveImageFromFile → file.arrayBuffer() chain.
+    vi.setConfig({ testTimeout: 15000, hookTimeout: 15000 });
+    type PasteEventWithClipboard = Event & {
+      clipboardData: {
+        items: Array<{ kind: string; type: string; getAsFile: () => File | null }>;
+      };
+    };
+
     // Build a synthetic ClipboardEvent with a fake clipboardData.items list.
     // jsdom's real `paste` event has no useful clipboard data, so we attach
     // a shim that mimics the real DataTransferItemList contract used here.
-    function buildPasteEventWithItem(item: { kind: string; type: string; file: File | null }) {
-      const event = new Event('paste', { bubbles: true, cancelable: true }) as unknown as {
-        clipboardData: {
-          items: Array<{ kind: string; type: string; getAsFile: () => File | null }>;
-        };
-        preventDefault: () => void;
-      };
+    function buildPasteEventWithItem(item: {
+      kind: string;
+      type: string;
+      file: File | null;
+    }): PasteEventWithClipboard {
+      const event = new Event('paste', {
+        bubbles: true,
+        cancelable: true,
+      }) as PasteEventWithClipboard;
       event.clipboardData = {
         items: [
           {
@@ -760,7 +821,7 @@ describe('DictionaryDetailPage', () => {
           },
         ],
       };
-      event.preventDefault = vi.fn();
+      vi.spyOn(event, 'preventDefault');
       return event;
     }
 
@@ -778,9 +839,7 @@ describe('DictionaryDetailPage', () => {
 
     it('writes a pasted image to disk and updates the entry imagePath while hovering', async () => {
       const imageFile = new File(['png-bytes'], 'pasted.png', { type: 'image/png' });
-      Object.defineProperty(imageFile, 'arrayBuffer', {
-        value: vi.fn().mockResolvedValue(new ArrayBuffer(8)),
-      });
+      imageFile.arrayBuffer = vi.fn().mockResolvedValue(new ArrayBuffer(8));
       const pasteEvent = buildPasteEventWithItem({
         kind: 'file',
         type: 'image/png',
@@ -788,13 +847,16 @@ describe('DictionaryDetailPage', () => {
       });
 
       render(<DictionaryDetailPage />);
-      // The document-level paste handler is registered with the saveImageFromFile
-      // from the render that called it. We need the re-render with the loaded
-      // service to complete first, otherwise the handler's closure sees
-      // `service === null` and bails out before reaching writeFile.
-      await act(async () => {
-        await waitFor(() => expect(mocks.getDictionaryService).toHaveBeenCalled());
-      });
+      // Wait for both the service AND the image to load before hovering.
+      // The image loading effect (readFile → setImageUrl) triggers a re-render
+      // after the component fully mounts. Without this wait, the paste can fire
+      // during the async state-settle window, causing `service` (captured in the
+      // useCallback closure) to still be null when saveImageFromFile runs.
+      await waitFor(() =>
+        expect(screen.getByTestId('dictionary-image-area').getAttribute('aria-label')).toBe(
+          'Imagen actual',
+        ),
+      );
       await hoverImageArea();
       fireEvent(document.body, pasteEvent);
 
@@ -869,12 +931,16 @@ describe('DictionaryDetailPage', () => {
       });
 
       render(<DictionaryDetailPage />);
-      // Wait for the service-loading re-render so the document handler's
-      // saveImageFromFile closure has `service` set (see hover-then-paste
-      // test above for the full explanation).
-      await act(async () => {
-        await waitFor(() => expect(mocks.getDictionaryService).toHaveBeenCalled());
-      });
+      // Wait for both the service AND the image to load before hovering.
+      // The image loading effect (readFile → setImageUrl) triggers a re-render
+      // after the component fully mounts. Without this wait, the paste can fire
+      // during the async state-settle window, causing `service` (captured in the
+      // useCallback closure) to still be null when saveImageFromFile runs.
+      await waitFor(() =>
+        expect(screen.getByTestId('dictionary-image-area').getAttribute('aria-label')).toBe(
+          'Imagen actual',
+        ),
+      );
       await hoverImageArea();
       fireEvent(document.body, pasteEvent);
 

@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach } from 'vitest';
 import { useNotebookStore } from '@/store/notebookStore';
 import { BookNote } from '@/types/book';
-import { TextSelection } from '@/utils/sel';
+import type { PendingAnnotation } from '@/app/reader/utils/annotacionesCapture';
 
 beforeEach(() => {
   useNotebookStore.setState({
@@ -111,25 +111,30 @@ describe('notebookStore', () => {
   // ── New annotation ─────────────────────────────────────────────
   describe('setNotebookNewAnnotation', () => {
     test('sets a new annotation selection', () => {
-      const selection: TextSelection = {
+      const selection: PendingAnnotation = {
         key: 'sel-1',
         text: 'Hello world',
         page: 1,
         range: new Range(),
         index: 0,
         cfi: 'epubcfi(/6/2!/4/1:0)',
+        href: null,
+        createdTemporaryOverlay: false,
       };
       useNotebookStore.getState().setNotebookNewAnnotation(selection);
       expect(useNotebookStore.getState().notebookNewAnnotation).toEqual(selection);
     });
 
     test('clears annotation when set to null', () => {
-      const selection: TextSelection = {
+      const selection: PendingAnnotation = {
         key: 'sel-1',
         text: 'test',
         page: 1,
         range: new Range(),
         index: 0,
+        cfi: 'epubcfi(/6/2!/4/1:0)',
+        href: null,
+        createdTemporaryOverlay: false,
       };
       useNotebookStore.getState().setNotebookNewAnnotation(selection);
       useNotebookStore.getState().setNotebookNewAnnotation(null);

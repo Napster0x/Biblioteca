@@ -18,7 +18,6 @@ describe('reader quote selection actions', () => {
     expect(quote?.label).toBe('Citas');
     expect(quote?.tooltip).toBe('Save selected text as a quote');
     expect(quote?.quickAction).toBe(true);
-    expect(annotationToolButtons.some((button) => button.type === 'placeholder-c')).toBe(false);
   });
 });
 

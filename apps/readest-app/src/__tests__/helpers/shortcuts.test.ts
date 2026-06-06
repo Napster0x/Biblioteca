@@ -22,37 +22,15 @@ describe('Shortcut entry structure', () => {
   });
 });
 
-describe('TTS play/pause shortcut', () => {
-  it('should have onTTSPlayPause shortcut with space', async () => {
-    const shortcuts = await getDefaults();
-    expect(shortcuts.onTTSPlayPause.keys).toEqual([' ']);
-  });
-
-  it('should also have space in onGoRight as fallback', async () => {
+describe('Reader page navigation shortcuts', () => {
+  it('uses onGoRight for the space key page-forward shortcut', async () => {
     const shortcuts = await getDefaults();
     expect(shortcuts.onGoRight.keys).toContain(' ');
   });
-});
 
-describe('TTS navigation shortcuts', () => {
-  it('should have onTTSGoNextSentence shortcut with ctrl+] and cmd+]', async () => {
+  it('uses onGoLeft for the shift+space page-back shortcut', async () => {
     const shortcuts = await getDefaults();
-    expect(shortcuts.onTTSGoNextSentence.keys).toEqual(['ctrl+]', 'cmd+]']);
-  });
-
-  it('should have onTTSGoPreviousSentence shortcut with ctrl+[ and cmd+[', async () => {
-    const shortcuts = await getDefaults();
-    expect(shortcuts.onTTSGoPreviousSentence.keys).toEqual(['ctrl+[', 'cmd+[']);
-  });
-
-  it('should have onTTSGoNextParagraph shortcut with ctrl+shift+} and cmd+shift+}', async () => {
-    const shortcuts = await getDefaults();
-    expect(shortcuts.onTTSGoNextParagraph.keys).toEqual(['ctrl+shift+}', 'cmd+shift+}']);
-  });
-
-  it('should have onTTSGoPreviousParagraph shortcut with ctrl+shift+{ and cmd+shift+{', async () => {
-    const shortcuts = await getDefaults();
-    expect(shortcuts.onTTSGoPreviousParagraph.keys).toEqual(['ctrl+shift+{', 'cmd+shift+{']);
+    expect(shortcuts.onGoLeft.keys).toContain('shift+ ');
   });
 });
 

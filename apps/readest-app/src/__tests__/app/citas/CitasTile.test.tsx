@@ -168,12 +168,14 @@ describe('CitasTile', () => {
 
   it('does not add the citas-pulse class when isHighlighted is false or undefined', () => {
     const { container: undefContainer } = render(<CitasTile quote={makeQuote()} />);
-    expect(undefContainer.firstChild!.className).not.toContain('citas-pulse');
+    const undefinedTile = undefContainer.firstChild as HTMLElement;
+    expect(undefinedTile.className).not.toContain('citas-pulse');
 
     const { container: falseContainer } = render(
       <CitasTile quote={makeQuote()} isHighlighted={false} />,
     );
-    expect(falseContainer.firstChild!.className).not.toContain('citas-pulse');
+    const falseTile = falseContainer.firstChild as HTMLElement;
+    expect(falseTile.className).not.toContain('citas-pulse');
   });
 
   it('renders with id attribute on the outer element', () => {

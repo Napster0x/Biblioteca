@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AnotacionesShelfItem } from '@/types/annotaciones';
+import { ANOTACIONES_SHELF_ITEM } from '@/types/annotaciones';
 
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
@@ -21,11 +21,7 @@ vi.mock('@/hooks/useTranslation', () => ({
 
 import AnotacionesShelfCard from '@/app/library/components/AnotacionesShelfCard';
 
-const mockItem: AnotacionesShelfItem = {
-  type: 'anotaciones-shelf-item',
-  id: 'anotaciones',
-  title: 'Anotaciones',
-};
+const mockItem = ANOTACIONES_SHELF_ITEM;
 
 describe('AnotacionesShelfCard', () => {
   beforeEach(() => {

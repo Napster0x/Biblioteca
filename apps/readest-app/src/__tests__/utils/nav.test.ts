@@ -209,7 +209,7 @@ describe('navigateToCitas', () => {
 
   test('passes navOptions through when provided', () => {
     const router = mockRouter();
-    navigateToCitas(router, { scroll: false });
+    navigateToCitas(router, undefined, { scroll: false });
 
     expect(router.push).toHaveBeenCalledWith('/citas', { scroll: false });
   });
