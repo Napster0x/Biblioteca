@@ -1,5 +1,9 @@
 'use client';
 
+export function generateStaticParams() {
+  return [];
+}
+
 import { type ChangeEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { PiCaretLeft, PiImageSquare, PiSpinner, PiWarningCircle } from 'react-icons/pi';
