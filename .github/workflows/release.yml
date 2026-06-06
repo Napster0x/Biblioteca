@@ -133,7 +133,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.target == 'android' && '[{"os":"ubuntu-latest","release":"android","rust_target":"aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android"}]' || github.event_name == 'workflow_dispatch' && inputs.target == 'linux' && '[{"os":"ubuntu-22.04","release":"linux","arch":"x86_64","rust_target":"x86_64-unknown-linux-gnu"}]' || '[{"os":"ubuntu-latest","release":"android","rust_target":"aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android"},{"os":"ubuntu-22.04","release":"linux","arch":"x86_64","rust_target":"x86_64-unknown-linux-gnu"}]') }}
+        config: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.target == 'android' && '[{"os":"ubuntu-latest","release":"android","rust_target":"aarch64-linux-android"}]' || github.event_name == 'workflow_dispatch' && inputs.target == 'linux' && '[{"os":"ubuntu-22.04","release":"linux","arch":"x86_64","rust_target":"x86_64-unknown-linux-gnu"}]' || '[{"os":"ubuntu-latest","release":"android","rust_target":"aarch64-linux-android"},{"os":"ubuntu-22.04","release":"linux","arch":"x86_64","rust_target":"x86_64-unknown-linux-gnu"}]') }}
 
     runs-on: ${{ matrix.config.os }}
     timeout-minutes: 60
@@ -232,21 +232,14 @@ jobs:
           popd
           version=${{ needs.get-release.outputs.release_version }}
           apk_path=src-tauri/gen/android/app/build/outputs/apk/universal/release
-          universial_apk=Biblioteca_${version}_universal.apk
           arm64_apk=Biblioteca_${version}_arm64.apk
-          pnpm tauri android build
-          cp ${apk_path}/app-universal-release.apk $universial_apk
           pnpm tauri android build -t aarch64
           cp ${apk_path}/app-universal-release.apk $arm64_apk
 
-          echo "Uploading $universial_apk to GitHub release"
-          gh release upload ${{ needs.get-release.outputs.release_tag }} $universial_apk --clobber
           echo "Uploading $arm64_apk to GitHub release"
           gh release upload ${{ needs.get-release.outputs.release_tag }} $arm64_apk --clobber
           echo "Uploading signatures to GitHub release"
-          pnpm tauri signer sign $universial_apk
           pnpm tauri signer sign $arm64_apk
-          gh release upload ${{ needs.get-release.outputs.release_tag }} $universial_apk.sig --clobber
           gh release upload ${{ needs.get-release.outputs.release_tag }} $arm64_apk.sig --clobber
 
       - name: download and update latest.json for Android release
@@ -259,19 +252,13 @@ jobs:
           gh release download "${{ needs.get-release.outputs.release_tag }}" --pattern "latest.json" --clobber 2>/dev/null || echo '{"platforms":{}}' > latest.json
 
           version=${{ needs.get-release.outputs.release_version }}
-          universial_apk_url="https://github.com/Napster0x/Biblioteca/releases/download/${{ needs.get-release.outputs.release_tag }}/Biblioteca_${version}_universal.apk"
           arm64_apk_url="https://github.com/Napster0x/Biblioteca/releases/download/${{ needs.get-release.outputs.release_tag }}/Biblioteca_${version}_arm64.apk"
 
-          universial_sig=$(cat Biblioteca_${version}_universal.apk.sig)
           arm64_sig=$(cat Biblioteca_${version}_arm64.apk.sig)
-
-          jq --arg url "$universial_apk_url" \
-              --arg sig "$universial_sig" \
-              '.platforms["android-universal"] = {signature: $sig, url: $url}' latest.json > tmp.$$.json && mv tmp.$$.json latest.json
 
           jq --arg url "$arm64_apk_url" \
               --arg sig "$arm64_sig" \
-              '.platforms["android-arm64"] = {signature: $sig, url: $url}' latest.json > tmp.$$.json && mv tmp.$$.json latest.json
+              'del(.platforms["android-universal"]) | .platforms["android-arm64"] = {signature: $sig, url: $url}' latest.json > tmp.$$.json && mv tmp.$$.json latest.json
 
           echo "Uploading updated latest.json to GitHub release"
           gh release upload ${{ needs.get-release.outputs.release_tag }} latest.json --clobber
