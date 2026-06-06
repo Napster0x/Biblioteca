@@ -30,7 +30,7 @@ export default function DictionaryDetailPage() {
   const _ = useTranslation();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const entryId = searchParams.get('id') ?? '';
+  const entryId = searchParams?.get('id') ?? '';
   const { appService } = useEnv();
   const [service, setService] = useState<DictionaryService | null>(null);
   const [definition, setDefinition] = useState('');
