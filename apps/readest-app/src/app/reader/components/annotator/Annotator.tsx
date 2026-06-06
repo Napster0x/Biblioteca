@@ -791,7 +791,7 @@ const Annotator: React.FC<{ bookKey: string }> = ({ bookKey }) => {
       setShowAnnotationNotes(false);
       setEditingAnnotation(null);
       setAnnotationNotes([]);
-      router.push(`/dictionary/${encodeURIComponent(annotation.dictionaryEntryId)}`);
+      router.push(`/dictionary/detail?id=${encodeURIComponent(annotation.dictionaryEntryId)}`);
       return;
     }
 

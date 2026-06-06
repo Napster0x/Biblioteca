@@ -131,25 +131,6 @@ jobs:
             release: linux
             arch: x86_64
             rust_target: x86_64-unknown-linux-gnu
-          - os: ubuntu-22.04-arm
-            release: linux
-            arch: aarch64
-            rust_target: aarch64-unknown-linux-gnu
-          - os: macos-latest
-            release: macos
-            arch: aarch64
-            rust_target: x86_64-apple-darwin,aarch64-apple-darwin
-            args: '--target universal-apple-darwin'
-          - os: windows-latest
-            release: windows
-            arch: x86_64
-            rust_target: x86_64-pc-windows-msvc
-            args: '--target x86_64-pc-windows-msvc --bundles nsis'
-          - os: windows-latest
-            release: windows
-            arch: aarch64
-            rust_target: aarch64-pc-windows-msvc
-            args: '--target aarch64-pc-windows-msvc --bundles nsis'
 
     runs-on: ${{ matrix.config.os }}
     timeout-minutes: 60
@@ -405,5 +386,4 @@ jobs:
 
           echo "Uploading updated latest.json to GitHub release"
           gh release upload ${{ needs.get-release.outputs.release_tag }} latest.json --clobber
-
 

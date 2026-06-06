@@ -66,7 +66,7 @@ export default function DictionaryTile({
 
   return (
     <Link
-      href={`/dictionary/${entry.id}`}
+      href={`/dictionary/detail?id=${encodeURIComponent(entry.id)}`}
       className={tileClassName}
       aria-label={capitalize(entry.displayTerm)}
     >

@@ -1,7 +1,7 @@
 'use client';
 
 import { type ChangeEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { PiCaretLeft, PiImageSquare, PiSpinner, PiWarningCircle } from 'react-icons/pi';
 import { useEnv } from '@/context/EnvContext';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -29,8 +29,8 @@ function getFileExtension(filename: string): string {
 export default function DictionaryDetailPage() {
   const _ = useTranslation();
   const router = useRouter();
-  const params = useParams<{ id: string }>();
-  const entryId = params?.id ?? '';
+  const searchParams = useSearchParams();
+  const entryId = searchParams.get('id') ?? '';
   const { appService } = useEnv();
   const [service, setService] = useState<DictionaryService | null>(null);
   const [definition, setDefinition] = useState('');

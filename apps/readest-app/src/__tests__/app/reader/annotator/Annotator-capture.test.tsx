@@ -769,7 +769,7 @@ describe('Annotator dictionary highlight interaction', () => {
       }),
     );
 
-    expect(annotatorMocks.router.push).toHaveBeenCalledWith('/dictionary/entry-1');
+    expect(annotatorMocks.router.push).toHaveBeenCalledWith('/dictionary/detail?id=entry-1');
     expect(screen.queryByTestId('annotation-popup')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Remove dictionary highlight' })).toBeNull();
   });

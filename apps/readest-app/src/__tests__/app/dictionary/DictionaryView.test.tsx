@@ -92,7 +92,7 @@ interface MockDictionaryStoreState {
 }
 
 vi.mock('next/navigation', () => ({
-  useParams: () => ({ id: 'entry-1' }),
+  useSearchParams: () => new URLSearchParams('id=entry-1'),
   useRouter: () => ({ back: mocks.back, push: mocks.push, replace: mocks.replace }),
 }));
 
@@ -142,7 +142,7 @@ vi.mock('@/hooks/useTranslation', () => ({
 }));
 
 import DictionaryGrid from '@/app/dictionary/DictionaryGrid';
-import DictionaryDetailPage from '@/app/dictionary/[id]/page';
+import DictionaryDetailPage from '@/app/dictionary/detail/page';
 import DictionaryPage from '@/app/dictionary/page';
 
 const mockService = {
@@ -231,10 +231,10 @@ describe('DictionaryGrid', () => {
     render(<DictionaryGrid service={mockService} />);
 
     expect(screen.getByRole('link', { name: /serendipia/i }).getAttribute('href')).toBe(
-      '/dictionary/entry-1',
+      '/dictionary/detail?id=entry-1',
     );
     expect(screen.getByRole('link', { name: /efímero/i }).getAttribute('href')).toBe(
-      '/dictionary/entry-2',
+      '/dictionary/detail?id=entry-2',
     );
   });
 
