@@ -1,4 +1,4 @@
-package com.bilingify.readest
+package io.github.Napster0x.biblioteca
 
 import android.os.Build
 import android.os.Bundle
