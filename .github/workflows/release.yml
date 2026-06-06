@@ -1,4 +1,4 @@
-name: Release Readest
+name: Release Biblioteca
 
 on:
   workflow_dispatch:
@@ -250,8 +250,8 @@ jobs:
           popd
           version=${{ needs.get-release.outputs.release_version }}
           apk_path=src-tauri/gen/android/app/build/outputs/apk/universal/release
-          universial_apk=Readest_${version}_universal.apk
-          arm64_apk=Readest_${version}_arm64.apk
+          universial_apk=Biblioteca_${version}_universal.apk
+          arm64_apk=Biblioteca_${version}_arm64.apk
           pnpm tauri android build
           cp ${apk_path}/app-universal-release.apk $universial_apk
           pnpm tauri android build -t aarch64
@@ -273,14 +273,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd apps/readest-app/
-          curl -sL https://github.com/readest/readest/releases/latest/download/latest.json -o latest.json
+          echo "checking if latest.json already exists in the release"
+          gh release download "${{ needs.get-release.outputs.release_tag }}" --pattern "latest.json" --clobber 2>/dev/null || echo '{"platforms":{}}' > latest.json
 
           version=${{ needs.get-release.outputs.release_version }}
-          universial_apk_url="https://github.com/readest/readest/releases/download/${{ needs.get-release.outputs.release_tag }}/Readest_${version}_universal.apk"
-          arm64_apk_url="https://github.com/readest/readest/releases/download/${{ needs.get-release.outputs.release_tag }}/Readest_${version}_arm64.apk"
+          universial_apk_url="https://github.com/Napster0x/Biblioteca/releases/download/${{ needs.get-release.outputs.release_tag }}/Biblioteca_${version}_universal.apk"
+          arm64_apk_url="https://github.com/Napster0x/Biblioteca/releases/download/${{ needs.get-release.outputs.release_tag }}/Biblioteca_${version}_arm64.apk"
 
-          universial_sig=$(cat Readest_${version}_universal.apk.sig)
-          arm64_sig=$(cat Readest_${version}_arm64.apk.sig)
+          universial_sig=$(cat Biblioteca_${version}_universal.apk.sig)
+          arm64_sig=$(cat Biblioteca_${version}_arm64.apk.sig)
 
           jq --arg url "$universial_apk_url" \
               --arg sig "$universial_sig" \
@@ -349,15 +350,15 @@ jobs:
           version=${{ needs.get-release.outputs.release_version }}
 
           if [ "$arch" = "x86_64" ]; then
-            bin_file="Readest_${version}_x64-portable.exe"
+            bin_file="Biblioteca_${version}_x64-portable.exe"
           elif [ "$arch" = "aarch64" ]; then
-            bin_file="Readest_${version}_arm64-portable.exe"
+            bin_file="Biblioteca_${version}_arm64-portable.exe"
           else
             echo "Unknown architecture: $arch"
             exit 1
           fi
 
-          exe_file="target/${{ matrix.config.rust_target }}/release/readest.exe"
+          exe_file="target/${{ matrix.config.rust_target }}/release/biblioteca.exe"
           # Browsers on Windows won't download zip files that contain exe files
           # so upload the exe files instead. This is totally stupid.
           # powershell.exe -Command "Compress-Archive -Path $exe_file -DestinationPath $bin_file -Force"
@@ -379,23 +380,24 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          curl -sL https://github.com/readest/readest/releases/latest/download/latest.json -o latest.json
+          echo "checking if latest.json exists in the release"
+          gh release download "${{ needs.get-release.outputs.release_tag }}" --pattern "latest.json" --clobber 2>/dev/null || echo '{"platforms":{}}' > latest.json
 
           version=${{ needs.get-release.outputs.release_version }}
           arch=${{ matrix.config.arch }}
 
           if [ "$arch" = "x86_64" ]; then
-            bin_file="Readest_${version}_x64-portable.exe"
+            bin_file="Biblioteca_${version}_x64-portable.exe"
             platform_key="windows-x86_64-portable"
           elif [ "$arch" = "aarch64" ]; then
-            bin_file="Readest_${version}_arm64-portable.exe"
+            bin_file="Biblioteca_${version}_arm64-portable.exe"
             platform_key="windows-aarch64-portable"
           else
             echo "Unknown architecture: $arch"
             exit 1
           fi
 
-          portable_url="https://github.com/readest/readest/releases/download/${{ needs.get-release.outputs.release_tag }}/$bin_file"
+          portable_url="https://github.com/Napster0x/Biblioteca/releases/download/${{ needs.get-release.outputs.release_tag }}/$bin_file"
           portable_sig=$(cat $bin_file.sig)
 
           jq --arg url "$portable_url" \
