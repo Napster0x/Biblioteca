@@ -1,0 +1,6 @@
+{
+  "identifier": "io.github.Napster0x.biblioteca.dev",
+  "bundle": {
+    "createUpdaterArtifacts": false
+  }
+}

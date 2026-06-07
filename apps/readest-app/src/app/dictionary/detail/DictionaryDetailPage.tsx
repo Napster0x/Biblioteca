@@ -235,7 +235,7 @@ export default function DictionaryDetailPage() {
 
   if (error) {
     return (
-      <main className='text-base-content flex min-h-dvh flex-col bg-base-200'>
+      <main className='text-base-content full-height flex flex-col bg-base-200'>
         <section className='mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-3 px-4 py-10 text-center sm:px-6'>
           <PiWarningCircle aria-hidden className='text-error size-10' />
           <h1 className='text-xl font-semibold'>{_('Error al abrir el diccionario')}</h1>
@@ -256,7 +256,7 @@ export default function DictionaryDetailPage() {
     // Still loading if we haven't started for this entryId, or the store says in-flight
     if (startedLoadingForRef.current !== entryId || isEntryLoading) {
       return (
-        <main className='text-base-content flex min-h-dvh flex-col bg-base-200'>
+        <main className='text-base-content full-height flex flex-col bg-base-200'>
           <section className='mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center px-4 py-10 sm:px-6'>
             <PiSpinner aria-hidden className='mb-4 size-10 animate-spin' />
             <p className='text-base-content/60'>{_('Cargando…')}</p>
@@ -265,7 +265,7 @@ export default function DictionaryDetailPage() {
       );
     }
     return (
-      <main className='text-base-content flex min-h-dvh flex-col bg-base-200'>
+      <main className='text-base-content full-height flex flex-col bg-base-200'>
         <section className='mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-3 px-4 py-10 text-center sm:px-6'>
           <PiWarningCircle aria-hidden className='text-base-content/60 size-10' />
           <h1 className='text-xl font-semibold'>{_('Entrada no encontrada')}</h1>
@@ -282,7 +282,7 @@ export default function DictionaryDetailPage() {
   }
 
   return (
-    <main className='text-base-content flex min-h-dvh flex-col overflow-y-auto bg-base-200 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'>
+    <main className='text-base-content full-height flex flex-col overflow-y-auto bg-base-200 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'>
       <section className='mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 pb-24 pt-5 sm:px-6 sm:pt-6'>
         <button
           type='button'
@@ -310,13 +310,14 @@ export default function DictionaryDetailPage() {
 
             <p
               ref={definitionRef}
-              className='border-base-content/65 text-base-content/75 mt-8 w-full max-w-xl break-words border-l-2 pl-4 font-["Times_New_Roman",Times,serif] text-lg italic leading-relaxed tracking-[0.01em] outline-none [overflow-wrap:anywhere] focus:outline-none'
+              className='border-base-content/65 text-base-content/75 mt-8 w-full max-w-xl whitespace-pre-wrap break-words border-l-2 pl-4 font-["Times_New_Roman",Times,serif] text-lg italic leading-relaxed tracking-[0.01em] outline-none [overflow-wrap:anywhere] focus:outline-none'
               contentEditable
               suppressContentEditableWarning
               role='textbox'
               aria-label={_('Editar definición')}
               onInput={(event) => {
-                definitionDraftRef.current = event.currentTarget.textContent ?? '';
+                definitionDraftRef.current =
+                  event.currentTarget.innerText ?? event.currentTarget.textContent ?? '';
               }}
               onBlur={handleDefinitionBlur}
             >

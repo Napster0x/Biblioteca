@@ -1,5 +1,16 @@
 {
   "releases": {
+    "1.0.1": {
+      "date": "2026-06-06",
+      "notes": [
+        "Linux: Added working x86_64 AppImage release for Arch Linux",
+        "Android: Added arm64 APK release (tested on phone)",
+        "Release: Biblioteca release pipeline fixed and automated",
+        "Dictionary: Fixed scroll in word detail view for long content",
+        "Dictionary: Fixed multiline paragraphs in definitions",
+        "Dev: Isolated the data directory of desktop development builds"
+      ]
+    },
     "0.11.1": {
       "date": "2026-05-11",
       "notes": [

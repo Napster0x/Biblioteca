@@ -696,6 +696,33 @@ describe('DictionaryDetailPage', () => {
     expect(screen.queryByTestId('definition-edit-toggle')).toBeNull();
   });
 
+  it('uses the detail page as the hidden-scrollbar scroll container', async () => {
+    render(<DictionaryDetailPage />);
+
+    await screen.findByRole('heading', { name: 'Serendipia' });
+    const main = screen.getByRole('main');
+
+    expect(main.className).toContain('full-height');
+    expect(main.className).toContain('overflow-y-auto');
+    expect(main.className).toContain('[scrollbar-width:none]');
+    expect(main.className).toContain('[&::-webkit-scrollbar]:hidden');
+    expect(main.className).not.toContain('min-h-dvh');
+  });
+
+  it('renders the definition with preserved whitespace', async () => {
+    mockEntry = makeEntry({
+      displayTerm: 'serendipia',
+      definition: 'Primer párrafo\n\nSegundo párrafo',
+      imagePath: 'Dictionaries/entry-1.png',
+    });
+
+    render(<DictionaryDetailPage />);
+
+    const definitionEditor = await screen.findByRole('textbox', { name: 'Editar definición' });
+    expect(definitionEditor.textContent).toBe('Primer párrafo\n\nSegundo párrafo');
+    expect(definitionEditor.className).toContain('whitespace-pre-wrap');
+  });
+
   it('persists the definition when the inline field loses focus', async () => {
     render(<DictionaryDetailPage />);
 
@@ -716,6 +743,31 @@ describe('DictionaryDetailPage', () => {
       ),
     );
     expect(screen.getByText('Nueva definición')).toBeTruthy();
+  });
+
+  it('persists multiline definitions from contenteditable innerText', async () => {
+    render(<DictionaryDetailPage />);
+
+    await screen.findByText('Definición inicial');
+    const definitionEditor = screen.getByRole('textbox', { name: 'Editar definición' });
+    Object.defineProperty(definitionEditor, 'innerText', {
+      value: 'Primer párrafo\n\nSegundo párrafo',
+      configurable: true,
+    });
+    definitionEditor.textContent = 'Primer párrafoSegundo párrafo';
+    fireEvent.input(definitionEditor);
+    fireEvent.blur(definitionEditor);
+
+    await waitFor(() =>
+      expect(mocks.updateEntry).toHaveBeenCalledWith(
+        {
+          id: 'entry-1',
+          definition: 'Primer párrafo\n\nSegundo párrafo',
+          imagePath: 'Dictionaries/entry-1.png',
+        },
+        mockService,
+      ),
+    );
   });
 
   it('does not render curiosity editing controls alongside the inline definition editor', async () => {
