@@ -9,7 +9,7 @@ import { relaunch, exit } from '@tauri-apps/plugin-process';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { Command } from '@tauri-apps/plugin-shell';
 import { invoke } from '@tauri-apps/api/core';
-import { desktopDir } from '@tauri-apps/api/path';
+import { appDataDir } from '@tauri-apps/api/path';
 import { isTauriAppPlatform } from '@/services/environment';
 import { useTranslator } from '@/hooks/useTranslator';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -251,10 +251,8 @@ export const UpdaterContent = ({
         const OS_ARCH = osArch();
         const platformKey =
           OS_ARCH === 'x86_64' ? 'linux-x86_64-appimage' : 'linux-aarch64-appimage';
-        const arch = OS_ARCH === 'x86_64' ? 'x86_64' : 'aarch64';
         const downloadUrl = data.platforms[platformKey]?.url as string;
-        const appImageFileName = `Readest_${data.version}_${arch}.AppImage`;
-        const appImageFilePath = await join(await desktopDir(), appImageFileName);
+        const appImageFilePath = await join(await appDataDir(), 'Biblioteca.AppImage');
         setUpdate({
           currentVersion,
           version: data.version,
