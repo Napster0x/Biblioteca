@@ -1,5 +1,13 @@
 {
   "releases": {
+    "1.0.5": {
+      "date": "2026-06-08",
+      "notes": [
+        "Settings: Fixed missing Integrations tab displaying correctly in all panels",
+        "Updater: Fixed download progress stuck when server omits Content-Length header",
+        "Updater: latest.json now includes version field for reliable update detection"
+      ]
+    },
     "1.0.4": {
       "date": "2026-06-08",
       "notes": [

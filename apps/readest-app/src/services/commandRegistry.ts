@@ -1,6 +1,6 @@
 import { Fzf, FzfResultItem, byLengthAsc } from 'fzf';
 import { SettingsPanelType } from '@/components/settings/SettingsDialog';
-import { RiFontSize, RiDashboardLine } from 'react-icons/ri';
+import { RiFontSize, RiDashboardLine, RiPlugLine } from 'react-icons/ri';
 import { VscSymbolColor } from 'react-icons/vsc';
 import { LiaHandPointerSolid } from 'react-icons/lia';
 import { PiSun, PiMoon } from 'react-icons/pi';
@@ -150,6 +150,7 @@ const panelIcons: Record<SettingsPanelType, IconType> = {
   Layout: RiDashboardLine,
   Color: VscSymbolColor,
   Control: LiaHandPointerSolid,
+  Integrations: RiPlugLine,
 };
 
 // font panel items

@@ -139,6 +139,7 @@ const SettingsDialog: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     Layout: null,
     Color: null,
     Control: null,
+    Integrations: null,
   });
 
   const registerResetFunction = (panel: SettingsPanelType, resetFn: () => void) => {
