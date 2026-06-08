@@ -788,7 +788,7 @@ const WebDAVForm: React.FC<WebDAVFormProps> = ({ onBack }) => {
             <div className='flex justify-end pt-1'>
               <button
                 type='submit'
-                disabled={isConnecting || !url || !username}
+                disabled={isConnecting || !url}
                 className={clsx(
                   'btn btn-primary',
                   'h-10 min-h-10 rounded-lg border-0 px-5 text-sm font-medium',
