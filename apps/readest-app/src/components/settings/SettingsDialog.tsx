@@ -5,7 +5,7 @@ import { useSettingsStore } from '@/store/settingsStore';
 import { useResponsiveSize } from '@/hooks/useResponsiveSize';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useCommandPalette } from '@/components/command-palette';
-import { RiFontSize, RiDashboardLine } from 'react-icons/ri';
+import { RiFontSize, RiDashboardLine, RiPlugLine } from 'react-icons/ri';
 import { VscSymbolColor } from 'react-icons/vsc';
 import { LiaHandPointerSolid } from 'react-icons/lia';
 import {
@@ -23,8 +23,9 @@ import LayoutPanel from './LayoutPanel';
 import ColorPanel from './ColorPanel';
 import Dialog from '@/components/Dialog';
 import ControlPanel from './ControlPanel';
+import IntegrationsPanel from './IntegrationsPanel';
 
-export type SettingsPanelType = 'Font' | 'Layout' | 'Color' | 'Control';
+export type SettingsPanelType = 'Font' | 'Layout' | 'Color' | 'Control' | 'Integrations';
 export type SettingsPanelPanelProp = {
   bookKey: string;
   onRegisterReset: (resetFn: () => void) => void;
@@ -81,6 +82,11 @@ const SettingsDialog: React.FC<{ bookKey: string }> = ({ bookKey }) => {
       tab: 'Control',
       icon: LiaHandPointerSolid,
       label: _('Behavior'),
+    },
+    {
+      tab: 'Integrations',
+      icon: RiPlugLine,
+      label: _('Integrations'),
     },
   ] as TabConfig[];
 
@@ -383,6 +389,7 @@ const SettingsDialog: React.FC<{ bookKey: string }> = ({ bookKey }) => {
             onRegisterReset={(fn) => registerResetFunction('Control', fn)}
           />
         )}
+        {activePanel === 'Integrations' && <IntegrationsPanel />}
       </div>
     </Dialog>
   );
