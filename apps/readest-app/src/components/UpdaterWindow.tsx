@@ -132,31 +132,41 @@ export const UpdaterContent = ({
             await new Promise<void>(async (resolve, reject) => {
               let downloaded = 0;
               let total = 0;
-              await tauriDownload(downloadUrl, apkFilePath, (progress) => {
-                if (!onEvent) return;
-                if (!total && progress.total) {
-                  total = progress.total;
+              try {
+                await tauriDownload(downloadUrl, apkFilePath, (progress) => {
+                  if (!onEvent) return;
+                  if (!total && progress.total) {
+                    total = progress.total;
+                    onEvent({
+                      event: 'Started',
+                      data: { contentLength: total },
+                    });
+                  } else if (downloaded > 0 && progress.progress === progress.total) {
+                    console.log('APK downloaded to', apkFilePath);
+                    onEvent?.({ event: 'Finished' });
+                    setTimeout(() => resolve(), 1000);
+                    return;
+                  }
                   onEvent({
-                    event: 'Started',
-                    data: { contentLength: total },
+                    event: 'Progress',
+                    data: { chunkLength: progress.progress - downloaded },
                   });
-                } else if (downloaded > 0 && progress.progress === progress.total) {
-                  console.log('APK downloaded to', apkFilePath);
-                  onEvent?.({ event: 'Finished' });
-                  setTimeout(() => {
-                    resolve();
-                  }, 1000);
-                }
-
-                onEvent({
-                  event: 'Progress',
-                  data: { chunkLength: progress.progress - downloaded },
+                  downloaded = progress.progress;
                 });
-                downloaded = progress.progress;
-              }).catch((error) => {
+                // tauriDownload resolved without reaching Finished path.
+                // No Content-Length was sent — signal completion now.
+                if (onEvent) {
+                  if (!total) {
+                    total = downloaded;
+                    onEvent({ event: 'Started', data: { contentLength: total } });
+                  }
+                  onEvent({ event: 'Finished' });
+                }
+                setTimeout(() => resolve(), 1000);
+              } catch (error) {
                 console.error('Download failed:', error);
                 reject(error);
-              });
+              }
             });
 
             const res = await installPackage({
@@ -179,31 +189,41 @@ export const UpdaterContent = ({
       return new Promise<void>(async (resolve, reject) => {
         let downloaded = 0;
         let total = 0;
-        await tauriDownload(downloadUrl, filePath, (progress) => {
-          if (!onEvent) return;
-          if (!total && progress.total) {
-            total = progress.total;
+        try {
+          await tauriDownload(downloadUrl, filePath, (progress) => {
+            if (!onEvent) return;
+            if (!total && progress.total) {
+              total = progress.total;
+              onEvent({
+                event: 'Started',
+                data: { contentLength: total },
+              });
+            } else if (downloaded > 0 && progress.progress === progress.total) {
+              console.log('File downloaded to', filePath);
+              onEvent?.({ event: 'Finished' });
+              setTimeout(() => resolve(), 1000);
+              return;
+            }
             onEvent({
-              event: 'Started',
-              data: { contentLength: total },
+              event: 'Progress',
+              data: { chunkLength: progress.progress - downloaded },
             });
-          } else if (downloaded > 0 && progress.progress === progress.total) {
-            console.log('File downloaded to', filePath);
-            onEvent?.({ event: 'Finished' });
-            setTimeout(() => {
-              resolve();
-            }, 1000);
-          }
-
-          onEvent({
-            event: 'Progress',
-            data: { chunkLength: progress.progress - downloaded },
+            downloaded = progress.progress;
           });
-          downloaded = progress.progress;
-        }).catch((error) => {
+          // If tauriDownload resolved without reaching the Finished path,
+          // the server didn't send Content-Length. We still completed.
+          if (onEvent) {
+            if (!total) {
+              total = downloaded;
+              onEvent({ event: 'Started', data: { contentLength: total } });
+            }
+            onEvent({ event: 'Finished' });
+          }
+          setTimeout(() => resolve(), 1000);
+        } catch (error) {
           console.error('Download failed:', error);
           reject(error);
-        });
+        }
       });
     };
     const checkWindowsPortableUpdate = async () => {
