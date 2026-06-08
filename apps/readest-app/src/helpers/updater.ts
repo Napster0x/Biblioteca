@@ -35,15 +35,27 @@ export const checkForAppUpdates = async (
   } else if (OS_TYPE === 'android') {
     try {
       const response = await fetch(READEST_UPDATER_FILE, { connectTimeout: 5000 });
+      if (!response.ok) {
+        console.warn('Android update check failed: HTTP', response.status);
+        return false;
+      }
       const data = await response.json();
+      if (!data.version) {
+        console.warn('Android update check: latest.json missing version field');
+        return false;
+      }
       const isNewer = semver.gt(data.version, getAppVersion());
-      if (isNewer && ('android-arm64' in data.platforms || 'android-universal' in data.platforms)) {
-        setUpdaterWindowVisible(true, data.version!, getAppVersion());
+      if (
+        isNewer &&
+        data.platforms &&
+        ('android-arm64' in data.platforms || 'android-universal' in data.platforms)
+      ) {
+        setUpdaterWindowVisible(true, data.version, getAppVersion());
       }
       return isNewer;
     } catch (err) {
       console.warn('Failed to fetch Android update info', err);
-      throw new Error('Failed to fetch Android update info');
+      return false;
     }
   }
 

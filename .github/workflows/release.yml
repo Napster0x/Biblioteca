@@ -258,7 +258,8 @@ jobs:
 
           jq --arg url "$arm64_apk_url" \
               --arg sig "$arm64_sig" \
-              'del(.platforms["android-universal"]) | .platforms["android-arm64"] = {signature: $sig, url: $url}' latest.json > tmp.$$.json && mv tmp.$$.json latest.json
+              --arg version "$version" \
+              '.version = $version | del(.platforms["android-universal"]) | .platforms["android-arm64"] = {signature: $sig, url: $url}' latest.json > tmp.$$.json && mv tmp.$$.json latest.json
 
           echo "Uploading updated latest.json to GitHub release"
           gh release upload ${{ needs.get-release.outputs.release_tag }} latest.json --clobber
