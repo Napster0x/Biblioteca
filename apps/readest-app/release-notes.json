@@ -1,5 +1,13 @@
 {
   "releases": {
+    "1.0.7": {
+      "date": "2026-06-09",
+      "notes": [
+        "Updater: Replaced custom AppImage download with Tauri's built-in updater — download progress works reliably now",
+        "WebDAV: Removed username requirement — works with anonymous auth (Tailscale + wsgidav)",
+        "WebDAV: Added sync toggles for Annotations, Quotes, and Dictionary in settings"
+      ]
+    },
     "1.0.6": {
       "date": "2026-06-09",
       "notes": [

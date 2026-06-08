@@ -106,7 +106,26 @@ export const UpdaterContent = ({
     const checkDesktopUpdate = async () => {
       const update = await check();
       if (update) {
-        setUpdate(update);
+        // For AppImage, wrap to add chmod + launch after Tauri's built-in download
+        if (appService?.isAppImage) {
+          const appDataDirPath = await appDataDir();
+          const appImageFilePath = await join(appDataDirPath, 'Biblioteca.AppImage');
+          setUpdate({
+            ...update,
+            downloadAndInstall: async (onEvent) => {
+              await update.downloadAndInstall(onEvent);
+              const chmodCommand = Command.create('chmod-appimage', ['+x', appImageFilePath]);
+              await chmodCommand.execute();
+              const launchCommand = Command.create('launch-appimage', [appImageFilePath]);
+              await launchCommand.spawn();
+              setTimeout(async () => {
+                await exit(0);
+              }, 500);
+            },
+          } as GenericUpdate);
+        } else {
+          setUpdate(update as unknown as GenericUpdate);
+        }
       }
     };
     const checkAndroidUpdate = async () => {
@@ -262,52 +281,12 @@ export const UpdaterContent = ({
         } as GenericUpdate);
       }
     };
-    const checkAppImageUpdate = async () => {
-      if (!appService) return;
-      const fetch = isTauriAppPlatform() ? tauriFetch : window.fetch;
-      const response = await fetch(READEST_UPDATER_FILE);
-      const data = await response.json();
-      if (semver.gt(data.version, currentVersion)) {
-        const OS_ARCH = osArch();
-        const platformKey =
-          OS_ARCH === 'x86_64' ? 'linux-x86_64-appimage' : 'linux-aarch64-appimage';
-        const downloadUrl = data.platforms[platformKey]?.url as string;
-        const appImageFilePath = await join(await appDataDir(), 'Biblioteca.AppImage');
-        setUpdate({
-          currentVersion,
-          version: data.version,
-          date: data.pub_date,
-          body: data.notes,
-          downloadAndInstall: async (onEvent) => {
-            await downloadWithProgress(downloadUrl, appImageFilePath, onEvent);
-            try {
-              // Make the AppImage executable
-              const chmodCommand = Command.create('chmod-appimage', ['+x', appImageFilePath]);
-              await chmodCommand.execute();
-              console.log('AppImage made executable:', appImageFilePath);
-
-              // Launch the new AppImage
-              console.log('Launching new AppImage:', appImageFilePath);
-              const launchCommand = Command.create('launch-appimage', [appImageFilePath]);
-              await launchCommand.spawn();
-              console.log('New AppImage launched, exiting current app...');
-              setTimeout(async () => {
-                await exit(0);
-              }, 500);
-            } catch (error) {
-              console.error('Failed to launch new AppImage:', error);
-            }
-          },
-        } as GenericUpdate);
-      }
-    };
     const checkForUpdates = async () => {
       const OS_TYPE = osType();
       if (appService?.isPortableApp && OS_TYPE === 'windows') {
         checkWindowsPortableUpdate();
-      } else if (appService?.isAppImage) {
-        checkAppImageUpdate();
       } else if (['macos', 'windows', 'linux'].includes(OS_TYPE)) {
+        // Use Tauri built-in updater for all desktop platforms (incl. AppImage)
         checkDesktopUpdate();
       } else if (OS_TYPE === 'android') {
         checkAndroidUpdate();
