@@ -28,6 +28,13 @@ export interface Cite {
   contentHash: string;
   createdAt: number;
   updatedAt: number | null;
+  /** Soft-delete tombstone: set when the quote is deleted. Sync uses this to propagate deletions across devices. */
+  deletedAt?: number;
+  /**
+   * Internal: per-field HLC strings that track the last-observed remote
+   * timestamp for each key. Added via ReplicaRow merge; never persisted.
+   */
+  _replicaTimestamps?: Record<string, string>;
 }
 
 export type CiteInput = Omit<Cite, 'id' | 'contentHash' | 'createdAt' | 'updatedAt'>;

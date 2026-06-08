@@ -128,7 +128,7 @@ describe('DictionaryService', () => {
     expect(await service.searchEntries('xyzzy')).toEqual([]);
   });
 
-  it('deletes selected entries and cascades their occurrences', async () => {
+  it('soft-deletes selected entries and their occurrences', async () => {
     const keep = await service.upsertEntry({ term: 'anchor', language: 'en' });
     const removeOne = await service.upsertEntry({ term: 'beacon', language: 'en' });
     const removeTwo = await service.upsertEntry({ term: 'current', language: 'en' });
@@ -154,15 +154,32 @@ describe('DictionaryService', () => {
 
     await service.deleteEntries([removeOne.id, removeTwo.id]);
 
-    const entries = await db.select<{ id: string; term: string }>(
-      'SELECT id, term FROM dictionary_entries ORDER BY term ASC',
-    );
-    expect(entries).toEqual([{ id: keep.id, term: 'anchor' }]);
+    // listEntries filters out soft-deleted entries
+    const visible = await service.listEntries();
+    expect(visible).toHaveLength(1);
+    expect(visible[0]?.id).toBe(keep.id);
 
-    const occurrences = await db.select<{ entry_id: string; selected_text: string }>(
-      'SELECT entry_id, selected_text FROM dictionary_occurrences ORDER BY selected_text ASC',
+    // Entries still exist in the table with deleted_at set
+    const entryRows = await db.select<{ id: string; term: string; deleted_at: number | null }>(
+      'SELECT id, term, deleted_at FROM dictionary_entries ORDER BY term ASC',
     );
-    expect(occurrences).toEqual([{ entry_id: keep.id, selected_text: 'anchor' }]);
+    expect(entryRows).toHaveLength(3);
+    expect(entryRows[0]?.deleted_at).toBeNull();
+    expect(entryRows[1]?.deleted_at).toBe(1700000000000);
+    expect(entryRows[2]?.deleted_at).toBe(1700000000000);
+
+    // Occurrences still exist with deleted_at set
+    const occRows = await db.select<{
+      entry_id: string;
+      selected_text: string;
+      deleted_at: number | null;
+    }>(
+      'SELECT entry_id, selected_text, deleted_at FROM dictionary_occurrences ORDER BY selected_text ASC',
+    );
+    expect(occRows).toHaveLength(3);
+    expect(occRows[0]?.deleted_at).toBeNull(); // keep entry's occurrence stays undeleted
+    expect(occRows[1]?.deleted_at).toBe(1700000000000); // removed entries' occurrences are deleted
+    expect(occRows[2]?.deleted_at).toBe(1700000000000);
   });
 
   it('ignores an empty delete request without changing entries', async () => {
@@ -227,5 +244,167 @@ describe('DictionaryService', () => {
   it('returns null via getEntry when entry does not exist', async () => {
     const result = await service.getEntry('entry-nonexistent');
     expect(result).toBeNull();
+  });
+
+  it('deleteEntries soft-deletes: listEntries excludes deleted rows', async () => {
+    const a = await service.upsertEntry({ term: 'alpha', language: 'en' });
+    const b = await service.upsertEntry({ term: 'beta', language: 'en' });
+
+    await service.deleteEntries([a.id]);
+
+    const visible = await service.listEntries();
+    expect(visible).toHaveLength(1);
+    expect(visible[0]?.id).toBe(b.id);
+
+    const rows = await db.select<{ id: string; deleted_at: number | null }>(
+      'SELECT id, deleted_at FROM dictionary_entries ORDER BY id',
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.deleted_at).toBe(1700000000000);
+    expect(rows[1]?.deleted_at).toBeNull();
+  });
+
+  it('deleteEntries does NOT cascade-delete occurrences (they stay but are filtered)', async () => {
+    const entry = await service.upsertEntry({ term: 'gamma', language: 'en' });
+    await service.createOccurrence({
+      entryId: entry.id,
+      bookHash: 'book-1',
+      cfi: '/6/2',
+      selectedText: 'gamma',
+    });
+
+    await service.deleteEntries([entry.id]);
+
+    // Entries no longer visible
+    const entries = await service.listEntries();
+    expect(entries).toHaveLength(0);
+
+    // Occurrences are still in the database
+    const occRows = await db.select<{ id: string; deleted_at: number | null }>(
+      'SELECT id, deleted_at FROM dictionary_occurrences',
+    );
+    expect(occRows).toHaveLength(1);
+    expect(occRows[0]?.deleted_at).toBe(1700000000000);
+  });
+
+  it('listAllEntries returns all rows including soft-deleted', async () => {
+    const a = await service.upsertEntry({ term: 'delta', language: 'en' });
+    const b = await service.upsertEntry({ term: 'epsilon', language: 'en' });
+
+    await service.deleteEntries([a.id]);
+
+    const all = await service.listAllEntries();
+    expect(all).toHaveLength(2);
+    const deleted = all.find((x) => x.id === a.id);
+    expect(deleted).toBeDefined();
+    expect(deleted?.deletedAt).toBe(1700000000000);
+    const kept = all.find((x) => x.id === b.id);
+    expect(kept).toBeDefined();
+    expect(kept?.deletedAt).toBeUndefined();
+  });
+
+  it('listAllOccurrences returns all occurrences including for deleted entries', async () => {
+    const entry = await service.upsertEntry({ term: 'zeta', language: 'en' });
+    await service.createOccurrence({
+      entryId: entry.id,
+      bookHash: 'book-1',
+      cfi: '/6/2',
+      selectedText: 'zeta',
+    });
+
+    await service.deleteEntries([entry.id]);
+
+    const all = await service.listAllOccurrences();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.selectedText).toBe('zeta');
+    expect(all[0]?.deletedAt).toBe(1700000000000);
+  });
+
+  it('bulkUpsertEntries inserts new entries', async () => {
+    const entries = [
+      {
+        id: 'entry-bulk-1',
+        term: 'eta',
+        displayTerm: 'eta',
+        language: 'en',
+        enrichmentStatus: 'none' as const,
+        createdAt: 100,
+        updatedAt: 100,
+      },
+    ];
+
+    await service.bulkUpsertEntries(entries);
+
+    const all = await service.listEntries();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.id).toBe('entry-bulk-1');
+    expect(all[0]?.term).toBe('eta');
+  });
+
+  it('bulkUpsertEntries updates existing entries including deletedAt', async () => {
+    const entry = await service.upsertEntry({ term: 'theta', language: 'en' });
+
+    await service.bulkUpsertEntries([
+      {
+        ...entry,
+        definition: 'updated',
+        deletedAt: 200,
+      },
+    ]);
+
+    const visible = await service.listEntries();
+    expect(visible).toHaveLength(0);
+
+    const all = await service.listAllEntries();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.definition).toBe('updated');
+    expect(all[0]?.deletedAt).toBe(200);
+  });
+
+  it('bulkUpsertOccurrences inserts new occurrences', async () => {
+    const entry = await service.upsertEntry({ term: 'iota', language: 'en' });
+
+    const occurrences = [
+      {
+        id: 'occ-bulk-1',
+        entryId: entry.id,
+        bookHash: 'book-1',
+        cfi: '/6/2',
+        selectedText: 'iota',
+        createdAt: 100,
+      },
+    ];
+
+    await service.bulkUpsertOccurrences(occurrences);
+
+    const all = await service.listOccurrences(entry.id);
+    expect(all).toHaveLength(1);
+    expect(all[0]?.id).toBe('occ-bulk-1');
+  });
+
+  it('bulkUpsertOccurrences updates existing occurrences including deletedAt', async () => {
+    const entry = await service.upsertEntry({ term: 'kappa', language: 'en' });
+    const occ = await service.createOccurrence({
+      entryId: entry.id,
+      bookHash: 'book-1',
+      cfi: '/6/2',
+      selectedText: 'kappa',
+    });
+
+    await service.bulkUpsertOccurrences([
+      {
+        ...occ,
+        selectedText: 'updated kappa',
+        deletedAt: 300,
+      },
+    ]);
+
+    const visible = await service.listOccurrences(entry.id);
+    expect(visible).toHaveLength(0);
+
+    const all = await service.listAllOccurrences();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.selectedText).toBe('updated kappa');
+    expect(all[0]?.deletedAt).toBe(300);
   });
 });

@@ -13,6 +13,13 @@ export interface DictionaryEntry {
   enrichmentStatus: EnrichmentStatus;
   createdAt: number;
   updatedAt: number;
+  /** Soft-delete tombstone: set when the entry is deleted. Sync uses this to propagate deletions across devices. */
+  deletedAt?: number;
+  /**
+   * Internal: per-field HLC strings that track the last-observed remote
+   * timestamp for each key. Added via ReplicaRow merge; never persisted.
+   */
+  _replicaTimestamps?: Record<string, string>;
 }
 
 export interface DictionaryOccurrence {
@@ -29,6 +36,13 @@ export interface DictionaryOccurrence {
   contextAfter?: string;
   highlightNoteId?: string;
   createdAt: number;
+  /** Soft-delete tombstone: set when the occurrence is deleted. Sync uses this to propagate deletions across devices. */
+  deletedAt?: number;
+  /**
+   * Internal: per-field HLC strings that track the last-observed remote
+   * timestamp for each key. Added via ReplicaRow merge; never persisted.
+   */
+  _replicaTimestamps?: Record<string, string>;
 }
 
 export interface DictionaryShelfItem extends Book {

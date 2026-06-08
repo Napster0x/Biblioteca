@@ -449,6 +449,149 @@ describe('CitasService', () => {
 
     expect(deletedIds).toEqual([]);
   });
+
+  it('deleteQuotes soft-deletes: listQuotes excludes deleted rows', async () => {
+    const a = await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'to delete',
+      contextBefore: null,
+      contextAfter: null,
+    });
+
+    await service.deleteQuotes([a.id]);
+
+    const visible = await service.listQuotes();
+    expect(visible).toHaveLength(0);
+
+    const rows = await db.select<{ id: string; deleted_at: number | null }>(
+      'SELECT id, deleted_at FROM quotes',
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(a.id);
+    expect(rows[0]?.deleted_at).toBe(1700000000000);
+  });
+
+  it('deleteQuotesByBook soft-deletes: row still exists with deleted_at', async () => {
+    const a = await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'from book-1',
+      contextBefore: null,
+      contextAfter: null,
+    });
+
+    const deletedIds = await service.deleteQuotesByBook('book-1');
+    expect(deletedIds).toEqual([a.id]);
+
+    const rows = await db.select<{ deleted_at: number | null }>(
+      'SELECT deleted_at FROM quotes WHERE id = ?',
+      [a.id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.deleted_at).toBe(1700000000000);
+  });
+
+  it('listAllQuotes returns all rows including soft-deleted', async () => {
+    const a = await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'will be deleted',
+      contextBefore: null,
+      contextAfter: null,
+    });
+    const b = await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'keep me',
+      contextBefore: null,
+      contextAfter: null,
+    });
+
+    await service.deleteQuotes([a.id]);
+
+    const all = await service.listAllQuotes();
+    expect(all).toHaveLength(2);
+    const deleted = all.find((x) => x.id === a.id);
+    expect(deleted).toBeDefined();
+    expect(deleted?.deletedAt).toBe(1700000000000);
+    const kept = all.find((x) => x.id === b.id);
+    expect(kept).toBeDefined();
+    expect(kept?.deletedAt).toBeUndefined();
+  });
+
+  it('bulkUpsertQuotes inserts new quotes', async () => {
+    const quotes = [
+      {
+        id: 'bulk-1',
+        bookHash: 'book-1',
+        bookTitle: null,
+        bookAuthor: null,
+        cfi: null,
+        sectionHref: null,
+        page: null,
+        text: 'bulk inserted',
+        contextBefore: null,
+        contextAfter: null,
+        contentHash: 'test-hash-1',
+        createdAt: 100,
+        updatedAt: null,
+      } as Cite,
+    ];
+
+    await service.bulkUpsertQuotes(quotes);
+
+    const all = await service.listQuotes();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.id).toBe('bulk-1');
+    expect(all[0]?.text).toBe('bulk inserted');
+  });
+
+  it('bulkUpsertQuotes updates existing quotes including deletedAt', async () => {
+    const created = await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'original',
+      contextBefore: null,
+      contextAfter: null,
+    });
+
+    await service.bulkUpsertQuotes([
+      {
+        ...created,
+        text: 'updated via upsert',
+        deletedAt: 200,
+      },
+    ]);
+
+    const visible = await service.listQuotes();
+    expect(visible).toHaveLength(0);
+
+    const all = await service.listAllQuotes();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.text).toBe('updated via upsert');
+    expect(all[0]?.deletedAt).toBe(200);
+  });
 });
 
 /**

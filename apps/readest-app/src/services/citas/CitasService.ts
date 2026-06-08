@@ -26,6 +26,7 @@ type QuoteRow = {
   content_hash: string;
   created_at: number;
   updated_at: number | null;
+  deleted_at: number | null;
 };
 
 /** Columns for SELECT queries on `quotes` — shared to stay DRY. */
@@ -43,6 +44,7 @@ const QUOTE_COLUMNS = [
   'content_hash',
   'created_at',
   'updated_at',
+  'deleted_at',
 ].join(', ');
 
 export interface CitasServiceOptions {
@@ -97,6 +99,13 @@ export class CitasService {
 
   async listQuotes(): Promise<Cite[]> {
     const rows = await this.db.select<QuoteRow>(
+      `SELECT ${QUOTE_COLUMNS} FROM quotes WHERE deleted_at IS NULL ORDER BY created_at DESC`,
+    );
+    return rows.map(quoteFromRow);
+  }
+
+  async listAllQuotes(): Promise<Cite[]> {
+    const rows = await this.db.select<QuoteRow>(
       `SELECT ${QUOTE_COLUMNS} FROM quotes ORDER BY created_at DESC`,
     );
     return rows.map(quoteFromRow);
@@ -104,7 +113,7 @@ export class CitasService {
 
   async listQuotesByBook(bookHash: string): Promise<Cite[]> {
     const rows = await this.db.select<QuoteRow>(
-      `SELECT ${QUOTE_COLUMNS} FROM quotes WHERE book_hash = ? ORDER BY created_at DESC`,
+      `SELECT ${QUOTE_COLUMNS} FROM quotes WHERE book_hash = ? AND deleted_at IS NULL ORDER BY created_at DESC`,
       [bookHash],
     );
     return rows.map(quoteFromRow);
@@ -234,7 +243,8 @@ export class CitasService {
     const rows = await this.db.select<QuoteRow>(
       `SELECT ${QUOTE_COLUMNS}
        FROM quotes
-       WHERE text LIKE ? OR book_title LIKE ? OR book_author LIKE ?
+       WHERE (text LIKE ? OR book_title LIKE ? OR book_author LIKE ?)
+         AND deleted_at IS NULL
        ORDER BY created_at DESC`,
       [pattern, pattern, pattern],
     );
@@ -243,18 +253,61 @@ export class CitasService {
 
   async deleteQuotes(ids: readonly string[]): Promise<void> {
     if (ids.length === 0) return;
+    const now = this.now();
     const placeholders = ids.map(() => '?').join(', ');
-    await this.db.execute(`DELETE FROM quotes WHERE id IN (${placeholders})`, [...ids]);
+    await this.db.execute(`UPDATE quotes SET deleted_at = ? WHERE id IN (${placeholders})`, [
+      now,
+      ...ids,
+    ]);
   }
 
   async deleteQuotesByBook(bookHash: string): Promise<string[]> {
-    const rows = await this.db.select<{ id: string }>('SELECT id FROM quotes WHERE book_hash = ?', [
-      bookHash,
-    ]);
+    const now = this.now();
+    const rows = await this.db.select<{ id: string }>(
+      'SELECT id FROM quotes WHERE book_hash = ? AND deleted_at IS NULL',
+      [bookHash],
+    );
     const ids = rows.map((r) => r.id);
     if (ids.length === 0) return [];
-    await this.db.execute('DELETE FROM quotes WHERE book_hash = ?', [bookHash]);
+    await this.db.execute(
+      'UPDATE quotes SET deleted_at = ? WHERE book_hash = ? AND deleted_at IS NULL',
+      [now, bookHash],
+    );
     return ids;
+  }
+
+  async bulkUpsertQuotes(quotes: Cite[]): Promise<void> {
+    if (quotes.length === 0) return;
+
+    const placeholders = quotes.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+    const params: unknown[] = [];
+
+    for (const q of quotes) {
+      params.push(
+        q.id,
+        q.bookHash,
+        q.bookTitle ?? null,
+        q.bookAuthor ?? null,
+        q.cfi ?? null,
+        q.sectionHref ?? null,
+        q.page ?? null,
+        q.text,
+        q.contextBefore ?? null,
+        q.contextAfter ?? null,
+        q.contentHash,
+        q.createdAt,
+        q.updatedAt ?? null,
+        q.deletedAt ?? null,
+      );
+    }
+
+    await this.db.execute(
+      `INSERT OR REPLACE INTO quotes
+       (id, book_hash, book_title, book_author, cfi, section_href, page,
+        text, context_before, context_after, content_hash, created_at, updated_at, deleted_at)
+       VALUES ${placeholders}`,
+      params,
+    );
   }
 }
 
@@ -273,6 +326,7 @@ function quoteFromRow(row: QuoteRow): Cite {
     contentHash: row.content_hash,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    deletedAt: row.deleted_at ?? undefined,
   };
 }
 

@@ -26,6 +26,13 @@ export interface Annotacion {
   color: string;
   createdAt: number;
   updatedAt: number | null;
+  /** Soft-delete tombstone: set when the annotation is deleted. Sync uses this to propagate deletions across devices. */
+  deletedAt?: number;
+  /**
+   * Internal: per-field HLC strings that track the last-observed remote
+   * timestamp for each key. Added via ReplicaRow merge; never persisted.
+   */
+  _replicaTimestamps?: Record<string, string>;
 }
 
 export type AnnotacionInput = Omit<Annotacion, 'id' | 'createdAt' | 'updatedAt'>;

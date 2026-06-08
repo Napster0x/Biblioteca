@@ -1,5 +1,16 @@
 {
   "releases": {
+    "1.0.3": {
+      "date": "2026-06-08",
+      "notes": [
+        "Sync: Annotations (anotaciones), quotes (citas) and dictionary entries now sync between devices via WebDAV — using conflict-free CRDT replication with Hybrid Logical Clocks",
+        "Sync: Automatic sync every 30 seconds when WebDAV server is reachable — no manual button needed",
+        "Sync: Dictionary screenshots (entry images) sync as binary files alongside entries — HEAD-probe skip avoids redundant uploads",
+        "Sync: Soft-delete tombstones ensure deletions propagate correctly — nothing reappears after being deleted",
+        "Sync: New sub-toggles in WebDAV settings to independently gate annotations, quotes, and dictionary sync",
+        "WebDAV: Server can now run with anonymous auth — simplified setup for Tailscale + wsgidav users"
+      ]
+    },
     "1.0.2": {
       "date": "2026-06-08",
       "notes": [

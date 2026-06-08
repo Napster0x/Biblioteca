@@ -16,7 +16,7 @@ describe('annotaciones migrations', () => {
     await db.close();
   });
 
-  it('creates the annotations table with all 13 expected columns', async () => {
+  it('creates the annotations table with all 14 expected columns', async () => {
     const columns = await db.select<{ name: string; type: string }>(
       `PRAGMA table_info(annotations)`,
     );
@@ -36,6 +36,7 @@ describe('annotaciones migrations', () => {
       'color',
       'created_at',
       'updated_at',
+      'deleted_at',
     ]);
   });
 
@@ -59,6 +60,13 @@ describe('annotaciones migrations', () => {
     expect(rows).toEqual([{ count: 0 }]);
   });
 
+  it('adds deleted_at column for soft-delete support', async () => {
+    const columns = await db.select<{ name: string }>(`PRAGMA table_info(annotations)`);
+    const columnNames = columns.map((c) => c.name);
+
+    expect(columnNames).toContain('deleted_at');
+  });
+
   it('is idempotent: applying the migration twice does not duplicate', async () => {
     await db.execute(
       `INSERT INTO annotations
@@ -73,6 +81,6 @@ describe('annotaciones migrations', () => {
     expect(rows).toEqual([{ id: 'annot-1' }]);
 
     const version = await db.select<{ user_version: number }>('PRAGMA user_version');
-    expect(version[0]?.user_version).toBe(1);
+    expect(version[0]?.user_version).toBe(2);
   });
 });

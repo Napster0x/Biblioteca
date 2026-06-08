@@ -97,6 +97,9 @@ export interface WebDAVSettings {
   syncProgress?: boolean;
   syncNotes?: boolean;
   syncBooks?: boolean;
+  syncAnnotations?: boolean;
+  syncQuotes?: boolean;
+  syncDictionary?: boolean;
   // Conflict policy — same vocabulary as KOSync so users only learn one.
   strategy?: KOSyncStrategy;
   // Stable per-device id (uuidv4); written into library.json so we can tell
@@ -216,7 +219,10 @@ export type SyncCategory =
   | 'font'
   | 'texture'
   | 'settings'
-  | 'credentials';
+  | 'credentials'
+  | 'annotation'
+  | 'quote'
+  | 'dictionary-entry';
 
 export const SYNC_CATEGORIES: readonly SyncCategory[] = [
   'book',
@@ -227,6 +233,9 @@ export const SYNC_CATEGORIES: readonly SyncCategory[] = [
   'texture',
   'settings',
   'credentials',
+  'annotation',
+  'quote',
+  'dictionary-entry',
 ] as const;
 
 export interface KeyBinding {

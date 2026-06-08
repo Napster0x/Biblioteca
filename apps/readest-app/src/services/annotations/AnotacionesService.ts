@@ -23,6 +23,7 @@ type AnnotacionRow = {
   color: string;
   created_at: number;
   updated_at: number | null;
+  deleted_at: number | null;
 };
 
 /** Columns for SELECT queries on `annotations` — shared to stay DRY. */
@@ -40,6 +41,7 @@ const ANNOTATION_COLUMNS = [
   'color',
   'created_at',
   'updated_at',
+  'deleted_at',
 ].join(', ');
 
 export interface AnotacionesServiceOptions {
@@ -88,6 +90,13 @@ export class AnotacionesService {
 
   async listAnnotations(): Promise<Annotacion[]> {
     const rows = await this.db.select<AnnotacionRow>(
+      `SELECT ${ANNOTATION_COLUMNS} FROM annotations WHERE deleted_at IS NULL ORDER BY created_at DESC`,
+    );
+    return rows.map(annotationFromRow);
+  }
+
+  async listAllAnnotations(): Promise<Annotacion[]> {
+    const rows = await this.db.select<AnnotacionRow>(
       `SELECT ${ANNOTATION_COLUMNS} FROM annotations ORDER BY created_at DESC`,
     );
     return rows.map(annotationFromRow);
@@ -98,7 +107,8 @@ export class AnotacionesService {
     const rows = await this.db.select<AnnotacionRow>(
       `SELECT ${ANNOTATION_COLUMNS}
        FROM annotations
-       WHERE text LIKE ? OR note LIKE ? OR book_title LIKE ? OR book_author LIKE ?
+       WHERE (text LIKE ? OR note LIKE ? OR book_title LIKE ? OR book_author LIKE ?)
+         AND deleted_at IS NULL
        ORDER BY created_at DESC`,
       [pattern, pattern, pattern, pattern],
     );
@@ -184,19 +194,63 @@ export class AnotacionesService {
 
   async deleteAnnotations(ids: readonly string[]): Promise<void> {
     if (ids.length === 0) return;
+    const now = this.now();
     const placeholders = ids.map(() => '?').join(', ');
-    await this.db.execute(`DELETE FROM annotations WHERE id IN (${placeholders})`, [...ids]);
+    await this.db.execute(`UPDATE annotations SET deleted_at = ? WHERE id IN (${placeholders})`, [
+      now,
+      ...ids,
+    ]);
   }
 
   async deleteAnnotationsByBook(bookHash: string): Promise<string[]> {
+    const now = this.now();
     const rows = await this.db.select<{ id: string }>(
-      'SELECT id FROM annotations WHERE book_hash = ?',
+      'SELECT id FROM annotations WHERE book_hash = ? AND deleted_at IS NULL',
       [bookHash],
     );
     const ids = rows.map((r) => r.id);
     if (ids.length === 0) return [];
-    await this.db.execute('DELETE FROM annotations WHERE book_hash = ?', [bookHash]);
+    await this.db.execute(
+      'UPDATE annotations SET deleted_at = ? WHERE book_hash = ? AND deleted_at IS NULL',
+      [now, bookHash],
+    );
     return ids;
+  }
+
+  async bulkUpsertAnnotations(annotations: Annotacion[]): Promise<void> {
+    if (annotations.length === 0) return;
+
+    const placeholders = annotations
+      .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .join(', ');
+    const params: unknown[] = [];
+
+    for (const a of annotations) {
+      params.push(
+        a.id,
+        a.bookHash,
+        a.bookTitle ?? null,
+        a.bookAuthor ?? null,
+        a.cfi ?? null,
+        a.sectionHref ?? null,
+        a.page ?? null,
+        a.text,
+        a.note ?? '',
+        a.style,
+        a.color,
+        a.createdAt,
+        a.updatedAt ?? null,
+        a.deletedAt ?? null,
+      );
+    }
+
+    await this.db.execute(
+      `INSERT OR REPLACE INTO annotations
+       (id, book_hash, book_title, book_author, cfi, section_href, page,
+        text, note, style, color, created_at, updated_at, deleted_at)
+       VALUES ${placeholders}`,
+      params,
+    );
   }
 }
 
@@ -215,5 +269,6 @@ function annotationFromRow(row: AnnotacionRow): Annotacion {
     color: row.color,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    deletedAt: row.deleted_at ?? undefined,
   };
 }

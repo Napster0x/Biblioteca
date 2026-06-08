@@ -170,6 +170,7 @@ export const useWebDAVSync = (bookKey: string) => {
       // fields the local writer applies on pull. This keeps the wire
       // schema stable across users with different toggle combinations.
       await pushBookConfig(settings.webdav!, book, config, deviceId);
+
       dirtyRef.current = false;
       await updateLastSyncedAt(Date.now());
     } catch (e) {

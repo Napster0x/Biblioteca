@@ -108,18 +108,26 @@ const toClientConfig = (settings: WebDAVSettings): WebDAVConfig => ({
 });
 
 /**
- * Per-note merge: pick the locally-stored copy or the remote copy of each
- * note based on `updatedAt` / `deletedAt`. Mirrors `processNewNote` in
- * `useNotesSync.ts` so users get the same semantics regardless of which
- * sync backend produced the row.
+ * Generic last-writer-wins merge by `updatedAt` / `deletedAt`.
  *
- * Implementation detail: a note is keyed by `id`. When the same id exists
- * on both sides we keep whichever side has the larger updatedAt; ties go
- * to the side whose `deletedAt` is more recent (which usually means the
- * deletion came after the creation/edit).
+ * For items with the same `id`:
+ * - The side with the higher `updatedAt` wins (its fields override the other).
+ * - If one side has a strictly newer `deletedAt`, THAT side always wins
+ *   regardless of `updatedAt` — deletion propagation takes precedence so
+ *   a tombstone from device A always clears the item on device B.
+ * - Items unique to either side are all included in the result.
+ *
+ * Works with any type T that carries `id`, `updatedAt?`, and `deletedAt?`.
+ *
+ * Mirrors the original `mergeNotes` semantics exactly.
  */
-const mergeNotes = (local: BookNote[], remote: BookNote[]): BookNote[] => {
-  const byId = new Map<string, BookNote>();
+export const mergeByUpdatedAt = <
+  T extends { id: string; updatedAt?: number | null; deletedAt?: number | null },
+>(
+  local: T[],
+  remote: T[],
+): T[] => {
+  const byId = new Map<string, T>();
   for (const n of local) byId.set(n.id, n);
   for (const r of remote) {
     const l = byId.get(r.id);
@@ -139,6 +147,14 @@ const mergeNotes = (local: BookNote[], remote: BookNote[]): BookNote[] => {
   }
   return Array.from(byId.values());
 };
+
+/**
+ * Per-note merge: thin wrapper around {@link mergeByUpdatedAt} for BookNote.
+ * Mirrors `processNewNote` in `useNotesSync.ts` so users get the same
+ * semantics regardless of which sync backend produced the row.
+ */
+export const mergeNotes = (local: BookNote[], remote: BookNote[]): BookNote[] =>
+  mergeByUpdatedAt(local, remote);
 
 export interface PullResult {
   /** True when the remote had a config and we merged something into local. */
@@ -588,7 +604,7 @@ export interface SyncFailureEntry {
   hash: string;
   title: string;
   reason: string;
-  /** Which phase of the per-book pipeline failed; helps users self-triage. */
+  /** Which phase of the pipeline failed; helps users self-triage. */
   phase: 'download' | 'upload-config' | 'upload-file' | 'upload-cover';
 }
 
@@ -889,6 +905,7 @@ export const syncLibrary = async (
               console.warn('WD library sync: config download failed', rb.hash, e);
             }
           }
+
           await options.addBookToLibrary(rb);
           result.booksDownloaded += 1;
         } else {
@@ -938,6 +955,7 @@ export const syncLibrary = async (
           await pushBookConfig(settings, book, config, options.deviceId);
           result.configsUploaded += 1;
         }
+
         if (options.syncBooks) {
           phase = 'upload-file';
           const fileResult = await pushBookFile(

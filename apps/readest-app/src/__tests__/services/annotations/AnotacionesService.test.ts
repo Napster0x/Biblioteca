@@ -3,6 +3,7 @@ import { NodeDatabaseService } from '@/services/database/nodeDatabaseService';
 import { migrate } from '@/services/database/migrate';
 import { getMigrations } from '@/services/database/migrations';
 import { AnotacionesService } from '@/services/annotations/AnotacionesService';
+import type { Annotacion } from '@/types/annotaciones';
 import type { DatabaseService } from '@/types/database';
 
 describe('AnotacionesService', () => {
@@ -311,6 +312,161 @@ describe('AnotacionesService', () => {
 
     const all = await service.listAnnotations();
     expect(all).toHaveLength(1);
+  });
+
+  it('deleteAnnotations soft-deletes: listAnnotations excludes deleted rows', async () => {
+    const a = await service.createAnnotation({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'to delete',
+      note: '',
+      style: 'highlight',
+      color: 'yellow',
+    });
+
+    await service.deleteAnnotations([a.id]);
+
+    // listAnnotations should exclude soft-deleted rows
+    const visible = await service.listAnnotations();
+    expect(visible).toHaveLength(0);
+
+    // Row still exists in the table with deleted_at set
+    const rows = await db.select<{ id: string; deleted_at: number | null }>(
+      'SELECT id, deleted_at FROM annotations',
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(a.id);
+    expect(rows[0]?.deleted_at).toBe(1700000000000);
+  });
+
+  it('deleteAnnotationsByBook soft-deletes: row still exists with deleted_at', async () => {
+    const a = await service.createAnnotation({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'from book-1',
+      note: '',
+      style: 'highlight',
+      color: 'yellow',
+    });
+
+    const deletedIds = await service.deleteAnnotationsByBook('book-1');
+
+    expect(deletedIds).toEqual([a.id]);
+
+    // Row still exists but soft-deleted
+    const rows = await db.select<{ deleted_at: number | null }>(
+      'SELECT deleted_at FROM annotations WHERE id = ?',
+      [a.id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.deleted_at).toBe(1700000000000);
+  });
+
+  it('listAllAnnotations returns all rows including soft-deleted', async () => {
+    const a = await service.createAnnotation({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'will be deleted',
+      note: '',
+      style: 'highlight',
+      color: 'yellow',
+    });
+    const b = await service.createAnnotation({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'keep me',
+      note: '',
+      style: 'highlight',
+      color: 'yellow',
+    });
+
+    await service.deleteAnnotations([a.id]);
+
+    const all = await service.listAllAnnotations();
+    expect(all).toHaveLength(2);
+    const deleted = all.find((x) => x.id === a.id);
+    expect(deleted).toBeDefined();
+    expect(deleted?.deletedAt).toBe(1700000000000);
+    const kept = all.find((x) => x.id === b.id);
+    expect(kept).toBeDefined();
+    expect(kept?.deletedAt).toBeUndefined();
+  });
+
+  it('bulkUpsertAnnotations inserts new annotations', async () => {
+    const annotations: Annotacion[] = [
+      {
+        id: 'bulk-1',
+        bookHash: 'book-1',
+        bookTitle: null,
+        bookAuthor: null,
+        cfi: null,
+        sectionHref: null,
+        page: null,
+        text: 'bulk inserted',
+        note: '',
+        style: 'highlight',
+        color: 'yellow',
+        createdAt: 100,
+        updatedAt: null,
+      },
+    ];
+
+    await service.bulkUpsertAnnotations(annotations);
+
+    const all = await service.listAnnotations();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.id).toBe('bulk-1');
+    expect(all[0]?.text).toBe('bulk inserted');
+  });
+
+  it('bulkUpsertAnnotations updates existing annotations including deletedAt', async () => {
+    const created = await service.createAnnotation({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'original',
+      note: '',
+      style: 'highlight',
+      color: 'yellow',
+    });
+
+    // Upsert with updated text and deletedAt
+    await service.bulkUpsertAnnotations([
+      {
+        ...created,
+        text: 'updated via upsert',
+        deletedAt: 200,
+      },
+    ]);
+
+    // listAnnotations filters out deleted
+    const visible = await service.listAnnotations();
+    expect(visible).toHaveLength(0);
+
+    // listAllAnnotations shows it with deletedAt
+    const all = await service.listAllAnnotations();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.text).toBe('updated via upsert');
+    expect(all[0]?.deletedAt).toBe(200);
   });
 
   it('close call is forwarded to the database', async () => {

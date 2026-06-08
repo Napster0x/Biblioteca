@@ -69,6 +69,13 @@ const migrations: Record<SchemaType, MigrationEntry[]> = {
         ALTER TABLE dictionary_occurrences ADD COLUMN book_author TEXT;
       `,
     },
+    {
+      name: '2026060803_dictionary_soft_delete',
+      sql: `
+        ALTER TABLE dictionary_entries ADD COLUMN deleted_at INTEGER;
+        ALTER TABLE dictionary_occurrences ADD COLUMN deleted_at INTEGER;
+      `,
+    },
   ],
   'hardcover-sync': [
     {
@@ -116,6 +123,12 @@ const migrations: Record<SchemaType, MigrationEntry[]> = {
           ON annotations (created_at DESC);
       `,
     },
+    {
+      name: '2026060801_annotaciones_soft_delete',
+      sql: `
+        ALTER TABLE annotations ADD COLUMN deleted_at INTEGER;
+      `,
+    },
   ],
   // Citas — saved quotes from the reader (Fase 1: shell + data model only;
   // capture from the reader and per-cite detail view are deferred to Fase 2/3).
@@ -153,6 +166,12 @@ const migrations: Record<SchemaType, MigrationEntry[]> = {
 
         CREATE INDEX IF NOT EXISTS idx_quotes_content_hash
           ON quotes (content_hash);
+      `,
+    },
+    {
+      name: '2026060802_citas_soft_delete',
+      sql: `
+        ALTER TABLE quotes ADD COLUMN deleted_at INTEGER;
       `,
     },
   ],

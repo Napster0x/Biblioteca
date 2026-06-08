@@ -158,6 +158,8 @@ export const DEFAULT_SYSTEM_SETTINGS: Partial<SystemSettings> = {
     font: true,
     texture: true,
     settings: true,
+    annotation: true,
+    quote: true,
   },
 };
 

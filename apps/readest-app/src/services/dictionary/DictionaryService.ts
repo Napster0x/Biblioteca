@@ -17,6 +17,7 @@ type DictionaryEntryRow = {
   curiosity: string | null;
   created_at: number;
   updated_at: number;
+  deleted_at: number | null;
 };
 
 type DictionaryOccurrenceRow = {
@@ -33,6 +34,7 @@ type DictionaryOccurrenceRow = {
   context_after: string | null;
   highlight_note_id: string | null;
   created_at: number;
+  deleted_at: number | null;
 };
 
 /** Columns for SELECT queries on dictionary_entries — shared to stay DRY. */
@@ -47,6 +49,7 @@ const ENTRY_COLUMNS = [
   'curiosity',
   'created_at',
   'updated_at',
+  'deleted_at',
 ].join(', ');
 
 export interface DictionaryServiceOptions {
@@ -122,6 +125,7 @@ export class DictionaryService {
       enrichment_status: input.enrichmentStatus ?? 'none',
       created_at: timestamp,
       updated_at: timestamp,
+      deleted_at: null,
     };
 
     await this.db.execute(
@@ -158,6 +162,7 @@ export class DictionaryService {
       context_after: input.contextAfter ?? null,
       highlight_note_id: input.highlightNoteId ?? null,
       created_at: this.now(),
+      deleted_at: null,
     };
 
     await this.db.execute(
@@ -188,6 +193,16 @@ export class DictionaryService {
     const rows = await this.db.select<DictionaryEntryRow>(
       `SELECT ${ENTRY_COLUMNS}
        FROM dictionary_entries
+       WHERE deleted_at IS NULL
+       ORDER BY updated_at DESC, display_term ASC`,
+    );
+    return rows.map(entryFromRow);
+  }
+
+  async listAllEntries(): Promise<DictionaryEntry[]> {
+    const rows = await this.db.select<DictionaryEntryRow>(
+      `SELECT ${ENTRY_COLUMNS}
+       FROM dictionary_entries
        ORDER BY updated_at DESC, display_term ASC`,
     );
     return rows.map(entryFromRow);
@@ -198,19 +213,21 @@ export class DictionaryService {
     const rows = await this.db.select<DictionaryEntryRow>(
       `SELECT ${ENTRY_COLUMNS}
        FROM dictionary_entries AS entry
-       WHERE entry.term LIKE ?
+       WHERE entry.deleted_at IS NULL
+         AND (entry.term LIKE ?
           OR entry.display_term LIKE ?
           OR entry.definition LIKE ?
           OR EXISTS (
             SELECT 1
             FROM dictionary_occurrences AS occurrence
             WHERE occurrence.entry_id = entry.id
+              AND occurrence.deleted_at IS NULL
               AND (
                 occurrence.selected_text LIKE ?
                 OR occurrence.book_title LIKE ?
                 OR occurrence.book_author LIKE ?
               )
-          )
+          ))
        ORDER BY entry.updated_at DESC, entry.display_term ASC`,
       [pattern, pattern, pattern, pattern, pattern, pattern],
     );
@@ -220,11 +237,21 @@ export class DictionaryService {
   async listOccurrences(entryId: string): Promise<DictionaryOccurrence[]> {
     const rows = await this.db.select<DictionaryOccurrenceRow>(
       `SELECT id, entry_id, book_hash, book_title, book_author, cfi, section_href, page, selected_text,
-              context_before, context_after, highlight_note_id, created_at
+              context_before, context_after, highlight_note_id, created_at, deleted_at
        FROM dictionary_occurrences
-       WHERE entry_id = ?
+       WHERE entry_id = ? AND deleted_at IS NULL
        ORDER BY created_at DESC`,
       [entryId],
+    );
+    return rows.map(occurrenceFromRow);
+  }
+
+  async listAllOccurrences(): Promise<DictionaryOccurrence[]> {
+    const rows = await this.db.select<DictionaryOccurrenceRow>(
+      `SELECT id, entry_id, book_hash, book_title, book_author, cfi, section_href, page, selected_text,
+              context_before, context_after, highlight_note_id, created_at, deleted_at
+       FROM dictionary_occurrences
+       ORDER BY created_at DESC`,
     );
     return rows.map(occurrenceFromRow);
   }
@@ -278,12 +305,82 @@ export class DictionaryService {
   async deleteEntries(ids: readonly string[]): Promise<void> {
     if (ids.length === 0) return;
 
+    const now = this.now();
     const placeholders = ids.map(() => '?').join(', ');
     await this.db.execute(
-      `DELETE FROM dictionary_occurrences WHERE entry_id IN (${placeholders})`,
-      [...ids],
+      `UPDATE dictionary_entries SET deleted_at = ? WHERE id IN (${placeholders})`,
+      [now, ...ids],
     );
-    await this.db.execute(`DELETE FROM dictionary_entries WHERE id IN (${placeholders})`, [...ids]);
+    // Also soft-delete associated occurrences
+    await this.db.execute(
+      `UPDATE dictionary_occurrences SET deleted_at = ? WHERE entry_id IN (${placeholders}) AND deleted_at IS NULL`,
+      [now, ...ids],
+    );
+  }
+
+  async bulkUpsertEntries(entries: DictionaryEntry[]): Promise<void> {
+    if (entries.length === 0) return;
+
+    const placeholders = entries.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+    const params: unknown[] = [];
+
+    for (const e of entries) {
+      params.push(
+        e.id,
+        e.term,
+        e.displayTerm,
+        e.language ?? null,
+        e.definition ?? null,
+        e.enrichmentStatus,
+        e.imagePath ?? null,
+        e.curiosity ?? null,
+        e.createdAt,
+        e.updatedAt,
+        e.deletedAt ?? null,
+      );
+    }
+
+    await this.db.execute(
+      `INSERT OR REPLACE INTO dictionary_entries
+       (id, term, display_term, language, definition, enrichment_status, image_path, curiosity, created_at, updated_at, deleted_at)
+       VALUES ${placeholders}`,
+      params,
+    );
+  }
+
+  async bulkUpsertOccurrences(occurrences: DictionaryOccurrence[]): Promise<void> {
+    if (occurrences.length === 0) return;
+
+    const placeholders = occurrences
+      .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .join(', ');
+    const params: unknown[] = [];
+
+    for (const o of occurrences) {
+      params.push(
+        o.id,
+        o.entryId,
+        o.bookHash,
+        o.bookTitle ?? null,
+        o.bookAuthor ?? null,
+        o.cfi,
+        o.sectionHref ?? null,
+        o.page ?? null,
+        o.selectedText,
+        o.contextBefore ?? null,
+        o.contextAfter ?? null,
+        o.highlightNoteId ?? null,
+        o.createdAt,
+        o.deletedAt ?? null,
+      );
+    }
+
+    await this.db.execute(
+      `INSERT OR REPLACE INTO dictionary_occurrences
+       (id, entry_id, book_hash, book_title, book_author, cfi, section_href, page, selected_text, context_before, context_after, highlight_note_id, created_at, deleted_at)
+       VALUES ${placeholders}`,
+      params,
+    );
   }
 
   private async findEntry(term: string, language: string | null): Promise<DictionaryEntry | null> {
@@ -310,6 +407,7 @@ function entryFromRow(row: DictionaryEntryRow): DictionaryEntry {
     curiosity: row.curiosity ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    deletedAt: row.deleted_at ?? undefined,
   };
 }
 
@@ -328,6 +426,7 @@ function occurrenceFromRow(row: DictionaryOccurrenceRow): DictionaryOccurrence {
     contextAfter: row.context_after ?? undefined,
     highlightNoteId: row.highlight_note_id ?? undefined,
     createdAt: row.created_at,
+    deletedAt: row.deleted_at ?? undefined,
   };
 }
 

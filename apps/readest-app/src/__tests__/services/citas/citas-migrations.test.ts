@@ -16,7 +16,7 @@ describe('citas migrations', () => {
     await db.close();
   });
 
-  it('creates the quotes table with all 13 expected columns', async () => {
+  it('creates the quotes table with all 14 expected columns', async () => {
     const columns = await db.select<{ name: string; type: string }>(`PRAGMA table_info(quotes)`);
     const columnNames = columns.map((c) => c.name);
 
@@ -34,6 +34,7 @@ describe('citas migrations', () => {
       'content_hash',
       'created_at',
       'updated_at',
+      'deleted_at',
     ]);
   });
 
@@ -76,6 +77,13 @@ describe('citas migrations', () => {
     expect(rows).toEqual([{ count: 0 }]);
   });
 
+  it('adds deleted_at column for soft-delete support', async () => {
+    const columns = await db.select<{ name: string }>(`PRAGMA table_info(quotes)`);
+    const columnNames = columns.map((c) => c.name);
+
+    expect(columnNames).toContain('deleted_at');
+  });
+
   it('is idempotent: applying the migration twice keeps user_version=1 and does not duplicate', async () => {
     // Re-running migrate() with the same migration set should be a no-op
     // because the runner reads PRAGMA user_version and skips already-applied
@@ -94,6 +102,6 @@ describe('citas migrations', () => {
     expect(rows).toEqual([{ id: 'cite-1' }]);
 
     const version = await db.select<{ user_version: number }>('PRAGMA user_version');
-    expect(version[0]?.user_version).toBe(1);
+    expect(version[0]?.user_version).toBe(2);
   });
 });

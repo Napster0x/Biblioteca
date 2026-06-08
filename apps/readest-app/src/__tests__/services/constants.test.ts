@@ -252,6 +252,8 @@ describe('services/constants', () => {
         font: true,
         texture: true,
         settings: true,
+        annotation: true,
+        quote: true,
       });
     });
 

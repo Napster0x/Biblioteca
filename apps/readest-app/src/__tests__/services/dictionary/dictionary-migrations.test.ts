@@ -47,6 +47,20 @@ describe('dictionary migrations', () => {
     expect(columnNames).toContain('book_author');
   });
 
+  it('adds deleted_at column to dictionary_entries for soft-delete support', async () => {
+    const columns = await db.select<{ name: string }>(`PRAGMA table_info(dictionary_entries)`);
+    const columnNames = columns.map((c) => c.name);
+
+    expect(columnNames).toContain('deleted_at');
+  });
+
+  it('adds deleted_at column to dictionary_occurrences for soft-delete support', async () => {
+    const columns = await db.select<{ name: string }>(`PRAGMA table_info(dictionary_occurrences)`);
+    const columnNames = columns.map((c) => c.name);
+
+    expect(columnNames).toContain('deleted_at');
+  });
+
   it('creates occurrence indexes for entry, book, and recent listing access', async () => {
     const indexes = await db.select<{ name: string }>(
       `SELECT name FROM sqlite_master

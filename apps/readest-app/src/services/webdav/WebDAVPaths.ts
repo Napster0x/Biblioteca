@@ -103,3 +103,7 @@ export const ancestorsOf = (absolutePath: string): string[] => {
   }
   return out;
 };
+
+/** Absolute path of a dictionary entry image on the WebDAV remote. */
+export const buildDictionaryImagePath = (rootPath: string, entryId: string): string =>
+  join(buildBasePath(rootPath), 'replicas', 'dictionary-images', `${entryId}.png`);
