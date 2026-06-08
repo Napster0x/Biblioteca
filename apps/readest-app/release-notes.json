@@ -1,5 +1,12 @@
 {
   "releases": {
+    "1.0.6": {
+      "date": "2026-06-09",
+      "notes": [
+        "WebDAV: Removed username requirement — now works with anonymous auth (Tailscale + wsgidav)",
+        "WebDAV: Added sync toggles for Annotations, Quotes, and Dictionary in settings"
+      ]
+    },
     "1.0.5": {
       "date": "2026-06-08",
       "notes": [

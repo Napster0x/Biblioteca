@@ -141,7 +141,7 @@ const WebDAVForm: React.FC<WebDAVFormProps> = ({ onBack }) => {
   const endSync = useWebDAVSyncStore((s) => s.endSync);
 
   const handleConnect = async () => {
-    if (!url || !username) return;
+    if (!url) return;
     setIsConnecting(true);
     const normalizedRoot = normalizeRootPath(rootPath);
     const result = await checkConnection({ serverUrl: url, username, password }, normalizedRoot);
@@ -216,6 +216,11 @@ const WebDAVForm: React.FC<WebDAVFormProps> = ({ onBack }) => {
   // enabled — anyone bothering to set up cloud sync wants those. Only
   // book files stay opt-in because they're bandwidth/storage heavy.
   const handleToggleSyncBooks = () => persistWebdav({ syncBooks: !(stored?.syncBooks ?? false) });
+  const handleToggleSyncAnnotations = () =>
+    persistWebdav({ syncAnnotations: !(stored?.syncAnnotations ?? true) });
+  const handleToggleSyncQuotes = () => persistWebdav({ syncQuotes: !(stored?.syncQuotes ?? true) });
+  const handleToggleSyncDictionary = () =>
+    persistWebdav({ syncDictionary: !(stored?.syncDictionary ?? true) });
   const handleStrategyChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     await persistWebdav({ strategy: e.target.value as typeof stored.strategy });
   };
@@ -599,6 +604,24 @@ const WebDAVForm: React.FC<WebDAVFormProps> = ({ onBack }) => {
               )}
               checked={stored.syncBooks ?? false}
               onChange={handleToggleSyncBooks}
+            />
+            <SettingsSwitchRow
+              label={_('Sync Annotations')}
+              description={_('Keep annotations (anotaciones) in sync across devices.')}
+              checked={stored.syncAnnotations ?? true}
+              onChange={handleToggleSyncAnnotations}
+            />
+            <SettingsSwitchRow
+              label={_('Sync Quotes')}
+              description={_('Keep quotes (citas) in sync across devices.')}
+              checked={stored.syncQuotes ?? true}
+              onChange={handleToggleSyncQuotes}
+            />
+            <SettingsSwitchRow
+              label={_('Sync Dictionary')}
+              description={_('Keep saved dictionary words and images in sync across devices.')}
+              checked={stored.syncDictionary ?? true}
+              onChange={handleToggleSyncDictionary}
             />
             <SettingsRow label={_('Sync Strategy')}>
               <SettingsSelect
