@@ -1,5 +1,13 @@
 {
   "releases": {
+    "1.0.4": {
+      "date": "2026-06-08",
+      "notes": [
+        "Settings: Added Integrations tab with WebDAV configuration (was missing from the UI)",
+        "Updater: Fixed download progress stuck when server omits Content-Length header — AppImage and APK downloads now complete correctly",
+        "Updater: Fixed latest.json now includes version field for proper Android update detection"
+      ]
+    },
     "1.0.3": {
       "date": "2026-06-08",
       "notes": [
