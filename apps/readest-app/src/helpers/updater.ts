@@ -2,8 +2,6 @@ import semver from 'semver';
 import { check } from '@tauri-apps/plugin-updater';
 import { type as osType } from '@tauri-apps/plugin-os';
 import { fetch } from '@tauri-apps/plugin-http';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { ScrollBarStyle } from '@tauri-apps/api/window';
 import { TranslationFunc } from '@/hooks/useTranslation';
 import { setUpdaterWindowVisible } from '@/components/UpdaterWindow';
 import { isTauriAppPlatform } from '@/services/environment';
@@ -15,24 +13,6 @@ import {
 } from '@/services/constants';
 
 const LAST_CHECK_KEY = 'lastAppUpdateCheck';
-
-const showUpdateWindow = (latestVersion: string, scrollBarStyle: ScrollBarStyle) => {
-  const win = new WebviewWindow('updater', {
-    url: `/updater?latestVersion=${latestVersion}`,
-    title: 'Software Update',
-    width: 626,
-    height: 406,
-    center: true,
-    resizable: true,
-    scrollBarStyle,
-  });
-  win.once('tauri://created', () => {
-    console.log('new window created');
-  });
-  win.once('tauri://error', (e) => {
-    console.error('error creating window', e);
-  });
-};
 
 export const checkForAppUpdates = async (
   _: TranslationFunc,
@@ -49,11 +29,7 @@ export const checkForAppUpdates = async (
   if (['macos', 'windows', 'linux'].includes(OS_TYPE)) {
     const update = await check();
     if (update) {
-      // Enum ScrollBarStyle is exported as type by tauri, so it cannot be used directly.
-      const scrollBarStyle = (OS_TYPE === 'windows'
-        ? 'fluentOverlay'
-        : 'default') as unknown as ScrollBarStyle;
-      showUpdateWindow(update.version, scrollBarStyle);
+      setUpdaterWindowVisible(true, update.version, getAppVersion());
     }
     return !!update;
   } else if (OS_TYPE === 'android') {

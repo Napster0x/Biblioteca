@@ -1,5 +1,14 @@
 {
   "releases": {
+    "1.0.2": {
+      "date": "2026-06-08",
+      "notes": [
+        "Updater: Save AppImage updates to a stable path inside app data directory — no more Desktop clutter",
+        "Updater: Show software update as an inline popup within the app instead of a separate window",
+        "Updater: Fixed Android update detection — now checks GitHub releases instead of the old Readest server",
+        "Updater: Fixed release notes stuck in loading state — now loads correctly from GitHub releases"
+      ]
+    },
     "1.0.1": {
       "date": "2026-06-06",
       "notes": [

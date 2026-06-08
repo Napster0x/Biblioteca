@@ -346,29 +346,33 @@ export const UpdaterContent = ({
         .filter((item) => item.length > 0);
     };
     const updateChangelogs = async (update: GenericUpdate) => {
-      setNewVersion(update.version);
-      let changelogs = await fetchChangelogs(oldVersion || currentVersion);
-      if (changelogs.length === 0 && update.date && update.body) {
-        changelogs = [
-          {
-            version: update.version,
-            date: new Date(update.date).toLocaleDateString(),
-            notes: parseNumberedList(update.body ?? ''),
-          },
-        ];
-      }
-      if (!targetLang.toLowerCase().startsWith('en')) {
-        for (const entry of changelogs) {
-          try {
-            entry.notes = await translate(entry.notes, { useCache: true });
-          } catch (error) {
-            console.log('Failed to translate changelog:', error);
+      try {
+        setNewVersion(update.version);
+        let changelogs = await fetchChangelogs(oldVersion || currentVersion);
+        if (changelogs.length === 0 && update.date && update.body) {
+          changelogs = [
+            {
+              version: update.version,
+              date: new Date(update.date).toLocaleDateString(),
+              notes: parseNumberedList(update.body ?? ''),
+            },
+          ];
+        }
+        if (!targetLang.toLowerCase().startsWith('en')) {
+          for (const entry of changelogs) {
+            try {
+              entry.notes = await translate(entry.notes, { useCache: true });
+            } catch (error) {
+              console.log('Failed to translate changelog:', error);
+            }
           }
         }
+        setChangelogs(changelogs);
+        setLastShownReleaseNotesVersion(newVersion);
+      } catch (error) {
+        console.error('Failed to load changelogs:', error);
+        setChangelogs([]);
       }
-
-      setChangelogs(changelogs);
-      setLastShownReleaseNotesVersion(newVersion);
     };
     if (update) {
       updateChangelogs(update);
