@@ -27,6 +27,7 @@ const nextConfig = {
     unoptimized: true,
   },
   devIndicators: false,
+  allowedDevOrigins: ['127.0.0.1', 'localhost'],
   experimental: {
     // Persist Turbopack's compilation cache to `.next/` so CI can restore it
     // between runs. Dev caching is on by default since Next 16.1; build
