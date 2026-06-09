@@ -89,6 +89,10 @@ dotenv -e apps/readest-app/.env.tauri.local -- pnpm --filter @readest/readest-ap
 
 Para más detalles técnicos, consultar la documentación en `apps/readest-app/docs/`.
 
+### Desarrollo Android
+
+Para configurar el entorno de desarrollo Android (dispositivo físico, SDK, NDK), ver [docs/android-dev.md](apps/readest-app/docs/android-dev.md).
+
 ---
 
 ## Créditos
