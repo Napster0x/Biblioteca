@@ -90,7 +90,13 @@ impl SyncServer {
         let handle = thread::spawn(move || {
             while running_clone.load(Ordering::Relaxed) {
                 match server.recv_timeout(Duration::from_millis(500)) {
-                    Ok(Some(req)) => handle_request(req, &replicas_dir, &device_name),
+                    Ok(Some(req)) => {
+                        // Catch panics from request handling to prevent
+                        // the server thread from crashing the whole app.
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            handle_request(req, &replicas_dir, &device_name);
+                        }));
+                    }
                     Ok(None) => { /* timeout — check running flag */ }
                     Err(_) => break,
                 }
