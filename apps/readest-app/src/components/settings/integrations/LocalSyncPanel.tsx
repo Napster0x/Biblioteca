@@ -134,7 +134,7 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
         // Fallback: if mDNS found nothing, scan subnet for Readest instances
         if (discovered.length === 0) {
           const port = localSync.port;
-          // Probe .1 to .20 on common subnets
+          console.log('[LocalSync] mDNS empty, scanning subnet on port', port);
           for (const base of ['192.168.1', '192.168.0', '10.0.0']) {
             for (let i = 1; i <= 20; i++) {
               const host = `${base}.${i}`;
