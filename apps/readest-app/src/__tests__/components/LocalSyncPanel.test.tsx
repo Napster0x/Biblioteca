@@ -10,6 +10,11 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { useLocalSyncStore } from '@/store/localSyncStore';
 import type { PeerInfo } from '@/types/settings';
 
+// Hoisted mock for runSyncCycle — accessible in both vi.mock factory and tests.
+const { mockRunSyncCycle } = vi.hoisted(() => ({
+  mockRunSyncCycle: vi.fn().mockResolvedValue(undefined),
+}));
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -40,6 +45,13 @@ vi.mock('@/hooks/useReplicaSync', () => ({
     lastError: null,
     syncNow: vi.fn().mockResolvedValue(undefined),
   }),
+}));
+
+// Mock localSyncUtils — we control the sync behaviour in tests.
+vi.mock('@/services/sync/localSyncUtils', () => ({
+  filterReachablePeers: vi.fn((peers: PeerInfo[]) => peers),
+  createPeerTransport: vi.fn(),
+  runSyncCycle: mockRunSyncCycle,
 }));
 
 vi.mock('@/helpers/settings', () => ({
@@ -100,6 +112,8 @@ describe('LocalSyncPanel', () => {
 
   beforeEach(() => {
     mockStoreReturn();
+    mockRunSyncCycle.mockReset();
+    mockRunSyncCycle.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -212,6 +226,60 @@ describe('LocalSyncPanel', () => {
       fireEvent.click(btn);
       // Assertion: does not crash — the component is still mounted.
       expect(screen.getAllByText('Local Sync').length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // ── Sync progress bar ─────────────────────────────────────────────────
+
+  describe('sync progress bar', () => {
+    it('shows progress bar with "Syncing X/Y devices..." while sync is in progress', async () => {
+      // Make runSyncCycle never resolve — keeps sync in "in progress" state
+      mockRunSyncCycle.mockImplementationOnce(() => new Promise(() => {}));
+
+      mockStoreReturn({ localSync: { enabled: true, port: 7878, deviceName: '' } });
+      seedPeers([
+        { host: '192.168.1.5', port: 7878, deviceName: 'Tablet', version: '1.0' },
+        { host: '192.168.1.6', port: 7878, deviceName: 'Phone', version: '1.0' },
+      ]);
+      useLocalSyncStore.getState().setPeerReachable('192.168.1.5:7878', true);
+      useLocalSyncStore.getState().setPeerReachable('192.168.1.6:7878', true);
+
+      render(<LocalSyncPanel onBack={vi.fn()} />);
+
+      // Click Sync Now
+      const btn = screen.getByRole('button', { name: /Sync Now/i });
+      fireEvent.click(btn);
+
+      // Should show progress text
+      const progressText = await screen.findByText(/Syncing/i, {}, { timeout: 3000 });
+      expect(progressText).toBeDefined();
+
+      // Button should be disabled during sync
+      expect((btn as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('shows last synced timestamp and hides progress bar when sync completes', async () => {
+      mockRunSyncCycle.mockResolvedValueOnce(undefined);
+
+      mockStoreReturn({ localSync: { enabled: true, port: 7878, deviceName: '' } });
+      seedPeers([{ host: '192.168.1.5', port: 7878, deviceName: 'Tablet', version: '1.0' }]);
+      useLocalSyncStore.getState().setPeerReachable('192.168.1.5:7878', true);
+
+      render(<LocalSyncPanel onBack={vi.fn()} />);
+
+      // Click Sync Now
+      const btn = screen.getByRole('button', { name: /Sync Now/i });
+      fireEvent.click(btn);
+
+      // After sync completes, timestamp should appear
+      const timestamp = await screen.findByText(/Last synced:/, {}, { timeout: 3000 });
+      expect(timestamp).toBeDefined();
+
+      // Progress bar should be gone
+      expect(screen.queryByText(/Syncing/i)).toBeNull();
+
+      // Button should be enabled again
+      expect((btn as HTMLButtonElement).disabled).toBe(false);
     });
   });
 

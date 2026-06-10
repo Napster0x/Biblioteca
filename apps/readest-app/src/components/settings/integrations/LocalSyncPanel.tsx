@@ -9,6 +9,11 @@ import { useReplicaSync } from '@/hooks/useReplicaSync';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useLocalSyncStore, peerKey } from '@/store/localSyncStore';
 import { isTauriAppPlatform } from '@/services/environment';
+import {
+  filterReachablePeers,
+  createPeerTransport,
+  runSyncCycle,
+} from '@/services/sync/localSyncUtils';
 import SubPageHeader from '../SubPageHeader';
 import { BoxedList, SettingsRow, SettingsSwitchRow } from '../primitives';
 import type { PeerInfo } from '@/types/settings';
@@ -45,13 +50,16 @@ function healthDotProps(
 const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
   const _ = useTranslation();
   const { envConfig } = useEnv();
-  const { isSyncing, syncNow: triggerSync } = useReplicaSync();
+  const { isSyncing } = useReplicaSync();
   const { settings, setSettings, saveSettings } = useSettingsStore();
   const peers = useLocalSyncStore((s) => s.peers);
   const peerHealth = useLocalSyncStore((s) => s.peerHealth);
 
   const [isSyncingNow, setIsSyncingNow] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [syncProgress, setSyncProgress] = useState<{ completed: number; total: number } | null>(
+    null,
+  );
 
   const localSync = settings.localSync;
 
@@ -83,14 +91,32 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
 
   const handleSyncNow = useCallback(async () => {
     if (isSyncingNow) return;
+
+    const currentPeers = useLocalSyncStore.getState().peers;
+    const currentHealth = useLocalSyncStore.getState().peerHealth;
+    const reachable = filterReachablePeers(currentPeers, currentHealth);
+    console.log('[Sync] reachable peers:', reachable.length, reachable);
+
+    if (reachable.length === 0) return;
+
     setIsSyncingNow(true);
+    setSyncProgress({ completed: 0, total: reachable.length });
+
     try {
-      await triggerSync();
+      for (let i = 0; i < reachable.length; i++) {
+        const peer = reachable[i]!;
+        const transport = createPeerTransport(peer);
+        console.log('[Sync] syncing with', peer.host, peer.port);
+        await runSyncCycle(transport);
+        console.log('[Sync] done with', peer.host);
+        setSyncProgress({ completed: i + 1, total: reachable.length });
+      }
       setLastSyncedAt(new Date());
     } finally {
       setIsSyncingNow(false);
+      setSyncProgress(null);
     }
-  }, [isSyncingNow, triggerSync]);
+  }, [isSyncingNow]);
 
   // ── Tauri event listeners for peer discovery ─────────────────────────────
   useEffect(() => {
@@ -309,35 +335,54 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
           </div>
         )}
 
-        {/* ── Sync Now + last synced ────────────────────────────────── */}
+        {/* ── Sync Now + progress + last synced ──────────────────────── */}
         {localSync.enabled && (
-          <div className='flex items-center justify-end gap-3'>
-            {lastSyncedAt && (
-              <span className='text-base-content/50 text-xs'>
-                {_('Last synced:')}{' '}
-                {lastSyncedAt.toLocaleTimeString(undefined, {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </span>
+          <div className='flex flex-col items-end gap-2'>
+            {/* Progress bar */}
+            {isSyncingNow && syncProgress && (
+              <div className='w-full space-y-1'>
+                <p className='text-base-content/60 text-xs text-right'>
+                  {_('Syncing…')}{' '}
+                  <span className='tabular-nums'>
+                    {syncProgress.completed}/{syncProgress.total}
+                  </span>
+                </p>
+                <div className='w-full bg-base-200 rounded-full h-1.5'>
+                  <div
+                    className='bg-primary h-1.5 rounded-full transition-all duration-300'
+                    style={{
+                      width: `${(syncProgress.completed / syncProgress.total) * 100}%`,
+                    }}
+                  />
+                </div>
+              </div>
             )}
-            <button
-              type='button'
-              onClick={handleSyncNow}
-              disabled={isSyncingNow || isSyncing}
-              className={clsx(
-                'btn btn-primary',
-                'h-10 min-h-10 rounded-lg border-0 px-5 text-sm font-medium',
-                'focus-visible:ring-primary/40 focus-visible:outline-none focus-visible:ring-2',
-                isSyncingNow && 'opacity-60',
+
+            {/* Last synced + button row */}
+            <div className='flex items-center justify-end gap-3 w-full'>
+              {lastSyncedAt && (
+                <span className='text-base-content/50 text-xs'>
+                  {_('Last synced:')}{' '}
+                  {lastSyncedAt.toLocaleTimeString(undefined, {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </span>
               )}
-            >
-              {isSyncingNow ? (
-                <span className='loading loading-spinner loading-sm' />
-              ) : (
-                _('Sync Now')
-              )}
-            </button>
+              <button
+                type='button'
+                onClick={handleSyncNow}
+                disabled={isSyncingNow || isSyncing}
+                className={clsx(
+                  'btn btn-primary',
+                  'h-10 min-h-10 rounded-lg border-0 px-5 text-sm font-medium',
+                  'focus-visible:ring-primary/40 focus-visible:outline-none focus-visible:ring-2',
+                  isSyncingNow && 'opacity-60',
+                )}
+              >
+                {_('Sync Now')}
+              </button>
+            </div>
           </div>
         )}
       </div>
