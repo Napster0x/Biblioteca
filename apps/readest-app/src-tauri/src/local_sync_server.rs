@@ -220,7 +220,10 @@ fn handle_request(req: Request, replicas_dir: &Path, device_name: &str) {
 }
 
 fn respond_404(req: Request) {
-    let _ = req.respond(Response::from_string("Not Found").with_status_code(StatusCode(404)));
+    let resp = Response::from_string("Not Found")
+        .with_status_code(StatusCode(404))
+        .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
+    let _ = req.respond(resp);
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────
@@ -232,7 +235,8 @@ fn serve_health(req: Request, device_name: &str) {
     };
     let json = serde_json::to_string(&body).unwrap_or_else(|_| r#"{"status":"error"}"#.into());
     let resp = Response::from_string(json)
-        .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
+        .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
+        .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
     let _ = req.respond(resp);
 }
 
@@ -343,14 +347,16 @@ fn merge_and_save(path: &Path, incoming: Vec<ReplicaRow>) -> Result<usize, Strin
 
 fn respond_json(req: Request, json: &str) {
     let resp = Response::from_string(json)
-        .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
+        .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
+        .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
     let _ = req.respond(resp);
 }
 
 fn respond_json_status(req: Request, json: &str, status: StatusCode) {
     let resp = Response::from_string(json)
         .with_status_code(status)
-        .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
+        .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
+        .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
     let _ = req.respond(resp);
 }
 
