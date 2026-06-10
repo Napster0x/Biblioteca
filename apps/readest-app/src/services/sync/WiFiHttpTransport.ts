@@ -135,4 +135,58 @@ export class WiFiHttpTransport implements SyncTransport {
       return false;
     }
   }
+
+  // -------------------------------------------------------------------------
+  // Dictionary image binary sync
+  // -------------------------------------------------------------------------
+
+  /**
+   * Pull a dictionary entry's image from the peer.
+   *
+   * GETs `http://{host}:{port}/dictionary-images/{entryId}`.
+   * Returns the raw PNG bytes, or `null` when the image doesn't exist
+   * (404) or the request fails.
+   */
+  async pullDictionaryImage(entryId: string): Promise<ArrayBuffer | null> {
+    const url = `http://${this.host}:${this.port}/dictionary-images/${encodeURIComponent(entryId)}`;
+
+    try {
+      const { controller, clear } = createTimeoutController();
+      const res = await fetch(url, { signal: controller.signal });
+      clear();
+
+      if (!res.ok) return null;
+      return await res.arrayBuffer();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Push a dictionary entry's image to the peer.
+   *
+   * PUTs the raw PNG bytes to `http://{host}:{port}/dictionary-images/{entryId}`.
+   * Returns `{ uploaded: true }` on success, `{ uploaded: false }` on error.
+   */
+  async pushDictionaryImage(
+    entryId: string,
+    imageBytes: ArrayBuffer,
+  ): Promise<{ uploaded: boolean }> {
+    const url = `http://${this.host}:${this.port}/dictionary-images/${encodeURIComponent(entryId)}`;
+
+    try {
+      const { controller, clear } = createTimeoutController();
+      const res = await fetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'image/png' },
+        body: imageBytes,
+        signal: controller.signal,
+      });
+      clear();
+
+      return { uploaded: res.ok };
+    } catch {
+      return { uploaded: false };
+    }
+  }
 }

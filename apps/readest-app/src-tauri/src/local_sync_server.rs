@@ -6,9 +6,11 @@
  *
  * ## Endpoints
  *
- *   GET  /health              → { status: "ok", deviceName }
- *   GET  /replicas/:kind       → ReplicaRow[] filtered by kind + ?since=HLC
- *   PUT  /replicas/:kind       → merges incoming rows by replica_id (HLC wins)
+ *   GET  /health                        → { status: "ok", deviceName }
+ *   GET  /replicas/:kind                 → ReplicaRow[] filtered by kind + ?since=HLC
+ *   PUT  /replicas/:kind                 → merges incoming rows by replica_id (HLC wins)
+ *   GET  /dictionary-images/:entryId     → binary PNG (404 if absent)
+ *   PUT  /dictionary-images/:entryId     → write raw PNG body to disk
  *
  * ## Architecture
  *
@@ -121,6 +123,7 @@ impl SyncServer {
 enum Route {
     Health,
     Replicas(String),
+    DictionaryImages(String),
     NotFound,
 }
 
@@ -136,6 +139,13 @@ fn parse_route(url: &str) -> Route {
         let kind = kind.strip_suffix(".json").unwrap_or(kind);
         if !kind.is_empty() && kind.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
             return Route::Replicas(kind.to_string());
+        }
+    }
+
+    if let Some(rest) = path.strip_prefix("/dictionary-images/") {
+        let entry_id = rest.trim_end_matches('/');
+        if !entry_id.is_empty() {
+            return Route::DictionaryImages(entry_id.to_string());
         }
     }
 
@@ -190,6 +200,12 @@ fn handle_request(req: Request, replicas_dir: &Path, device_name: &str) {
         }
         (&Method::Put, Route::Replicas(kind)) => {
             serve_put_replicas(req, replicas_dir, &kind);
+        }
+        (&Method::Get, Route::DictionaryImages(entry_id)) => {
+            serve_get_dictionary_image(req, replicas_dir, &entry_id);
+        }
+        (&Method::Put, Route::DictionaryImages(entry_id)) => {
+            serve_put_dictionary_image(req, replicas_dir, &entry_id);
         }
         _ => {
             respond_404(req);
@@ -348,12 +364,88 @@ fn json_merge_result(count: usize) -> String {
     serde_json::json!({ "merged": count }).to_string()
 }
 
+// ── Dictionary image I/O ──────────────────────────────────────────────────
+
+/// Resolve the dictionary-images directory relative to the replicas dir.
+fn images_dir(replicas_dir: &Path) -> PathBuf {
+    replicas_dir.join("dictionary-images")
+}
+
+/// Write raw binary bytes to `{images_dir}/{entry_id}.png`.
+fn save_dictionary_image(images_dir: &Path, entry_id: &str, bytes: &[u8]) -> Result<(), String> {
+    let file_path = images_dir.join(format!("{entry_id}.png"));
+    fs::write(&file_path, bytes).map_err(|e| format!("write image: {e}"))
+}
+
+/// Read image bytes from `{images_dir}/{entry_id}.png`.
+fn read_dictionary_image(images_dir: &Path, entry_id: &str) -> Result<Vec<u8>, String> {
+    let file_path = images_dir.join(format!("{entry_id}.png"));
+    fs::read(&file_path).map_err(|e| format!("read image: {e}"))
+}
+
+// ── Dictionary image handlers ──────────────────────────────────────────────
+
+fn serve_get_dictionary_image(req: Request, replicas_dir: &Path, entry_id: &str) {
+    let dir = images_dir(replicas_dir);
+
+    match read_dictionary_image(&dir, entry_id) {
+        Ok(bytes) => {
+            let resp = Response::from_data(bytes)
+                .with_header(Header::from_bytes("Content-Type", "image/png").unwrap());
+            let _ = req.respond(resp);
+        }
+        Err(_) => {
+            respond_404(req);
+        }
+    }
+}
+
+fn serve_put_dictionary_image(mut req: Request, replicas_dir: &Path, entry_id: &str) {
+    let dir = images_dir(replicas_dir);
+
+    // Ensure the images directory exists
+    if let Err(e) = fs::create_dir_all(&dir) {
+        let _ = req.respond(
+            Response::from_string(format!("{{\"error\":\"mkdir: {e}\"}}"))
+                .with_status_code(StatusCode(500)),
+        );
+        return;
+    }
+
+    let mut body = Vec::new();
+    if let Err(e) = req.as_reader().read_to_end(&mut body) {
+        let _ = req.respond(
+            Response::from_string(format!("{{\"error\":\"Body read failed: {e}\"}}"))
+                .with_status_code(StatusCode(400)),
+        );
+        return;
+    }
+
+    match save_dictionary_image(&dir, entry_id, &body) {
+        Ok(()) => {
+            let resp =
+                Response::from_string("{\"uploaded\":true}")
+                    .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
+            let _ = req.respond(resp);
+        }
+        Err(e) => {
+            let _ = req.respond(
+                Response::from_string(format!("{{\"error\":\"{e}\"}}"))
+                    .with_status_code(StatusCode(500)),
+            );
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
 
     fn make_row(id: &str, kind: &str, hlc: &str) -> ReplicaRow {
         ReplicaRow {
@@ -552,6 +644,68 @@ mod tests {
         assert_eq!(saved.len(), 1);
     }
 
+    // ── Dictionary image routes ───────────────────────────────────────
+
+    #[test]
+    fn route_dictionary_images_get() {
+        assert!(matches!(
+            parse_route("/dictionary-images/some-entry-id"),
+            Route::DictionaryImages(id) if id == "some-entry-id"
+        ));
+        assert!(matches!(
+            parse_route("/dictionary-images/entry-123"),
+            Route::DictionaryImages(id) if id == "entry-123"
+        ));
+    }
+
+    #[test]
+    fn route_dictionary_images_with_query() {
+        // Query params should be ignored for dictionary image routes
+        assert!(matches!(
+            parse_route("/dictionary-images/entry-1?v=2"),
+            Route::DictionaryImages(id) if id == "entry-1"
+        ));
+    }
+
+    #[test]
+    fn route_dictionary_images_empty_id_not_found() {
+        assert!(matches!(
+            parse_route("/dictionary-images/"),
+            Route::NotFound
+        ));
+    }
+
+    #[test]
+    fn dictionary_image_write_and_read() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let images_dir = dir.path().join("dictionary-images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        let entry_id = "entry-abc";
+        let bytes: Vec<u8> = vec![137, 80, 78, 71, 13, 10, 26, 10]; // PNG header
+
+        // Write (PUT)
+        save_dictionary_image(&images_dir, entry_id, &bytes).unwrap();
+
+        // Verify file exists
+        let file_path = images_dir.join(format!("{entry_id}.png"));
+        assert!(file_path.exists());
+
+        // Read (GET)
+        let read = read_dictionary_image(&images_dir, entry_id).unwrap();
+        assert_eq!(read, bytes);
+    }
+
+    #[test]
+    fn dictionary_image_not_found() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let images_dir = dir.path().join("dictionary-images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        let result = read_dictionary_image(&images_dir, "nonexistent");
+        assert!(result.is_err());
+    }
+
     // ── Health JSON shape ──────────────────────────────────────────────
 
     #[test]
@@ -564,5 +718,231 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["status"], "ok");
         assert_eq!(v["deviceName"], "test-device");
+    }
+
+    // ── Integration test: start server → HTTP requests → stop ──────────
+
+    /// Find a free TCP port by binding to port 0 and reading the assigned port.
+    fn find_free_port() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    /// Send a raw HTTP request over a TcpStream and read the full response.
+    fn http_request(host: &str, port: u16, request: &str) -> (u16, String) {
+        let mut stream = TcpStream::connect(format!("{host}:{port}")).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+
+        // Parse status code from first line: "HTTP/1.0 200 OK"
+        let status_line = response.lines().next().unwrap_or("");
+        let parts: Vec<&str> = status_line.split_whitespace().collect();
+        let status: u16 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+
+        (status, response)
+    }
+
+    /// Like `http_request` but reads raw bytes for binary response bodies.
+    fn http_request_raw(host: &str, port: u16, request: &str) -> (u16, Vec<u8>) {
+        let mut stream = TcpStream::connect(format!("{host}:{port}")).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+
+        // Parse status code from first line
+        let response_str = String::from_utf8_lossy(&response);
+        let status_line = response_str.lines().next().unwrap_or("");
+        let parts: Vec<&str> = status_line.split_whitespace().collect();
+        let status: u16 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+
+        (status, response)
+    }
+
+    #[test]
+    fn integration_health_endpoint() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("replicas");
+        let port = find_free_port();
+
+        let mut server =
+            SyncServer::start(port, replicas_dir.clone(), "test-device".into()).unwrap();
+
+        let (status, body) = http_request("127.0.0.1", port, "GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n");
+        server.stop();
+
+        assert_eq!(status, 200);
+        let json: serde_json::Value =
+            serde_json::from_str(body.lines().last().unwrap_or("{}")).unwrap();
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["deviceName"], "test-device");
+    }
+
+    #[test]
+    fn integration_put_and_get_replicas() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("replicas");
+        let port = find_free_port();
+
+        let mut server =
+            SyncServer::start(port, replicas_dir.clone(), "integration-test".into()).unwrap();
+
+        // PUT two rows
+        let rows = vec![
+            make_row("r-int-1", "annotation", "T10"),
+            make_row("r-int-2", "annotation", "T20"),
+        ];
+        let put_body = serde_json::to_string(&rows).unwrap();
+        let put_request = format!(
+            "PUT /replicas/annotation HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            put_body.len(),
+            put_body
+        );
+        let (put_status, _) = http_request("127.0.0.1", port, &put_request);
+        assert_eq!(put_status, 200);
+
+        // GET the rows back
+        let (get_status, get_body) =
+            http_request("127.0.0.1", port, "GET /replicas/annotation HTTP/1.0\r\nHost: localhost\r\n\r\n");
+
+        server.stop();
+
+        assert_eq!(get_status, 200);
+        let returned: Vec<serde_json::Value> =
+            serde_json::from_str(get_body.lines().last().unwrap_or("[]")).unwrap();
+        assert_eq!(returned.len(), 2);
+        let ids: Vec<&str> = returned.iter().map(|r| r["replica_id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"r-int-1"));
+        assert!(ids.contains(&"r-int-2"));
+    }
+
+    #[test]
+    fn integration_since_cursor_filtering() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("replicas");
+        let port = find_free_port();
+
+        let mut server =
+            SyncServer::start(port, replicas_dir.clone(), "cursor-test".into()).unwrap();
+
+        // PUT rows with different HLCs
+        let rows = vec![
+            make_row("r-1", "annotation", "T100"),
+            make_row("r-2", "annotation", "T200"),
+            make_row("r-3", "annotation", "T300"),
+        ];
+        let put_body = serde_json::to_string(&rows).unwrap();
+        let put_request = format!(
+            "PUT /replicas/annotation HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            put_body.len(),
+            put_body
+        );
+        http_request("127.0.0.1", port, &put_request);
+
+        // GET with ?since=T100 — should only return T200 and T300
+        let (get_status, get_body) = http_request(
+            "127.0.0.1",
+            port,
+            "GET /replicas/annotation?since=T100 HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        );
+
+        server.stop();
+
+        assert_eq!(get_status, 200);
+        let returned: Vec<serde_json::Value> =
+            serde_json::from_str(get_body.lines().last().unwrap_or("[]")).unwrap();
+        assert_eq!(returned.len(), 2);
+        let hlcs: Vec<&str> = returned
+            .iter()
+            .map(|r| r["updated_at_ts"].as_str().unwrap())
+            .collect();
+        assert!(hlcs.contains(&"T200"));
+        assert!(hlcs.contains(&"T300"));
+    }
+
+    #[test]
+    fn integration_dictionary_image_roundtrip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("replicas");
+        let port = find_free_port();
+
+        let mut server =
+            SyncServer::start(port, replicas_dir.clone(), "img-test".into()).unwrap();
+
+        // PUT an image (raw bytes with HTTP headers)
+        let png_bytes: Vec<u8> = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13];
+        let put_request = format!(
+            "PUT /dictionary-images/roundtrip-entry HTTP/1.0\r\nHost: localhost\r\nContent-Type: image/png\r\nContent-Length: {}\r\n\r\n",
+            png_bytes.len()
+        );
+        let put_request_bytes: Vec<u8> = put_request
+            .as_bytes()
+            .iter()
+            .chain(&png_bytes)
+            .copied()
+            .collect();
+
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream.write_all(&put_request_bytes).unwrap();
+        let mut put_response = Vec::new();
+        stream.read_to_end(&mut put_response).unwrap();
+        let put_resp_str = String::from_utf8_lossy(&put_response);
+        let put_status: u16 = put_resp_str
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        assert_eq!(put_status, 200);
+        assert!(put_resp_str.contains(r#""uploaded":true"#));
+
+        // GET the image back using raw bytes to handle binary body
+        let (get_status, get_raw) = http_request_raw(
+            "127.0.0.1",
+            port,
+            "GET /dictionary-images/roundtrip-entry HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        );
+
+        server.stop();
+
+        assert_eq!(get_status, 200);
+        // Find the header/body delimiter and extract the body bytes
+        let header_end = get_raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .unwrap();
+        let body_bytes = &get_raw[header_end + 4..];
+        assert_eq!(body_bytes, png_bytes.as_slice());
+    }
+
+    #[test]
+    fn integration_dictionary_image_404() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("replicas");
+        let port = find_free_port();
+
+        let mut server =
+            SyncServer::start(port, replicas_dir.clone(), "img-404".into()).unwrap();
+
+        let (status, _) = http_request(
+            "127.0.0.1",
+            port,
+            "GET /dictionary-images/nonexistent-entry HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        );
+
+        server.stop();
+
+        assert_eq!(status, 404);
     }
 }

@@ -13,6 +13,7 @@ function createMockResponse(
   body: unknown,
   status: number = 200,
   headers: Record<string, string> = {},
+  binaryBody?: ArrayBuffer,
 ): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -21,7 +22,7 @@ function createMockResponse(
     json: async () => body,
     text: async () => JSON.stringify(body),
     blob: async () => new Blob(),
-    arrayBuffer: async () => new ArrayBuffer(0),
+    arrayBuffer: async () => binaryBody ?? new ArrayBuffer(0),
     formData: async () => new FormData(),
     clone() {
       return this;
@@ -348,6 +349,130 @@ describe('WiFiHttpTransport', () => {
       const tB = new WiFiHttpTransport('192.168.1.20', 7878);
       const resultB = await tB.isReachable!();
       expect(resultB).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // pullDictionaryImage — binary image sync
+  // -------------------------------------------------------------------------
+
+  describe('pullDictionaryImage', () => {
+    it('constructs URL to fetch dictionary image by entryId', async () => {
+      mockFetchResponse = createMockResponse('', 200, {}, new ArrayBuffer(8));
+      const t = new WiFiHttpTransport('192.168.1.10', 7878);
+
+      await t.pullDictionaryImage!('entry-abc');
+
+      expect(fetchCalls).toHaveLength(1);
+      expect(fetchCalls[0]!.url).toBe('http://192.168.1.10:7878/dictionary-images/entry-abc');
+    });
+
+    it('returns ArrayBuffer bytes on successful fetch', async () => {
+      const bytes = new Uint8Array([1, 2, 3, 4]).buffer;
+      mockFetchResponse = createMockResponse('', 200, {}, bytes);
+      const t = new WiFiHttpTransport('192.168.1.10', 7878);
+
+      const result = await t.pullDictionaryImage!('entry-1');
+
+      expect(result).toBeInstanceOf(ArrayBuffer);
+      expect(new Uint8Array(result!)).toEqual(new Uint8Array([1, 2, 3, 4]));
+    });
+
+    it('returns null when server responds with 404', async () => {
+      mockFetchResponse = createMockResponse('Not Found', 404);
+      const t = new WiFiHttpTransport('192.168.1.10', 7878);
+
+      const result = await t.pullDictionaryImage!('missing-entry');
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null on connection refused (fetch throws)', async () => {
+      mockFetch.mockRejectedValueOnce(new TypeError('fetch failed'));
+      const t = new WiFiHttpTransport('192.168.1.10', 7878);
+
+      const result = await t.pullDictionaryImage!('any-entry');
+
+      expect(result).toBeNull();
+    });
+
+    it('uses AbortController signal for timeout', async () => {
+      mockFetchResponse = createMockResponse('', 200, {}, new ArrayBuffer(4));
+      const t = new WiFiHttpTransport('192.168.1.10', 7878);
+
+      await t.pullDictionaryImage!('entry-x');
+
+      expect(fetchCalls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('uses different entryIds to target different files', async () => {
+      mockFetchResponse = createMockResponse('', 200, {}, new ArrayBuffer(4));
+      const t = new WiFiHttpTransport('10.0.0.1', 9090);
+
+      await t.pullDictionaryImage!('dict-entry-42');
+
+      expect(fetchCalls[0]!.url).toBe('http://10.0.0.1:9090/dictionary-images/dict-entry-42');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // pushDictionaryImage — binary image upload
+  // -------------------------------------------------------------------------
+
+  describe('pushDictionaryImage', () => {
+    it('PUTs image bytes to the correct URL', async () => {
+      mockFetchResponse = createMockResponse({ uploaded: true });
+      const t = new WiFiHttpTransport('192.168.1.10', 7878);
+      const bytes = new Uint8Array([1, 2, 3]).buffer;
+
+      const result = await t.pushDictionaryImage!('entry-1', bytes);
+
+      expect(result.uploaded).toBe(true);
+      expect(fetchCalls).toHaveLength(1);
+      expect(fetchCalls[0]!.url).toBe('http://192.168.1.10:7878/dictionary-images/entry-1');
+      expect(fetchCalls[0]!.init?.method).toBe('PUT');
+      expect(fetchCalls[0]!.init?.headers).toEqual(
+        expect.objectContaining({ 'Content-Type': 'image/png' }),
+      );
+    });
+
+    it('sends the raw binary body', async () => {
+      mockFetchResponse = createMockResponse({ uploaded: true });
+      const t = new WiFiHttpTransport('192.168.1.10', 7878);
+      const bytes = new Uint8Array([10, 20, 30, 40]).buffer;
+
+      await t.pushDictionaryImage!('entry-x', bytes);
+
+      expect(fetchCalls[0]!.init!.body).toBe(bytes);
+    });
+
+    it('returns uploaded: false on network error', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('Connection refused'));
+      const t = new WiFiHttpTransport('192.168.1.10', 7878);
+      const bytes = new Uint8Array([1]).buffer;
+
+      const result = await t.pushDictionaryImage!('entry-1', bytes);
+
+      expect(result.uploaded).toBe(false);
+    });
+
+    it('returns uploaded: false on non-2xx response', async () => {
+      mockFetchResponse = createMockResponse('Internal Error', 500);
+      const t = new WiFiHttpTransport('192.168.1.10', 7878);
+      const bytes = new Uint8Array([1]).buffer;
+
+      const result = await t.pushDictionaryImage!('entry-1', bytes);
+
+      expect(result.uploaded).toBe(false);
+    });
+
+    it('uses AbortController signal for timeout', async () => {
+      mockFetchResponse = createMockResponse({ uploaded: true });
+      const t = new WiFiHttpTransport('192.168.1.10', 7878);
+
+      await t.pushDictionaryImage!('entry-1', new Uint8Array([1]).buffer);
+
+      expect(fetchCalls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
     });
   });
 

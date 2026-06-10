@@ -108,6 +108,47 @@ export class USBHttpTransport implements SyncTransport {
       return false;
     }
   }
+
+  // -------------------------------------------------------------------------
+  // Dictionary image binary sync
+  // -------------------------------------------------------------------------
+
+  async pullDictionaryImage(entryId: string): Promise<ArrayBuffer | null> {
+    const url = `http://localhost:${this.port}/dictionary-images/${encodeURIComponent(entryId)}`;
+
+    try {
+      const { controller, clear } = createTimeoutController();
+      const res = await fetch(url, { signal: controller.signal });
+      clear();
+
+      if (!res.ok) return null;
+      return await res.arrayBuffer();
+    } catch {
+      return null;
+    }
+  }
+
+  async pushDictionaryImage(
+    entryId: string,
+    imageBytes: ArrayBuffer,
+  ): Promise<{ uploaded: boolean }> {
+    const url = `http://localhost:${this.port}/dictionary-images/${encodeURIComponent(entryId)}`;
+
+    try {
+      const { controller, clear } = createTimeoutController();
+      const res = await fetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'image/png' },
+        body: imageBytes,
+        signal: controller.signal,
+      });
+      clear();
+
+      return { uploaded: res.ok };
+    } catch {
+      return { uploaded: false };
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -50,6 +50,8 @@ export interface UseReplicaSyncResult {
   isSyncing: boolean;
   /** The last error encountered, if any. Null when the last cycle succeeded. */
   lastError: Error | null;
+  /** Trigger an immediate sync cycle across all enabled kinds. No-op if already syncing. */
+  syncNow: () => Promise<void>;
 }
 
 export function useReplicaSync(opts?: UseReplicaSyncOptions): UseReplicaSyncResult {
@@ -298,5 +300,5 @@ export function useReplicaSync(opts?: UseReplicaSyncOptions): UseReplicaSyncResu
     };
   }, [syncAll]);
 
-  return { isSyncing, lastError };
+  return { isSyncing, lastError, syncNow: syncAll };
 }

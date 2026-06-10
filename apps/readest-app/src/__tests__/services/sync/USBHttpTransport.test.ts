@@ -9,7 +9,11 @@ import type { SyncCategory } from '@/types/settings';
 let mockFetchResponse: Response;
 let fetchCalls: { url: string; init?: RequestInit }[] = [];
 
-function createMockResponse(body: unknown, status: number = 200): Response {
+function createMockResponse(
+  body: unknown,
+  status: number = 200,
+  binaryBody?: ArrayBuffer,
+): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -17,7 +21,7 @@ function createMockResponse(body: unknown, status: number = 200): Response {
     json: async () => body,
     text: async () => JSON.stringify(body),
     blob: async () => new Blob(),
-    arrayBuffer: async () => new ArrayBuffer(0),
+    arrayBuffer: async () => binaryBody ?? new ArrayBuffer(0),
     formData: async () => new FormData(),
     clone() {
       return this;
@@ -261,6 +265,117 @@ describe('USBHttpTransport', () => {
       const result = await t.isReachable!();
 
       expect(result).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // pullDictionaryImage — binary image sync via localhost
+  // -------------------------------------------------------------------------
+
+  describe('pullDictionaryImage', () => {
+    it('constructs URL using localhost and configured port', async () => {
+      mockFetchResponse = createMockResponse('', 200, new ArrayBuffer(8));
+      const t = new USBHttpTransport(7878);
+
+      await t.pullDictionaryImage!('entry-abc');
+
+      expect(fetchCalls).toHaveLength(1);
+      expect(fetchCalls[0]!.url).toBe('http://localhost:7878/dictionary-images/entry-abc');
+    });
+
+    it('returns ArrayBuffer bytes on success', async () => {
+      const bytes = new Uint8Array([10, 20, 30]).buffer;
+      mockFetchResponse = createMockResponse('', 200, bytes);
+      const t = new USBHttpTransport(7878);
+
+      const result = await t.pullDictionaryImage!('entry-1');
+
+      expect(new Uint8Array(result!)).toEqual(new Uint8Array([10, 20, 30]));
+    });
+
+    it('returns null on 404', async () => {
+      mockFetchResponse = createMockResponse('Not Found', 404);
+      const t = new USBHttpTransport(7878);
+
+      const result = await t.pullDictionaryImage!('missing');
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null on connection refused', async () => {
+      mockFetch.mockRejectedValueOnce(new TypeError('Connection refused'));
+      const t = new USBHttpTransport(7878);
+
+      const result = await t.pullDictionaryImage!('any');
+
+      expect(result).toBeNull();
+    });
+
+    it('uses AbortController signal', async () => {
+      mockFetchResponse = createMockResponse('', 200, new ArrayBuffer(4));
+      const t = new USBHttpTransport(7878);
+
+      await t.pullDictionaryImage!('entry-x');
+
+      expect(fetchCalls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // pushDictionaryImage — binary image upload via localhost
+  // -------------------------------------------------------------------------
+
+  describe('pushDictionaryImage', () => {
+    it('PUTs image bytes to localhost URL', async () => {
+      mockFetchResponse = createMockResponse({ uploaded: true });
+      const t = new USBHttpTransport(7878);
+      const bytes = new Uint8Array([5, 6, 7, 8]).buffer;
+
+      const result = await t.pushDictionaryImage!('entry-1', bytes);
+
+      expect(result.uploaded).toBe(true);
+      expect(fetchCalls[0]!.url).toBe('http://localhost:7878/dictionary-images/entry-1');
+      expect(fetchCalls[0]!.init?.method).toBe('PUT');
+      expect(fetchCalls[0]!.init?.headers).toEqual(
+        expect.objectContaining({ 'Content-Type': 'image/png' }),
+      );
+    });
+
+    it('sends raw binary body', async () => {
+      mockFetchResponse = createMockResponse({ uploaded: true });
+      const t = new USBHttpTransport(7878);
+      const bytes = new Uint8Array([100, 200]).buffer;
+
+      await t.pushDictionaryImage!('entry-y', bytes);
+
+      expect(fetchCalls[0]!.init!.body).toBe(bytes);
+    });
+
+    it('returns uploaded: false on network error', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('Connection refused'));
+      const t = new USBHttpTransport(7878);
+
+      const result = await t.pushDictionaryImage!('entry-1', new Uint8Array([1]).buffer);
+
+      expect(result.uploaded).toBe(false);
+    });
+
+    it('returns uploaded: false on non-2xx', async () => {
+      mockFetchResponse = createMockResponse('Error', 500);
+      const t = new USBHttpTransport(7878);
+
+      const result = await t.pushDictionaryImage!('entry-1', new Uint8Array([1]).buffer);
+
+      expect(result.uploaded).toBe(false);
+    });
+
+    it('uses AbortController signal', async () => {
+      mockFetchResponse = createMockResponse({ uploaded: true });
+      const t = new USBHttpTransport(7878);
+
+      await t.pushDictionaryImage!('entry-1', new Uint8Array([1]).buffer);
+
+      expect(fetchCalls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
     });
   });
 

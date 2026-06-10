@@ -133,6 +133,19 @@ vi.mock('@/store/settingsStore', () => ({
   },
 }));
 
+// Mock environmentConfig.getAppService for dictionary image sync tests
+const mockReadFile = vi.fn<(path: string, scope: string, mode: string) => Promise<unknown>>();
+const mockWriteFile = vi.fn<(path: string, scope: string, data: unknown) => Promise<void>>();
+
+vi.mock('@/services/environment', () => ({
+  default: {
+    getAppService: vi.fn().mockResolvedValue({
+      readFile: mockReadFile,
+      writeFile: mockWriteFile,
+    }),
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -458,5 +471,115 @@ describe('useReplicaSync', () => {
 
     // Cursor should have been advanced
     expect(setSettingsSpy).toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Dictionary image sync — pullDictionaryImage / pushDictionaryImage
+  // ---------------------------------------------------------------------------
+
+  it('calls pullDictionaryImage when remote dictionary entry has an imagePath', async () => {
+    const dictRow = makeRow('dict-img', HLC_B, 'dictionary-entry');
+    dictRow.fields_jsonb['imagePath'] = { v: 'dict-images/entry.png', t: HLC_B, s: 'dev' };
+
+    const customPull = vi.fn<(kind: string, since?: Hlc) => Promise<ReplicaRow[]>>();
+    customPull.mockImplementation((kind) => {
+      if (kind === 'dictionary-entry') return Promise.resolve([dictRow]);
+      return Promise.resolve([]);
+    });
+    const customPush = vi.fn<(kind: string, rows: ReplicaRow[]) => Promise<void>>();
+    customPush.mockResolvedValue(undefined);
+    const customPullDictImage = vi.fn<(entryId: string) => Promise<ArrayBuffer | null>>();
+    customPullDictImage.mockResolvedValue(new Uint8Array([1, 2, 3]).buffer);
+    const customPushDictImage =
+      vi.fn<(entryId: string, bytes: ArrayBuffer) => Promise<{ uploaded: boolean }>>();
+    customPushDictImage.mockResolvedValue({ uploaded: true });
+
+    // readFile should report the local file doesn't exist (triggers pull)
+    mockReadFile.mockRejectedValue(new Error('ENOENT'));
+
+    const customTransport: SyncTransport = {
+      kind: 'wifi',
+      pull: customPull,
+      push: customPush,
+      pullDictionaryImage: customPullDictImage,
+      pushDictionaryImage: customPushDictImage,
+    };
+
+    const { useReplicaSync } = await import('@/hooks/useReplicaSync');
+
+    await act(async () => {
+      renderHook(() => useReplicaSync({ transport: customTransport }));
+    });
+
+    // pullDictionaryImage should be called for the entry with imagePath
+    expect(customPullDictImage).toHaveBeenCalledWith('dict-img');
+  });
+
+  it('calls pushDictionaryImage when outbox has dictionary entry with imagePath', async () => {
+    const outboxRow = makeRow('dict-outbox', HLC_A, 'dictionary-entry');
+    outboxRow.fields_jsonb['imagePath'] = { v: 'dict-images/outbox.png', t: HLC_A, s: 'dev' };
+    mockDictOutbox.push(outboxRow);
+
+    const imageBytes = new Uint8Array([10, 20, 30, 40]).buffer;
+    mockReadFile.mockResolvedValue(imageBytes);
+
+    const customPull = vi.fn<(kind: string, since?: Hlc) => Promise<ReplicaRow[]>>();
+    customPull.mockResolvedValue([]);
+    const customPush = vi.fn<(kind: string, rows: ReplicaRow[]) => Promise<void>>();
+    customPush.mockResolvedValue(undefined);
+    const customPushDictImage =
+      vi.fn<(entryId: string, bytes: ArrayBuffer) => Promise<{ uploaded: boolean }>>();
+    customPushDictImage.mockResolvedValue({ uploaded: true });
+
+    const customTransport: SyncTransport = {
+      kind: 'usb',
+      pull: customPull,
+      push: customPush,
+      pushDictionaryImage: customPushDictImage,
+    };
+
+    const { useReplicaSync } = await import('@/hooks/useReplicaSync');
+
+    await act(async () => {
+      renderHook(() => useReplicaSync({ transport: customTransport }));
+    });
+
+    // pushDictionaryImage should be called with the entry's image bytes
+    expect(customPushDictImage).toHaveBeenCalledWith('dict-outbox', imageBytes);
+  });
+
+  it('does not crash when transport lacks binary methods', async () => {
+    const dictRow = makeRow('dict-no-bin', HLC_B, 'dictionary-entry');
+    dictRow.fields_jsonb['imagePath'] = { v: 'dict-images/missing.png', t: HLC_B, s: 'dev' };
+
+    const customPull = vi.fn<(kind: string, since?: Hlc) => Promise<ReplicaRow[]>>();
+    customPull.mockImplementation((kind) => {
+      if (kind === 'dictionary-entry') return Promise.resolve([dictRow]);
+      return Promise.resolve([]);
+    });
+    const customPush = vi.fn<(kind: string, rows: ReplicaRow[]) => Promise<void>>();
+    customPush.mockResolvedValue(undefined);
+
+    // readFile fails — but pullDictionaryImage is undefined, so the
+    // hook should skip the image pull gracefully without crashing.
+    mockReadFile.mockRejectedValue(new Error('ENOENT'));
+
+    // Minimal transport WITHOUT binary methods
+    const customTransport: SyncTransport = {
+      kind: 'wifi',
+      pull: customPull,
+      push: customPush,
+      // No pullDictionaryImage / pushDictionaryImage
+    };
+
+    const { useReplicaSync } = await import('@/hooks/useReplicaSync');
+
+    // Should not throw
+    await act(async () => {
+      renderHook(() => useReplicaSync({ transport: customTransport }));
+    });
+
+    // Should still have applied the dictionary entry row
+    expect(mockApplyDictEntryCalls).toHaveLength(1);
   });
 });

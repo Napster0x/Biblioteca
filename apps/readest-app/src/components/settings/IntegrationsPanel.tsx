@@ -7,6 +7,7 @@ import {
   RiBook3Line,
   RiDiscordLine,
   RiCloudLine,
+  RiWifiLine,
 } from 'react-icons/ri';
 import { useEnv } from '@/context/EnvContext';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -18,9 +19,10 @@ import KOSyncForm from './integrations/KOSyncForm';
 import ReadwiseForm from './integrations/ReadwiseForm';
 import HardcoverForm from './integrations/HardcoverForm';
 import WebDAVForm from './integrations/WebDAVForm';
+import LocalSyncPanel from './integrations/LocalSyncPanel';
 import { SectionTitle, SettingLabel } from './primitives';
 
-type SubPage = 'kosync' | 'webdav' | 'readwise' | 'hardcover' | null;
+type SubPage = 'kosync' | 'webdav' | 'readwise' | 'hardcover' | 'localsync' | null;
 
 /**
  * Integrations panel — single point of discovery for external service config:
@@ -74,7 +76,8 @@ const IntegrationsPanel: React.FC = () => {
       requestedSubPage === 'kosync' ||
       requestedSubPage === 'webdav' ||
       requestedSubPage === 'readwise' ||
-      requestedSubPage === 'hardcover'
+      requestedSubPage === 'hardcover' ||
+      requestedSubPage === 'localsync'
     ) {
       setSubPage(requestedSubPage);
     }
@@ -109,6 +112,12 @@ const IntegrationsPanel: React.FC = () => {
         <HardcoverForm onBack={() => setSubPage(null)} />
       </div>
     );
+  if (subPage === 'localsync')
+    return (
+      <div className='my-4 w-full'>
+        <LocalSyncPanel onBack={() => setSubPage(null)} />
+      </div>
+    );
 
   const koSyncStatus = settings.kosync?.enabled
     ? settings.kosync.username
@@ -125,6 +134,8 @@ const IntegrationsPanel: React.FC = () => {
         ? _('Connected as {{user}}', { user: settings.webdav.username })
         : _('Connected')
       : _('Not connected');
+
+  const localSyncStatus = settings.localSync?.enabled ? _('Connected') : _('Not connected');
   return (
     <div className='my-4 w-full space-y-6'>
       <div className='w-full px-4'>
@@ -149,6 +160,12 @@ const IntegrationsPanel: React.FC = () => {
               title={_('WebDAV')}
               status={webdavStatus}
               onClick={() => setSubPage('webdav')}
+            />
+            <IntegrationRow
+              icon={RiWifiLine}
+              title={_('Local Sync')}
+              status={localSyncStatus}
+              onClick={() => setSubPage('localsync')}
             />
             <IntegrationRow
               icon={RiBookReadLine}
