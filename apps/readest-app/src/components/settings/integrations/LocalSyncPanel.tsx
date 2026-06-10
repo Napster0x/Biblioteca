@@ -131,6 +131,30 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
           addPeer(p);
           setPeerReachable(peerKey(p.host, p.port), p.reachable ?? true);
         }
+        // Fallback: if mDNS found nothing, scan subnet for Readest instances
+        if (discovered.length === 0) {
+          const port = localSync.port;
+          // Probe .1 to .20 on common subnets
+          for (const base of ['192.168.1', '192.168.0', '10.0.0']) {
+            for (let i = 1; i <= 20; i++) {
+              const host = `${base}.${i}`;
+              try {
+                const ctrl = new AbortController();
+                const t = setTimeout(() => ctrl.abort(), 300);
+                const resp = await fetch(`http://${host}:${port}/health`, { signal: ctrl.signal });
+                clearTimeout(t);
+                if (resp.ok) {
+                  const data = await resp.json();
+                  addPeer({ host, port, deviceName: data.deviceName || host, version: '0.0.0' });
+                  setPeerReachable(peerKey(host, port), true);
+                  break; // found one, stop scanning this subnet
+                }
+              } catch {
+                // unreachable, continue
+              }
+            }
+          }
+        }
       } catch {
         // Silently skip — backend might not be ready
       }
