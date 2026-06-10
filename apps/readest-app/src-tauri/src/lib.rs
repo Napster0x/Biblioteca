@@ -26,19 +26,36 @@ mod clip_url;
 mod dir_scanner;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod discord_rpc;
+mod local_sync_discovery;
+mod local_sync_server;
 #[cfg(target_os = "macos")]
 mod macos;
 mod transfer_file;
 #[cfg(target_os = "windows")]
 use tauri::webview::ScrollBarStyle;
-use tauri::{command, Emitter, WebviewUrl, WebviewWindowBuilder, Window};
+use tauri::{command, Emitter, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "android")]
 use tauri_plugin_native_bridge::register_select_directory_callback;
 #[cfg(target_os = "android")]
 use tauri_plugin_native_bridge::{NativeBridgeExt, OpenExternalUrlRequest};
 #[cfg(not(target_os = "android"))]
 use tauri_plugin_opener::OpenerExt;
+use local_sync_discovery::PeerInfo;
 use transfer_file::{download_file, upload_file};
+
+// ── Local sync shared state ───────────────────────────────────────────────
+
+/// Managed state for the local sync subsystem (WiFi + USB peer-to-peer).
+///
+/// Holds the optional running HTTP server, mDNS discovery instance, and
+/// the list of peers discovered on the LAN. Wrapped in `Arc<Mutex<>>` so
+/// it can be accessed from both Tauri commands and background threads.
+#[derive(Default)]
+pub struct LocalSyncState {
+    pub server: Option<local_sync_server::SyncServer>,
+    pub discovery: Option<local_sync_discovery::MdnsDiscovery>,
+    pub discovered_peers: Vec<PeerInfo>,
+}
 
 #[cfg(any(desktop, target_os = "ios"))]
 fn allow_file_in_scopes(app: &AppHandle, files: Vec<PathBuf>) {
@@ -227,6 +244,119 @@ fn get_executable_dir() -> String {
         .unwrap_or_default()
 }
 
+// ── Local sync commands ───────────────────────────────────────────────────
+
+/// Start the embedded HTTP server for peer-to-peer sync.
+///
+/// Listens on `0.0.0.0:{port}` and serves replicas from
+/// `{app_data_dir}/local-sync/replicas/`. The device name shown in
+/// `/health` responses is derived from the system hostname.
+#[tauri::command]
+fn start_local_sync_server(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<LocalSyncState>>>,
+    port: u16,
+) -> Result<String, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    let replicas_dir = data_dir.join("local-sync").join("replicas");
+
+    let device_name = get_device_hostname();
+
+    let server =
+        local_sync_server::SyncServer::start(port, replicas_dir, device_name)?;
+
+    let mut locked = state.lock().map_err(|e| e.to_string())?;
+    locked.server = Some(server);
+
+    Ok(format!("Server started on port {port}"))
+}
+
+/// Stop the embedded HTTP server gracefully.
+#[tauri::command]
+fn stop_local_sync_server(
+    state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<LocalSyncState>>>,
+) -> Result<String, String> {
+    let mut locked = state.lock().map_err(|e| e.to_string())?;
+    if let Some(mut server) = locked.server.take() {
+        server.stop();
+    }
+    Ok("Server stopped".into())
+}
+
+/// Start mDNS discovery: register our service and browse for peers.
+///
+/// New peers are emitted to the frontend via the
+/// `local-sync:peer-discovered` Tauri event.
+#[tauri::command]
+fn start_discovery(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<LocalSyncState>>>,
+    port: u16,
+    device_name: String,
+) -> Result<String, String> {
+    let version = env!("CARGO_PKG_VERSION").to_string();
+
+    let app_handle = app.clone();
+    let emit_peer: Box<dyn Fn(PeerInfo) + Send + 'static> = Box::new(
+        move |peer: PeerInfo| {
+            let _ = app_handle.emit("local-sync:peer-discovered", &peer);
+        },
+    );
+
+    let discovery = local_sync_discovery::MdnsDiscovery::start(
+        port,
+        device_name.clone(),
+        version,
+        emit_peer,
+    )?;
+
+    let mut locked = state.lock().map_err(|e| e.to_string())?;
+    locked.discovery = Some(discovery);
+
+    Ok(format!("Discovery started for '{}' on port {port}", device_name))
+}
+
+/// Stop mDNS discovery: unregister service and stop browsing.
+#[tauri::command]
+fn stop_discovery(
+    state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<LocalSyncState>>>,
+) -> Result<String, String> {
+    let mut locked = state.lock().map_err(|e| e.to_string())?;
+    if let Some(mut discovery) = locked.discovery.take() {
+        discovery.stop()?;
+    }
+    Ok("Discovery stopped".into())
+}
+
+/// Return the list of peers discovered since the last `start_discovery`.
+#[tauri::command]
+fn get_discovered_peers(
+    state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<LocalSyncState>>>,
+) -> Result<Vec<PeerInfo>, String> {
+    let locked = state.lock().map_err(|e| e.to_string())?;
+    Ok(locked.discovered_peers.clone())
+}
+
+/// Return the best guess at this device's hostname.
+///
+/// Uses the OS `hostname` command as a fallback when the `hostname` crate
+/// is not available. The result is trimmed and defaults to `"readest"` if
+/// all methods fail.
+fn get_device_hostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "readest".to_string())
+}
+
+// ── End local sync commands ───────────────────────────────────────────────
+
 #[derive(Clone, serde::Serialize)]
 #[allow(dead_code)]
 struct SingleInstancePayload {
@@ -253,6 +383,11 @@ pub fn run() {
             get_executable_dir,
             allow_paths_in_scopes,
             dir_scanner::read_dir,
+            start_local_sync_server,
+            stop_local_sync_server,
+            start_discovery,
+            stop_discovery,
+            get_discovered_peers,
             #[cfg(target_os = "macos")]
             macos::safari_auth::auth_with_safari,
             #[cfg(target_os = "macos")]
@@ -337,6 +472,12 @@ pub fn run() {
                 use std::sync::{Arc, Mutex};
                 let discord_client = Arc::new(Mutex::new(discord_rpc::DiscordRpcClient::new()));
                 app.manage(discord_client);
+            }
+
+            {
+                use std::sync::{Arc, Mutex};
+                let sync_state = Arc::new(Mutex::new(LocalSyncState::default()));
+                app.manage(sync_state);
             }
 
             #[cfg(desktop)]
