@@ -84,6 +84,32 @@ export interface HardcoverSettings {
   lastSyncedAt: number;
 }
 
+/**
+ * Peer discovery payload emitted by mDNS.
+ *
+ * Filled from `local-sync:peer-discovered` Tauri events. `host` is an IP
+ * (v4 or v6) resolved from the mDNS A/AAAA record; `port` comes from the
+ * SRV record; `deviceName` and `version` are TXT attributes.
+ */
+export interface PeerInfo {
+  host: string;
+  port: number;
+  deviceName: string;
+  version: string;
+}
+
+export interface LocalSyncSettings {
+  /** Whether local sync (WiFi + USB) is active. Default: false. */
+  enabled: boolean;
+  /**
+   * TCP port the embedded server listens on. 7878 by default so it
+   * doesn't collide with common dev ports (3000, 5173, 8080, etc.).
+   */
+  port: number;
+  /** Human-readable device name shown to peers. Defaults to hostname. */
+  deviceName: string;
+}
+
 export interface WebDAVSettings {
   enabled: boolean;
   serverUrl: string;
@@ -323,6 +349,7 @@ export interface SystemSettings {
   readwise: ReadwiseSettings;
   hardcover: HardcoverSettings;
   webdav: WebDAVSettings;
+  localSync: LocalSyncSettings;
 
   aiSettings: AISettings;
   /**
