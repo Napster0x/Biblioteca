@@ -1,13 +1,15 @@
 import clsx from 'clsx';
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { RiWifiLine } from 'react-icons/ri';
 import { useEnv } from '@/context/EnvContext';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useReplicaSync } from '@/hooks/useReplicaSync';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useLocalSyncStore, peerKey } from '@/store/localSyncStore';
+import { isTauriAppPlatform } from '@/services/environment';
 import SubPageHeader from '../SubPageHeader';
 import { BoxedList, SettingsRow, SettingsSwitchRow } from '../primitives';
+import type { PeerInfo } from '@/types/settings';
 
 interface LocalSyncPanelProps {
   onBack: () => void;
@@ -54,10 +56,28 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
   // ── Handlers ────────────────────────────────────────────────────────────
 
   const handleToggleEnabled = useCallback(async () => {
-    const newLocalSync = { ...localSync, enabled: !localSync.enabled };
+    const enabling = !localSync.enabled;
+    const newLocalSync = { ...localSync, enabled: enabling };
     const newSettings = { ...settings, localSync: newLocalSync };
     setSettings(newSettings);
     await saveSettings(envConfig, newSettings);
+
+    if (!isTauriAppPlatform()) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      if (enabling) {
+        await invoke('start_local_sync_server', { port: localSync.port });
+        await invoke('start_discovery', {
+          port: localSync.port,
+          deviceName: localSync.deviceName || 'Readest',
+        });
+      } else {
+        await invoke('stop_discovery');
+        await invoke('stop_local_sync_server');
+      }
+    } catch (e) {
+      console.warn('LocalSync: failed to start/stop server', e);
+    }
   }, [envConfig, localSync, saveSettings, setSettings, settings]);
 
   const handleSyncNow = useCallback(async () => {
@@ -71,7 +91,31 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
     }
   }, [isSyncingNow, triggerSync]);
 
-  // ── Derived state ───────────────────────────────────────────────────────
+  // ── Tauri event listeners for peer discovery ─────────────────────────────
+  useEffect(() => {
+    if (!isTauriAppPlatform() || !localSync.enabled) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const addPeer = useLocalSyncStore.getState().addPeer;
+        const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
+        unlisten = await listen<PeerInfo & { reachable: boolean }>(
+          'local-sync:peer-discovered',
+          (event) => {
+            const { host, port, deviceName, version, reachable } = event.payload;
+            addPeer({ host, port, deviceName, version: version ?? '0.0.0' });
+            setPeerReachable(peerKey(host, port), reachable);
+          },
+        );
+      } catch (e) {
+        console.warn('LocalSync: failed to listen for peer events', e);
+      }
+    })();
+    return () => {
+      unlisten?.();
+    };
+  }, [localSync.enabled]);
 
   const description: string = localSync.enabled
     ? _('Discover and sync with nearby devices on the same WiFi network.')
