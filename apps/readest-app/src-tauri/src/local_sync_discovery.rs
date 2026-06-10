@@ -66,7 +66,10 @@ impl MdnsDiscovery {
             ServiceDaemon::new().map_err(|e| format!("mDNS daemon: {e}"))?;
 
         // ── Find a non-loopback IPv4 address to advertise ─────────────
-        let ip = find_local_ipv4()?;
+        let ip = find_local_ipv4().unwrap_or_else(|| {
+            log::warn!("[local-sync] No non-loopback IPv4 found, using 0.0.0.0");
+            "0.0.0.0".to_string()
+        });
 
         // ── Build and register our service ────────────────────────────
         let instance_name = sanitize_instance_name(&device_name);
@@ -178,9 +181,8 @@ impl MdnsDiscovery {
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 /// Find the first non-loopback IPv4 address on this machine.
-fn find_local_ipv4() -> Result<String, String> {
-    let ifaces = if_addrs::get_if_addrs()
-        .map_err(|e| format!("get_if_addrs: {e}"))?;
+fn find_local_ipv4() -> Option<String> {
+    let ifaces = if_addrs::get_if_addrs().ok()?;
 
     ifaces
         .iter()
@@ -197,7 +199,6 @@ fn find_local_ipv4() -> Result<String, String> {
             }
             _ => None,
         })
-        .ok_or_else(|| "No non-loopback IPv4 address found".into())
 }
 
 /// Sanitize a device name for use as an mDNS instance name.
@@ -269,11 +270,11 @@ mod tests {
     #[test]
     fn find_local_ipv4_returns_valid_ip() {
         let ip = find_local_ipv4();
-        if let Ok(addr_str) = ip {
+        if let Some(addr_str) = ip {
             let parsed: std::net::Ipv4Addr = addr_str.parse().unwrap();
             assert!(!parsed.is_loopback());
             assert!(!parsed.is_unspecified());
         }
-        // In CI without network, this may return Err — that's ok.
+        // In CI without network, this may return None — that's ok.
     }
 }
