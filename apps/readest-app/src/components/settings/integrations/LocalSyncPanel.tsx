@@ -124,7 +124,6 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
     const interval = setInterval(async () => {
       try {
         const discovered: PeerInfo[] = await invoke('get_discovered_peers');
-        console.log('[LocalSync] WiFi poll: got', discovered.length, 'peers', discovered);
         const addPeer = useLocalSyncStore.getState().addPeer;
         const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
         for (const p of discovered) {
@@ -134,8 +133,6 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
         // Fallback: if mDNS found nothing, scan subnet for Readest instances
         if (discovered.length === 0) {
           const port = localSync.port;
-          console.log('[LocalSync] mDNS empty, scanning subnet on port', port);
-          // Scan around common local IP ranges
           for (const base of ['192.168.1', '192.168.0', '10.0.0']) {
             for (let i = 30; i <= 60; i++) {
               const host = `${base}.${i}`;
@@ -169,7 +166,6 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
     const interval = setInterval(async () => {
       try {
         const serials: string[] = await invoke('list_usb_devices');
-        console.log('[LocalSync] USB poll:', serials.length, 'devices', serials);
         const port = localSync.port;
         const addPeer = useLocalSyncStore.getState().addPeer;
         const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;

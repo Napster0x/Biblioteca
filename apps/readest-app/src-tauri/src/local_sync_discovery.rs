@@ -93,7 +93,6 @@ impl MdnsDiscovery {
             .map_err(|e| format!("mDNS register: {e}"))?;
 
         // ── Browse for peers ──────────────────────────────────────────
-        log::info!("[local-sync] Starting mDNS browse for {}", SERVICE_TYPE);
         let receiver = daemon
             .browse(SERVICE_TYPE)
             .map_err(|e| format!("mDNS browse: {e}"))?;
@@ -151,12 +150,6 @@ impl MdnsDiscovery {
                                 reachable: true,
                             };
 
-                            log::info!(
-                                "[local-sync] Peer discovered: {} ({}:{})",
-                                peer_device_name,
-                                host,
-                                info.get_port()
-                            );
                             emit_peer(peer);
                         }
                     }
