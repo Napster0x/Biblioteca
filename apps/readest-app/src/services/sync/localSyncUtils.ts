@@ -32,6 +32,8 @@ export function filterReachablePeers(
   peerHealth: Record<PeerKey, { reachable: boolean }>,
 ): PeerInfo[] {
   return peers.filter((p) => {
+    // Skip self — localhost/loopback is our own device
+    if (p.host === 'localhost' || p.host === '127.0.0.1' || p.host === '::1') return false;
     const health = peerHealth[peerKey(p.host, p.port)];
     return health?.reachable === true;
   });
