@@ -135,12 +135,13 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
         if (discovered.length === 0) {
           const port = localSync.port;
           console.log('[LocalSync] mDNS empty, scanning subnet on port', port);
+          // Scan around common local IP ranges
           for (const base of ['192.168.1', '192.168.0', '10.0.0']) {
-            for (let i = 1; i <= 20; i++) {
+            for (let i = 30; i <= 60; i++) {
               const host = `${base}.${i}`;
               try {
                 const ctrl = new AbortController();
-                const t = setTimeout(() => ctrl.abort(), 300);
+                const t = setTimeout(() => ctrl.abort(), 200);
                 const resp = await fetch(`http://${host}:${port}/health`, { signal: ctrl.signal });
                 clearTimeout(t);
                 if (resp.ok) {
