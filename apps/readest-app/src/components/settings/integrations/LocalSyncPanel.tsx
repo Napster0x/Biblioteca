@@ -103,6 +103,7 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
         unlisten = await listen<PeerInfo & { reachable: boolean }>(
           'local-sync:peer-discovered',
           (event) => {
+            console.log('[LocalSync] peer discovered:', event.payload);
             const { host, port, deviceName, version, reachable } = event.payload;
             addPeer({ host, port, deviceName, version: version ?? '0.0.0' });
             setPeerReachable(peerKey(host, port), reachable);

@@ -257,6 +257,12 @@ fn start_local_sync_server(
     state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<LocalSyncState>>>,
     port: u16,
 ) -> Result<String, String> {
+    let mut locked = state.lock().map_err(|e| e.to_string())?;
+    if locked.server.is_some() {
+        return Ok(format!("Server already running on port {port}"));
+    }
+    drop(locked);
+
     let data_dir = app
         .path()
         .app_data_dir()
