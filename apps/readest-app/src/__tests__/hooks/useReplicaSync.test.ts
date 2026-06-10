@@ -1,19 +1,35 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import type { ReplicaRow, Hlc } from '@/types/replica';
+import type { SyncTransport } from '@/services/sync/SyncTransport';
 
 // ---------------------------------------------------------------------------
 // Mocks — must be defined before the dynamic import
 // ---------------------------------------------------------------------------
 
-const mockPullReplicas =
-  vi.fn<(config: unknown, rootPath: string, kind: string, since?: Hlc) => Promise<ReplicaRow[]>>();
-const mockPushReplicas =
-  vi.fn<(config: unknown, rootPath: string, kind: string, rows: ReplicaRow[]) => Promise<void>>();
+// Shared mock functions used across both the WebDAVTransport mock and the
+// custom transport tests.
+const mockPull = vi.fn<(kind: string, since?: Hlc) => Promise<ReplicaRow[]>>();
+const mockPush = vi.fn<(kind: string, rows: ReplicaRow[]) => Promise<void>>();
+const mockPullDictImage = vi.fn<(entryId: string) => Promise<ArrayBuffer | null>>();
+const mockPushDictImage =
+  vi.fn<(entryId: string, imageBytes: ArrayBuffer) => Promise<{ uploaded: boolean }>>();
 
-vi.mock('@/services/sync/replicaTransport', () => ({
-  pullReplicas: mockPullReplicas,
-  pushReplicas: mockPushReplicas,
+// Mock WebDAVTransport — the default fallback when no transport is provided.
+vi.mock('@/services/sync/WebDAVTransport', () => ({
+  WebDAVTransport: vi.fn(function (this: {
+    kind: string;
+    pull: typeof mockPull;
+    push: typeof mockPush;
+    pullDictionaryImage: typeof mockPullDictImage;
+    pushDictionaryImage: typeof mockPushDictImage;
+  }) {
+    this.kind = 'webdav';
+    this.pull = mockPull;
+    this.push = mockPush;
+    this.pullDictionaryImage = mockPullDictImage;
+    this.pushDictionaryImage = mockPushDictImage;
+  }),
 }));
 
 // Store mocks — capturing calls for verification
@@ -164,8 +180,10 @@ describe('useReplicaSync', () => {
         'dictionary-entry': true,
       },
     });
-    mockPullReplicas.mockResolvedValue([]);
-    mockPushReplicas.mockResolvedValue(undefined);
+    mockPull.mockResolvedValue([]);
+    mockPush.mockResolvedValue(undefined);
+    mockPullDictImage.mockResolvedValue(null);
+    mockPushDictImage.mockResolvedValue({ uploaded: true });
   });
 
   afterEach(() => {
@@ -180,19 +198,14 @@ describe('useReplicaSync', () => {
     });
 
     // Should pull all 3 supported kinds
-    expect(mockPullReplicas).toHaveBeenCalledWith(expect.any(Object), '/', 'annotation', undefined);
-    expect(mockPullReplicas).toHaveBeenCalledWith(expect.any(Object), '/', 'quote', undefined);
-    expect(mockPullReplicas).toHaveBeenCalledWith(
-      expect.any(Object),
-      '/',
-      'dictionary-entry',
-      undefined,
-    );
+    expect(mockPull).toHaveBeenCalledWith('annotation', undefined);
+    expect(mockPull).toHaveBeenCalledWith('quote', undefined);
+    expect(mockPull).toHaveBeenCalledWith('dictionary-entry', undefined);
   });
 
   it('applies remote rows from pull to the stores', async () => {
     const remoteRow = makeRow('annot-remote', HLC_B, 'annotation');
-    mockPullReplicas.mockImplementation((_c, _r, kind) => {
+    mockPull.mockImplementation((kind) => {
       if (kind === 'annotation') return Promise.resolve([remoteRow]);
       return Promise.resolve([]);
     });
@@ -219,9 +232,7 @@ describe('useReplicaSync', () => {
     });
 
     // After apply + drain, the outbox should be pushed
-    expect(mockPushReplicas).toHaveBeenCalledWith(expect.any(Object), '/', 'annotation', [
-      outboxRow,
-    ]);
+    expect(mockPush).toHaveBeenCalledWith('annotation', [outboxRow]);
   });
 
   it('skips disabled kinds based on syncCategories', async () => {
@@ -247,20 +258,10 @@ describe('useReplicaSync', () => {
     });
 
     // Only annotation should be pulled
-    expect(mockPullReplicas).toHaveBeenCalledTimes(1);
-    expect(mockPullReplicas).toHaveBeenCalledWith(expect.any(Object), '/', 'annotation', undefined);
-    expect(mockPullReplicas).not.toHaveBeenCalledWith(
-      expect.any(Object),
-      '/',
-      'quote',
-      expect.anything(),
-    );
-    expect(mockPullReplicas).not.toHaveBeenCalledWith(
-      expect.any(Object),
-      '/',
-      'dictionary-entry',
-      expect.anything(),
-    );
+    expect(mockPull).toHaveBeenCalledTimes(1);
+    expect(mockPull).toHaveBeenCalledWith('annotation', undefined);
+    expect(mockPull).not.toHaveBeenCalledWith('quote', expect.anything());
+    expect(mockPull).not.toHaveBeenCalledWith('dictionary-entry', expect.anything());
   });
 
   it('does nothing when WebDAV is not configured', async () => {
@@ -274,7 +275,7 @@ describe('useReplicaSync', () => {
       renderHook(() => useReplicaSync());
     });
 
-    expect(mockPullReplicas).not.toHaveBeenCalled();
+    expect(mockPull).not.toHaveBeenCalled();
   });
 
   it('clears outbox after successful push', async () => {
@@ -292,7 +293,7 @@ describe('useReplicaSync', () => {
   });
 
   it('handles pull failures without breaking other kinds', async () => {
-    mockPullReplicas.mockImplementation((_c, _r, kind) => {
+    mockPull.mockImplementation((kind) => {
       if (kind === 'annotation') return Promise.reject(new Error('network error'));
       return Promise.resolve([]);
     });
@@ -305,7 +306,7 @@ describe('useReplicaSync', () => {
     });
 
     // Quote and dictionary-entry pulls should still happen
-    expect(mockPullReplicas).toHaveBeenCalledTimes(3);
+    expect(mockPull).toHaveBeenCalledTimes(3);
   });
 
   it('returns isSyncing and lastError state', async () => {
@@ -319,5 +320,143 @@ describe('useReplicaSync', () => {
 
     // After sync completes, isSyncing should be false
     expect(result!.current.isSyncing).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Transport parameter — custom transport support
+  // ---------------------------------------------------------------------------
+
+  it('uses the provided transport instead of the default WebDAV transport', async () => {
+    const customPull = vi.fn<(kind: string, since?: Hlc) => Promise<ReplicaRow[]>>();
+    const customPush = vi.fn<(kind: string, rows: ReplicaRow[]) => Promise<void>>();
+    customPull.mockResolvedValue([]);
+    customPush.mockResolvedValue(undefined);
+
+    const customTransport: SyncTransport = {
+      kind: 'wifi',
+      pull: customPull,
+      push: customPush,
+    };
+
+    const { useReplicaSync } = await import('@/hooks/useReplicaSync');
+
+    await act(async () => {
+      renderHook(() => useReplicaSync({ transport: customTransport }));
+    });
+
+    // Custom transport's pull should be called for all 3 enabled kinds
+    expect(customPull).toHaveBeenCalledWith('annotation', undefined);
+    expect(customPull).toHaveBeenCalledWith('quote', undefined);
+    expect(customPull).toHaveBeenCalledWith('dictionary-entry', undefined);
+
+    // Default WebDAV transport's pull should NOT be called
+    expect(mockPull).not.toHaveBeenCalled();
+  });
+
+  it('falls back to WebDAVTransport when no transport is provided', async () => {
+    mockPull.mockResolvedValue([]);
+    mockPush.mockResolvedValue(undefined);
+
+    const { useReplicaSync } = await import('@/hooks/useReplicaSync');
+
+    await act(async () => {
+      renderHook(() => useReplicaSync());
+    });
+
+    // Default WebDAV transport should be used
+    expect(mockPull).toHaveBeenCalled();
+  });
+
+  it('applies remote rows pulled via the custom transport', async () => {
+    const remoteRow = makeRow('annot-custom', HLC_B, 'annotation');
+    const customPull = vi.fn<(kind: string, since?: Hlc) => Promise<ReplicaRow[]>>();
+    customPull.mockImplementation((kind) => {
+      if (kind === 'annotation') return Promise.resolve([remoteRow]);
+      return Promise.resolve([]);
+    });
+    const customPush = vi.fn<(kind: string, rows: ReplicaRow[]) => Promise<void>>();
+    customPush.mockResolvedValue(undefined);
+
+    const customTransport: SyncTransport = {
+      kind: 'wifi',
+      pull: customPull,
+      push: customPush,
+    };
+
+    const { useReplicaSync } = await import('@/hooks/useReplicaSync');
+
+    await act(async () => {
+      renderHook(() => useReplicaSync({ transport: customTransport }));
+    });
+
+    // The remote row should have been applied to the store
+    expect(mockApplyAnnotationCalls).toHaveLength(1);
+    expect(mockApplyAnnotationCalls[0]!.replica_id).toBe('annotation:annot-custom');
+  });
+
+  it('pushes outbox rows through the custom transport', async () => {
+    const outboxRow = makeRow('annot-local', HLC_A, 'annotation');
+    mockAnnotationOutbox.push(outboxRow);
+
+    const customPull = vi.fn<(kind: string, since?: Hlc) => Promise<ReplicaRow[]>>();
+    customPull.mockResolvedValue([]);
+    const customPush = vi.fn<(kind: string, rows: ReplicaRow[]) => Promise<void>>();
+    customPush.mockResolvedValue(undefined);
+
+    const customTransport: SyncTransport = {
+      kind: 'usb',
+      pull: customPull,
+      push: customPush,
+    };
+
+    const { useReplicaSync } = await import('@/hooks/useReplicaSync');
+
+    await act(async () => {
+      renderHook(() => useReplicaSync({ transport: customTransport }));
+    });
+
+    // Custom transport's push should be called with the outbox row
+    expect(customPush).toHaveBeenCalledWith('annotation', [outboxRow]);
+  });
+
+  it('updates cursor after sync via custom transport', async () => {
+    const remoteRow = makeRow('annot-cursor', HLC_B, 'annotation');
+
+    const customPull = vi.fn<(kind: string, since?: Hlc) => Promise<ReplicaRow[]>>();
+    customPull.mockImplementation((kind) => {
+      if (kind === 'annotation') return Promise.resolve([remoteRow]);
+      return Promise.resolve([]);
+    });
+    const customPush = vi.fn<(kind: string, rows: ReplicaRow[]) => Promise<void>>();
+    customPush.mockResolvedValue(undefined);
+
+    const customTransport: SyncTransport = {
+      kind: 'wifi',
+      pull: customPull,
+      push: customPush,
+    };
+
+    // Spy on setSettings to verify cursor advancement
+    const setSettingsSpy = vi.fn();
+    const saveSettingsSpy = vi.fn().mockResolvedValue(undefined);
+
+    // Override the settings store mock for this test
+    const originalGetState = vi.mocked(
+      (await import('@/store/settingsStore')).useSettingsStore,
+    ).getState;
+    vi.mocked((await import('@/store/settingsStore')).useSettingsStore).getState = () => ({
+      ...originalGetState(),
+      setSettings: setSettingsSpy,
+      saveSettings: saveSettingsSpy,
+    });
+
+    const { useReplicaSync } = await import('@/hooks/useReplicaSync');
+
+    await act(async () => {
+      renderHook(() => useReplicaSync({ transport: customTransport }));
+    });
+
+    // Cursor should have been advanced
+    expect(setSettingsSpy).toHaveBeenCalled();
   });
 });
