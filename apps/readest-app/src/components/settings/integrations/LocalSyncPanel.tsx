@@ -135,13 +135,8 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
           // Fallback: if mDNS found nothing, scan subnet for Readest instances
           if (discovered.length === 0) {
             const port = localSync.port;
-            // On Android, limit scan to fewer IPs to avoid WebView crash
-            const isAndroid =
-              typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
-            const subnet = isAndroid ? ['192.168.1'] : ['192.168.1', '192.168.0', '10.0.0'];
-            const range = isAndroid ? { start: 35, end: 50 } : { start: 30, end: 60 };
-            for (const base of subnet) {
-              for (let i = range.start; i <= range.end; i++) {
+            for (const base of ['192.168.1', '192.168.0', '10.0.0']) {
+              for (let i = 30; i <= 60; i++) {
                 const host = `${base}.${i}`;
                 try {
                   const ctrl = new AbortController();
