@@ -46,6 +46,18 @@ vi.mock('@/helpers/settings', () => ({
   saveSysSettings: vi.fn(),
 }));
 
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+
+vi.mock('@/services/environment', () => ({
+  isTauriAppPlatform: () => false,
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

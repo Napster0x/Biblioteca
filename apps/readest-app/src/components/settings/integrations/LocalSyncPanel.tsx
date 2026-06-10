@@ -1,6 +1,8 @@
 import clsx from 'clsx';
 import React, { useState, useCallback, useEffect } from 'react';
 import { RiWifiLine } from 'react-icons/ri';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useEnv } from '@/context/EnvContext';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useReplicaSync } from '@/hooks/useReplicaSync';
@@ -64,7 +66,6 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
 
     if (!isTauriAppPlatform()) return;
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       if (enabling) {
         await invoke('start_local_sync_server', { port: localSync.port });
         await invoke('start_discovery', {
@@ -97,7 +98,6 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
     let unlisten: (() => void) | undefined;
     (async () => {
       try {
-        const { listen } = await import('@tauri-apps/api/event');
         const addPeer = useLocalSyncStore.getState().addPeer;
         const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
         unlisten = await listen<PeerInfo & { reachable: boolean }>(
