@@ -132,7 +132,9 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
           setPeerReachable(peerKey(p.host, p.port), p.reachable ?? true);
         }
         // Fallback: if mDNS found nothing, scan subnet for Readest instances
-        if (discovered.length === 0) {
+        // Skip on Android — outbound TCP to LAN peers crashes the WebView
+        const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
+        if (discovered.length === 0 && !isAndroid) {
           const port = localSync.port;
           console.log('[LocalSync] mDNS empty, scanning subnet on port', port);
           // Scan around common local IP ranges
