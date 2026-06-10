@@ -52,6 +52,8 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
 
   const [isSyncingNow, setIsSyncingNow] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [manualIp, setManualIp] = useState('');
+  const [manualPort, setManualPort] = useState('7878');
 
   const localSync = settings.localSync;
 
@@ -91,6 +93,25 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
       setIsSyncingNow(false);
     }
   }, [isSyncingNow, triggerSync]);
+
+  const handleAddPeer = useCallback(async () => {
+    const host = manualIp.trim();
+    const port = parseInt(manualPort, 10);
+    if (!host || isNaN(port)) return;
+    try {
+      const resp = await fetch(`http://${host}:${port}/health`);
+      const data = await resp.json();
+      const addPeer = useLocalSyncStore.getState().addPeer;
+      const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
+      addPeer({ host, port, deviceName: data.deviceName || host, version: '0.0.0' });
+      setPeerReachable(peerKey(host, port), true);
+      setManualIp('');
+    } catch {
+      // unreachable, still add as offline
+      const addPeer = useLocalSyncStore.getState().addPeer;
+      addPeer({ host, port, deviceName: host, version: '0.0.0' });
+    }
+  }, [manualIp, manualPort]);
 
   // ── Tauri event listeners for peer discovery ─────────────────────────────
   useEffect(() => {
@@ -191,6 +212,29 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
                 {_('Connect via USB or make sure both devices are on the same WiFi network')}
               </p>
             </div>
+          </div>
+        )}
+
+        {/* ── Manual peer entry ─────────────────────────────────────── */}
+        {localSync.enabled && (
+          <div className='flex items-center gap-2'>
+            <input
+              type='text'
+              placeholder={_('Device IP')}
+              value={manualIp}
+              onChange={(e) => setManualIp(e.target.value)}
+              className='input input-bordered input-sm flex-1'
+            />
+            <input
+              type='number'
+              placeholder={_('Port')}
+              value={manualPort}
+              onChange={(e) => setManualPort(e.target.value)}
+              className='input input-bordered input-sm w-20'
+            />
+            <button type='button' onClick={handleAddPeer} className='btn btn-sm btn-outline'>
+              {_('Add')}
+            </button>
           </div>
         )}
 
