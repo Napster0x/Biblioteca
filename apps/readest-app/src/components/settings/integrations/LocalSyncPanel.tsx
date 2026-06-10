@@ -95,7 +95,6 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
     const currentPeers = useLocalSyncStore.getState().peers;
     const currentHealth = useLocalSyncStore.getState().peerHealth;
     const reachable = filterReachablePeers(currentPeers, currentHealth);
-    console.log('[Sync] reachable peers:', reachable.length, reachable);
 
     if (reachable.length === 0) return;
 
@@ -106,9 +105,7 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
       for (let i = 0; i < reachable.length; i++) {
         const peer = reachable[i]!;
         const transport = createPeerTransport(peer);
-        console.log('[Sync] syncing with', peer.host, peer.port);
         await runSyncCycle(transport);
-        console.log('[Sync] done with', peer.host);
         setSyncProgress({ completed: i + 1, total: reachable.length });
       }
       setLastSyncedAt(new Date());
