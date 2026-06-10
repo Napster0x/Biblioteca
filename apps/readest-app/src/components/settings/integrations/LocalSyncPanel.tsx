@@ -121,48 +121,57 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
   // ── WiFi polling: refresh discovered peers every 5s ───────────────────────
   useEffect(() => {
     if (!isTauriAppPlatform() || !localSync.enabled) return;
-    const interval = setInterval(async () => {
-      try {
-        const discovered: PeerInfo[] = await invoke('get_discovered_peers');
-        const addPeer = useLocalSyncStore.getState().addPeer;
-        const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
-        for (const p of discovered) {
-          addPeer(p);
-          setPeerReachable(peerKey(p.host, p.port), p.reachable ?? true);
-        }
-        // Fallback: if mDNS found nothing, scan subnet for Readest instances
-        if (discovered.length === 0) {
-          const port = localSync.port;
-          // On Android, limit scan to fewer IPs to avoid WebView crash
-          const isAndroid =
-            typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
-          const subnet = isAndroid ? ['192.168.1'] : ['192.168.1', '192.168.0', '10.0.0'];
-          const range = isAndroid ? { start: 35, end: 50 } : { start: 30, end: 60 };
-          for (const base of subnet) {
-            for (let i = range.start; i <= range.end; i++) {
-              const host = `${base}.${i}`;
-              try {
-                const ctrl = new AbortController();
-                const t = setTimeout(() => ctrl.abort(), 200);
-                const resp = await fetch(`http://${host}:${port}/health`, { signal: ctrl.signal });
-                clearTimeout(t);
-                if (resp.ok) {
-                  const data = await resp.json();
-                  addPeer({ host, port, deviceName: data.deviceName || host, version: '0.0.0' });
-                  setPeerReachable(peerKey(host, port), true);
-                  break; // found one, stop scanning this subnet
+    // Delay first poll to let the Rust server finish starting up
+    const startPolling = () => {
+      const interval = setInterval(async () => {
+        try {
+          const discovered: PeerInfo[] = await invoke('get_discovered_peers');
+          const addPeer = useLocalSyncStore.getState().addPeer;
+          const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
+          for (const p of discovered) {
+            addPeer(p);
+            setPeerReachable(peerKey(p.host, p.port), p.reachable ?? true);
+          }
+          // Fallback: if mDNS found nothing, scan subnet for Readest instances
+          if (discovered.length === 0) {
+            const port = localSync.port;
+            // On Android, limit scan to fewer IPs to avoid WebView crash
+            const isAndroid =
+              typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
+            const subnet = isAndroid ? ['192.168.1'] : ['192.168.1', '192.168.0', '10.0.0'];
+            const range = isAndroid ? { start: 35, end: 50 } : { start: 30, end: 60 };
+            for (const base of subnet) {
+              for (let i = range.start; i <= range.end; i++) {
+                const host = `${base}.${i}`;
+                try {
+                  const ctrl = new AbortController();
+                  const t = setTimeout(() => ctrl.abort(), 200);
+                  const resp = await fetch(`http://${host}:${port}/health`, {
+                    signal: ctrl.signal,
+                  });
+                  clearTimeout(t);
+                  if (resp.ok) {
+                    const data = await resp.json();
+                    addPeer({ host, port, deviceName: data.deviceName || host, version: '0.0.0' });
+                    setPeerReachable(peerKey(host, port), true);
+                    break; // found one, stop scanning this subnet
+                  }
+                } catch {
+                  // unreachable, continue
                 }
-              } catch {
-                // unreachable, continue
               }
             }
           }
+        } catch {
+          // Silently skip — backend might not be ready
         }
-      } catch {
-        // Silently skip — backend might not be ready
-      }
-    }, 5000);
-    return () => clearInterval(interval);
+      }, 5000);
+      return () => clearInterval(interval);
+    };
+    const delay = setTimeout(startPolling, 2000);
+    return () => {
+      clearTimeout(delay);
+    };
   }, [localSync.enabled]);
 
   // ── USB polling: scan ADB devices and auto-configure tunnels every 5s ─────
