@@ -77,7 +77,7 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
         await invoke('stop_local_sync_server');
       }
     } catch (e) {
-      console.warn('LocalSync: failed to start/stop server', e);
+      console.error('[LocalSync] invoke failed:', e);
     }
   }, [envConfig, localSync, saveSettings, setSettings, settings]);
 
