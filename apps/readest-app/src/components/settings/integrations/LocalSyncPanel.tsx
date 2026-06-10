@@ -211,6 +211,12 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
       const peers = useLocalSyncStore.getState().peers;
       const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
       for (const p of peers) {
+        // On Android, outbound TCP to LAN peers is blocked — only probe localhost
+        const isLocal = p.host === 'localhost' || p.host === '127.0.0.1';
+        if (!isLocal && !isTauriAppPlatform()) continue;
+        // Also skip non-local on Android (detect via userAgent or osType)
+        if (!isLocal && typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent))
+          continue;
         try {
           const resp = await fetch(`http://${p.host}:${p.port}/health`);
           setPeerReachable(peerKey(p.host, p.port), resp.ok);
