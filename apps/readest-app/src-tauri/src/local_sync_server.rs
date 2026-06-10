@@ -19,7 +19,6 @@
  * persisted as per-kind JSON files in `{data_dir}/local-sync/replicas/`.
  * The TypeScript side bridges the turso database ↔ JSON files in Phase 4.
  */
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -143,7 +142,11 @@ fn parse_route(url: &str) -> Route {
     if let Some(rest) = path.strip_prefix("/replicas/") {
         let kind = rest.trim_end_matches('/');
         let kind = kind.strip_suffix(".json").unwrap_or(kind);
-        if !kind.is_empty() && kind.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        if !kind.is_empty()
+            && kind
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
             return Route::Replicas(kind.to_string());
         }
     }
@@ -177,10 +180,7 @@ fn percent_decode(s: &str) -> String {
         if b == b'%' {
             let hi = chars.next().unwrap_or(b'0');
             let lo = chars.next().unwrap_or(b'0');
-            if let Ok(decoded) = u8::from_str_radix(
-                &String::from_utf8_lossy(&[hi, lo]),
-                16,
-            ) {
+            if let Ok(decoded) = u8::from_str_radix(&String::from_utf8_lossy(&[hi, lo]), 16) {
                 out.push(decoded as char);
             }
         } else if b == b'+' {
@@ -220,9 +220,7 @@ fn handle_request(req: Request, replicas_dir: &Path, device_name: &str) {
 }
 
 fn respond_404(req: Request) {
-    let _ = req.respond(
-        Response::from_string("Not Found").with_status_code(StatusCode(404)),
-    );
+    let _ = req.respond(Response::from_string("Not Found").with_status_code(StatusCode(404)));
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────
@@ -233,9 +231,8 @@ fn serve_health(req: Request, device_name: &str) {
         device_name: device_name.into(),
     };
     let json = serde_json::to_string(&body).unwrap_or_else(|_| r#"{"status":"error"}"#.into());
-    let resp = Response::from_string(json).with_header(
-        Header::from_bytes("Content-Type", "application/json").unwrap(),
-    );
+    let resp = Response::from_string(json)
+        .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
     let _ = req.respond(resp);
 }
 
@@ -304,8 +301,7 @@ fn replicas_file_path(dir: &Path, kind: &str) -> PathBuf {
 
 fn load_replicas(path: &Path) -> Result<Vec<ReplicaRow>, String> {
     let raw = fs::read_to_string(path).map_err(|e| format!("read: {e}"))?;
-    let rows: Vec<ReplicaRow> =
-        serde_json::from_str(&raw).map_err(|e| format!("parse: {e}"))?;
+    let rows: Vec<ReplicaRow> = serde_json::from_str(&raw).map_err(|e| format!("parse: {e}"))?;
     Ok(rows)
 }
 
@@ -337,8 +333,7 @@ fn merge_and_save(path: &Path, incoming: Vec<ReplicaRow>) -> Result<usize, Strin
         merged_count += 1;
     }
 
-    let json = serde_json::to_string_pretty(&existing)
-        .map_err(|e| format!("serialize: {e}"))?;
+    let json = serde_json::to_string_pretty(&existing).map_err(|e| format!("serialize: {e}"))?;
     fs::write(path, &json).map_err(|e| format!("write: {e}"))?;
 
     Ok(merged_count)
@@ -347,18 +342,15 @@ fn merge_and_save(path: &Path, incoming: Vec<ReplicaRow>) -> Result<usize, Strin
 // ── Response helpers ──────────────────────────────────────────────────────
 
 fn respond_json(req: Request, json: &str) {
-    let resp = Response::from_string(json).with_header(
-        Header::from_bytes("Content-Type", "application/json").unwrap(),
-    );
+    let resp = Response::from_string(json)
+        .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
     let _ = req.respond(resp);
 }
 
 fn respond_json_status(req: Request, json: &str, status: StatusCode) {
     let resp = Response::from_string(json)
         .with_status_code(status)
-        .with_header(
-            Header::from_bytes("Content-Type", "application/json").unwrap(),
-        );
+        .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
     let _ = req.respond(resp);
 }
 
@@ -429,9 +421,8 @@ fn serve_put_dictionary_image(mut req: Request, replicas_dir: &Path, entry_id: &
 
     match save_dictionary_image(&dir, entry_id, &body) {
         Ok(()) => {
-            let resp =
-                Response::from_string("{\"uploaded\":true}")
-                    .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
+            let resp = Response::from_string("{\"uploaded\":true}")
+                .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
             let _ = req.respond(resp);
         }
         Err(e) => {
@@ -519,10 +510,7 @@ mod tests {
 
     #[test]
     fn query_missing() {
-        assert_eq!(
-            get_query_param("/replicas/annotation.json", "since"),
-            None
-        );
+        assert_eq!(get_query_param("/replicas/annotation.json", "since"), None);
     }
 
     #[test]
@@ -737,8 +725,12 @@ mod tests {
     /// Send a raw HTTP request over a TcpStream and read the full response.
     fn http_request(host: &str, port: u16, request: &str) -> (u16, String) {
         let mut stream = TcpStream::connect(format!("{host}:{port}")).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-        stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         stream.write_all(request.as_bytes()).unwrap();
 
         let mut response = String::new();
@@ -755,8 +747,12 @@ mod tests {
     /// Like `http_request` but reads raw bytes for binary response bodies.
     fn http_request_raw(host: &str, port: u16, request: &str) -> (u16, Vec<u8>) {
         let mut stream = TcpStream::connect(format!("{host}:{port}")).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-        stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         stream.write_all(request.as_bytes()).unwrap();
 
         let mut response = Vec::new();
@@ -780,7 +776,11 @@ mod tests {
         let mut server =
             SyncServer::start(port, replicas_dir.clone(), "test-device".into()).unwrap();
 
-        let (status, body) = http_request("127.0.0.1", port, "GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n");
+        let (status, body) = http_request(
+            "127.0.0.1",
+            port,
+            "GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        );
         server.stop();
 
         assert_eq!(status, 200);
@@ -814,8 +814,11 @@ mod tests {
         assert_eq!(put_status, 200);
 
         // GET the rows back
-        let (get_status, get_body) =
-            http_request("127.0.0.1", port, "GET /replicas/annotation HTTP/1.0\r\nHost: localhost\r\n\r\n");
+        let (get_status, get_body) = http_request(
+            "127.0.0.1",
+            port,
+            "GET /replicas/annotation HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        );
 
         server.stop();
 
@@ -823,7 +826,10 @@ mod tests {
         let returned: Vec<serde_json::Value> =
             serde_json::from_str(get_body.lines().last().unwrap_or("[]")).unwrap();
         assert_eq!(returned.len(), 2);
-        let ids: Vec<&str> = returned.iter().map(|r| r["replica_id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = returned
+            .iter()
+            .map(|r| r["replica_id"].as_str().unwrap())
+            .collect();
         assert!(ids.contains(&"r-int-1"));
         assert!(ids.contains(&"r-int-2"));
     }
@@ -878,8 +884,7 @@ mod tests {
         let replicas_dir = dir.path().join("replicas");
         let port = find_free_port();
 
-        let mut server =
-            SyncServer::start(port, replicas_dir.clone(), "img-test".into()).unwrap();
+        let mut server = SyncServer::start(port, replicas_dir.clone(), "img-test".into()).unwrap();
 
         // PUT an image (raw bytes with HTTP headers)
         let png_bytes: Vec<u8> = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13];
@@ -924,10 +929,7 @@ mod tests {
 
         assert_eq!(get_status, 200);
         // Find the header/body delimiter and extract the body bytes
-        let header_end = get_raw
-            .windows(4)
-            .position(|w| w == b"\r\n\r\n")
-            .unwrap();
+        let header_end = get_raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
         let body_bytes = &get_raw[header_end + 4..];
         assert_eq!(body_bytes, png_bytes.as_slice());
     }
@@ -938,8 +940,7 @@ mod tests {
         let replicas_dir = dir.path().join("replicas");
         let port = find_free_port();
 
-        let mut server =
-            SyncServer::start(port, replicas_dir.clone(), "img-404".into()).unwrap();
+        let mut server = SyncServer::start(port, replicas_dir.clone(), "img-404".into()).unwrap();
 
         let (status, _) = http_request(
             "127.0.0.1",

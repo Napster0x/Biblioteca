@@ -31,6 +31,7 @@ mod local_sync_server;
 #[cfg(target_os = "macos")]
 mod macos;
 mod transfer_file;
+use local_sync_discovery::PeerInfo;
 #[cfg(target_os = "windows")]
 use tauri::webview::ScrollBarStyle;
 use tauri::{command, Emitter, WebviewUrl, WebviewWindowBuilder};
@@ -40,7 +41,6 @@ use tauri_plugin_native_bridge::register_select_directory_callback;
 use tauri_plugin_native_bridge::{NativeBridgeExt, OpenExternalUrlRequest};
 #[cfg(not(target_os = "android"))]
 use tauri_plugin_opener::OpenerExt;
-use local_sync_discovery::PeerInfo;
 use transfer_file::{download_file, upload_file};
 
 // ── Local sync shared state ───────────────────────────────────────────────
@@ -257,22 +257,18 @@ fn start_local_sync_server(
     state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<LocalSyncState>>>,
     port: u16,
 ) -> Result<String, String> {
-    let mut locked = state.lock().map_err(|e| e.to_string())?;
+    let locked = state.lock().map_err(|e| e.to_string())?;
     if locked.server.is_some() {
         return Ok(format!("Server already running on port {port}"));
     }
     drop(locked);
 
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let replicas_dir = data_dir.join("local-sync").join("replicas");
 
     let device_name = get_device_hostname();
 
-    let server =
-        local_sync_server::SyncServer::start(port, replicas_dir, device_name)?;
+    let server = local_sync_server::SyncServer::start(port, replicas_dir, device_name)?;
 
     let mut locked = state.lock().map_err(|e| e.to_string())?;
     locked.server = Some(server);
@@ -305,24 +301,32 @@ fn start_discovery(
 ) -> Result<String, String> {
     let version = env!("CARGO_PKG_VERSION").to_string();
 
+    let hostname = get_device_hostname();
+
     let app_handle = app.clone();
-    let emit_peer: Box<dyn Fn(PeerInfo) + Send + 'static> = Box::new(
-        move |peer: PeerInfo| {
-            let _ = app_handle.emit("local-sync:peer-discovered", &peer);
-        },
-    );
+    let sync_state = state.inner().clone();
+    let emit_peer: Box<dyn Fn(PeerInfo) + Send + 'static> = Box::new(move |peer: PeerInfo| {
+        let _ = app_handle.emit("local-sync:peer-discovered", &peer);
+        if let Ok(mut locked) = sync_state.lock() {
+            locked.discovered_peers.push(peer);
+        }
+    });
 
     let discovery = local_sync_discovery::MdnsDiscovery::start(
         port,
         device_name.clone(),
         version,
+        hostname,
         emit_peer,
     )?;
 
     let mut locked = state.lock().map_err(|e| e.to_string())?;
     locked.discovery = Some(discovery);
 
-    Ok(format!("Discovery started for '{}' on port {port}", device_name))
+    Ok(format!(
+        "Discovery started for '{}' on port {port}",
+        device_name
+    ))
 }
 
 /// Stop mDNS discovery: unregister service and stop browsing.
@@ -351,7 +355,7 @@ fn get_discovered_peers(
 /// Uses the OS `hostname` command as a fallback when the `hostname` crate
 /// is not available. The result is trimmed and defaults to `"readest"` if
 /// all methods fail.
-fn get_device_hostname() -> String {
+pub(crate) fn get_device_hostname() -> String {
     std::process::Command::new("hostname")
         .output()
         .ok()
@@ -359,6 +363,81 @@ fn get_device_hostname() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "readest".to_string())
+}
+
+/// Parse the output of `adb devices` into a list of device serial numbers.
+///
+/// Input format (example):
+/// ```text
+/// List of devices attached
+/// ABC123\tdevice
+/// DEF456\tunauthorized
+/// ```
+///
+/// Returns serial numbers of devices that are in `device` or `unauthorized`
+/// state (both are potentially connectable). Filters out the header line
+/// and empty lines. Empty output returns an empty vector.
+fn parse_adb_devices(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .skip(1) // skip "List of devices attached"
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let status = parts[1];
+                if status == "device" || status == "unauthorized" {
+                    return Some(parts[0].to_string());
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+/// Return a list of ADB-connected device serials.
+///
+/// Runs `adb devices`, parses the output, and returns the serial numbers
+/// of devices in `device` or `unauthorized` state. Returns an empty vector
+/// if `adb` is not installed or no devices are connected.
+#[tauri::command]
+fn list_usb_devices() -> Vec<String> {
+    match std::process::Command::new("adb")
+        .args(["devices", "-l"])
+        .output()
+    {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            parse_adb_devices(&stdout)
+        }
+        Err(e) => {
+            log::warn!("[local-sync] adb command failed: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// Set up an ADB port forward tunnel for USB local sync.
+///
+/// Runs `adb -s {serial} forward tcp:{port} tcp:{port}` so the desktop
+/// can reach a connected Android device's sync server on `localhost:{port}`.
+#[tauri::command]
+fn setup_usb_tunnel(serial: String, port: u16) -> Result<String, String> {
+    let port_str = port.to_string();
+    let output = std::process::Command::new("adb")
+        .args(["-s", &serial, "forward", "tcp", &port_str, "tcp", &port_str])
+        .output()
+        .map_err(|e| format!("Failed to run adb: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("adb forward failed: {}", stderr.trim()));
+    }
+
+    Ok(format!("Tunnel set up for {} on port {}", serial, port))
 }
 
 // ── End local sync commands ───────────────────────────────────────────────
@@ -394,6 +473,8 @@ pub fn run() {
             start_discovery,
             stop_discovery,
             get_discovered_peers,
+            list_usb_devices,
+            setup_usb_tunnel,
             #[cfg(target_os = "macos")]
             macos::safari_auth::auth_with_safari,
             #[cfg(target_os = "macos")]
@@ -713,4 +794,51 @@ pub fn run() {
                 }
             },
         );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_adb_devices_empty_output() {
+        let result = parse_adb_devices("List of devices attached\n");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_adb_devices_single_device() {
+        let output = "List of devices attached\nABC123\tdevice\n";
+        let result = parse_adb_devices(output);
+        assert_eq!(result, vec!["ABC123"]);
+    }
+
+    #[test]
+    fn parse_adb_devices_multiple_devices() {
+        let output =
+            "List of devices attached\nABC123\tdevice\nDEF456\tdevice\nGHI789\tunauthorized\n";
+        let result = parse_adb_devices(output);
+        assert_eq!(result, vec!["ABC123", "DEF456", "GHI789"]);
+    }
+
+    #[test]
+    fn parse_adb_devices_filters_offline() {
+        let output = "List of devices attached\nABC123\tdevice\nOFF999\toffline\nDEF456\tdevice\n";
+        let result = parse_adb_devices(output);
+        assert_eq!(result, vec!["ABC123", "DEF456"]);
+    }
+
+    #[test]
+    fn parse_adb_devices_handles_trailing_newlines() {
+        let output = "List of devices attached\n\nABC123\tdevice\n\n";
+        let result = parse_adb_devices(output);
+        assert_eq!(result, vec!["ABC123"]);
+    }
+
+    #[test]
+    fn parse_adb_devices_no_devices_header_only() {
+        let output = "List of devices attached\n";
+        let result = parse_adb_devices(output);
+        assert!(result.is_empty());
+    }
 }

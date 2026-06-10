@@ -9,7 +9,6 @@
  * TXT records carry `device_name` and `version` so peers can show
  * human-friendly labels in the UI.
  */
-
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -31,6 +30,7 @@ pub struct PeerInfo {
     #[serde(rename = "deviceName")]
     pub device_name: String,
     pub version: String,
+    pub reachable: bool,
 }
 
 // ── Discovery ─────────────────────────────────────────────────────────────
@@ -60,10 +60,10 @@ impl MdnsDiscovery {
         port: u16,
         device_name: String,
         version: String,
+        hostname: String,
         emit_peer: Box<dyn Fn(PeerInfo) + Send + 'static>,
     ) -> Result<Self, String> {
-        let daemon =
-            ServiceDaemon::new().map_err(|e| format!("mDNS daemon: {e}"))?;
+        let daemon = ServiceDaemon::new().map_err(|e| format!("mDNS daemon: {e}"))?;
 
         // ── Find a non-loopback IPv4 address to advertise ─────────────
         let ip = find_local_ipv4().unwrap_or_else(|| {
@@ -73,11 +73,8 @@ impl MdnsDiscovery {
 
         // ── Build and register our service ────────────────────────────
         let instance_name = sanitize_instance_name(&device_name);
-        let host_name = format!("{}.local.", ip);
-        let txt_props = vec![
-            ("device_name", device_name.as_str()),
-            ("version", version.as_str()),
-        ];
+        let host_name = build_mdns_hostname(&hostname);
+        let txt_props = [("device_name", device_name.as_str()), ("version", version.as_str())];
 
         let service_info = ServiceInfo::new(
             SERVICE_TYPE,
@@ -96,6 +93,7 @@ impl MdnsDiscovery {
             .map_err(|e| format!("mDNS register: {e}"))?;
 
         // ── Browse for peers ──────────────────────────────────────────
+        log::info!("[local-sync] Starting mDNS browse for {}", SERVICE_TYPE);
         let receiver = daemon
             .browse(SERVICE_TYPE)
             .map_err(|e| format!("mDNS browse: {e}"))?;
@@ -107,48 +105,63 @@ impl MdnsDiscovery {
 
         let handle = thread::spawn(move || {
             // Poll with timeout so we can detect daemon shutdown.
-            while let Ok(event) = receiver.recv_timeout(Duration::from_secs(1)) {
-                if let ServiceEvent::ServiceResolved(info) = event {
-                    let key = info.get_fullname().to_string();
+            // Use `loop { match }` instead of `while let` so that
+            // `RecvTimeoutError::Timeout` does NOT terminate the thread.
+            loop {
+                match receiver.recv_timeout(Duration::from_secs(1)) {
+                    Ok(event) => {
+                        if let ServiceEvent::ServiceResolved(info) = event {
+                            let key = info.get_fullname().to_string();
 
-                    // Deduplicate
-                    {
-                        let mut locked = seen.lock().unwrap();
-                        if !locked.insert(key.clone()) {
-                            continue;
+                            // Deduplicate
+                            {
+                                let mut locked = seen.lock().unwrap();
+                                if !locked.insert(key.clone()) {
+                                    continue;
+                                }
+                            }
+
+                            // Skip our own service
+                            if key == own_fullname {
+                                continue;
+                            }
+
+                            let host = info
+                                .get_addresses_v4()
+                                .iter()
+                                .next()
+                                .map(|a| a.to_string())
+                                .unwrap_or_else(|| "unknown".into());
+
+                            let props = info.get_properties();
+                            let peer_device_name = props
+                                .get("device_name")
+                                .map(|v| v.val_str().to_string())
+                                .unwrap_or_else(|| "unknown".into());
+                            let peer_version = props
+                                .get("version")
+                                .map(|v| v.val_str().to_string())
+                                .unwrap_or_else(|| "0.0.0".into());
+
+                            let peer = PeerInfo {
+                                host: host.clone(),
+                                port: info.get_port(),
+                                device_name: peer_device_name.clone(),
+                                version: peer_version,
+                                reachable: true,
+                            };
+
+                            log::info!(
+                                "[local-sync] Peer discovered: {} ({}:{})",
+                                peer_device_name,
+                                host,
+                                info.get_port()
+                            );
+                            emit_peer(peer);
                         }
                     }
-
-                    // Skip our own service
-                    if key == own_fullname {
-                        continue;
-                    }
-
-                    let host = info
-                        .get_addresses_v4()
-                        .iter()
-                        .next()
-                        .map(|a| a.to_string())
-                        .unwrap_or_else(|| "unknown".into());
-
-                    let props = info.get_properties();
-                    let peer_device_name = props
-                        .get("device_name")
-                        .map(|v| v.val_str().to_string())
-                        .unwrap_or_else(|| "unknown".into());
-                    let peer_version = props
-                        .get("version")
-                        .map(|v| v.val_str().to_string())
-                        .unwrap_or_else(|| "0.0.0".into());
-
-                    let peer = PeerInfo {
-                        host,
-                        port: info.get_port(),
-                        device_name: peer_device_name,
-                        version: peer_version,
-                    };
-
-                    emit_peer(peer);
+                    Err(flume::RecvTimeoutError::Timeout) => continue,
+                    Err(flume::RecvTimeoutError::Disconnected) => break,
                 }
             }
         });
@@ -180,7 +193,17 @@ impl MdnsDiscovery {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-/// Find the first non-loopback IPv4 address on this machine.
+/// Build an RFC-compliant mDNS host name from the system hostname.
+///
+/// Format: `readest-{hostname}.local.` — never contains an IP address.
+pub(crate) fn build_mdns_hostname(hostname: &str) -> String {
+    let base = hostname.trim().trim_matches('.');
+    if base.is_empty() {
+        "readest-readest.local.".to_string()
+    } else {
+        format!("readest-{}.local.", base)
+    }
+}
 fn find_local_ipv4() -> Option<String> {
     let ifaces = if_addrs::get_if_addrs().ok()?;
 
@@ -235,10 +258,7 @@ mod tests {
 
     #[test]
     fn sanitize_replaces_spaces() {
-        assert_eq!(
-            sanitize_instance_name("My Device 2"),
-            "My-Device-2"
-        );
+        assert_eq!(sanitize_instance_name("My Device 2"), "My-Device-2");
     }
 
     #[test]
@@ -259,12 +279,90 @@ mod tests {
             port: 7878,
             device_name: "Living Room".into(),
             version: "1.0.0".into(),
+            reachable: true,
         };
         let json = serde_json::to_value(&peer).unwrap();
         assert_eq!(json["host"], "192.168.1.5");
         assert_eq!(json["port"], 7878);
         assert_eq!(json["deviceName"], "Living Room");
         assert_eq!(json["version"], "1.0.0");
+        assert_eq!(json["reachable"], true);
+    }
+
+    #[test]
+    fn peer_info_reachable_false_serializes() {
+        let peer = PeerInfo {
+            host: "10.0.0.1".into(),
+            port: 7878,
+            device_name: "Offline".into(),
+            version: "0.9.0".into(),
+            reachable: false,
+        };
+        let json = serde_json::to_value(&peer).unwrap();
+        assert_eq!(json["reachable"], false);
+    }
+
+    /// Simulate the mDNS browse loop pattern: timeouts must NOT exit the loop.
+    /// The buggy `while let Ok(event) = rx.recv_timeout(...)` exits on first
+    /// timeout — `loop { match { Err(Timeout) => continue } }` does not.
+    /// Uses `flume` (the same channel crate as `mdns-sd`) for fidelity.
+    #[test]
+    fn browse_loop_survives_timeout() {
+        use std::time::Duration;
+
+        let (tx, rx) = flume::unbounded::<i32>();
+        let handle = std::thread::spawn(move || {
+            let mut events: Vec<i32> = Vec::new();
+            loop {
+                match rx.recv_timeout(Duration::from_millis(10)) {
+                    Ok(v) if v == -1 => break, // sentinel
+                    Ok(v) => events.push(v),
+                    Err(flume::RecvTimeoutError::Timeout) => continue, // keep browsing
+                    Err(flume::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            events
+        });
+
+        // Let several timeouts pass — loop should survive them all.
+        std::thread::sleep(Duration::from_millis(50));
+        // Send an event — loop must still be alive to receive it.
+        tx.send(42).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        // Terminate.
+        drop(tx); // disconnect
+
+        let received = handle.join().unwrap();
+        assert!(
+            !received.is_empty(),
+            "loop must survive timeouts to receive events"
+        );
+        assert_eq!(received, vec![42]);
+    }
+
+    #[test]
+    fn emit_closure_pushes_to_shared_vec() {
+        use std::sync::{Arc, Mutex};
+        let state: Arc<Mutex<Vec<PeerInfo>>> = Arc::new(Mutex::new(Vec::new()));
+        let state_clone = state.clone();
+
+        let emit = move |peer: PeerInfo| {
+            let mut locked = state_clone.lock().unwrap();
+            locked.push(peer);
+        };
+
+        emit(PeerInfo {
+            host: "10.0.0.1".into(),
+            port: 7878,
+            device_name: "test-device".into(),
+            version: "1.0.0".into(),
+            reachable: true,
+        });
+
+        let locked = state.lock().unwrap();
+        assert_eq!(locked.len(), 1);
+        assert_eq!(locked[0].host, "10.0.0.1");
+        assert!(locked[0].reachable);
     }
 
     #[test]
@@ -276,5 +374,22 @@ mod tests {
             assert!(!parsed.is_unspecified());
         }
         // In CI without network, this may return None — that's ok.
+    }
+
+    /// mDNS host_name must use the system hostname, not an IP address.
+    /// Format: `readest-{hostname}.local.` per spec REQ-HOSTNAME.
+    #[test]
+    fn build_mdns_hostname_uses_hostname_not_ip() {
+        let host_name = build_mdns_hostname("archlinux");
+        assert_eq!(host_name, "readest-archlinux.local.");
+        // Must NOT contain IP-address-like octets (four numbers separated by dots).
+        // Strip the trailing ".local." and verify the prefix isn't numeric.
+        let prefix = host_name.strip_suffix(".local.").unwrap();
+        let parts: Vec<&str> = prefix.split('.').collect();
+        assert!(
+            !parts.iter().all(|p| p.parse::<u8>().is_ok()),
+            "host_name prefix must not look like an IP address: {}",
+            host_name
+        );
     }
 }

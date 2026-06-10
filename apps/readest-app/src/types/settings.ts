@@ -96,6 +96,8 @@ export interface PeerInfo {
   port: number;
   deviceName: string;
   version: string;
+  /** Whether the peer was reachable at last health-check. */
+  reachable?: boolean;
 }
 
 export interface LocalSyncSettings {

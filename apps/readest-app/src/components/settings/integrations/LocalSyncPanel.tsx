@@ -52,8 +52,6 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
 
   const [isSyncingNow, setIsSyncingNow] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
-  const [manualIp, setManualIp] = useState('');
-  const [manualPort, setManualPort] = useState('7878');
 
   const localSync = settings.localSync;
 
@@ -94,25 +92,6 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
     }
   }, [isSyncingNow, triggerSync]);
 
-  const handleAddPeer = useCallback(async () => {
-    const host = manualIp.trim();
-    const port = parseInt(manualPort, 10);
-    if (!host || isNaN(port)) return;
-    try {
-      const resp = await fetch(`http://${host}:${port}/health`);
-      const data = await resp.json();
-      const addPeer = useLocalSyncStore.getState().addPeer;
-      const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
-      addPeer({ host, port, deviceName: data.deviceName || host, version: '0.0.0' });
-      setPeerReachable(peerKey(host, port), true);
-      setManualIp('');
-    } catch {
-      // unreachable, still add as offline
-      const addPeer = useLocalSyncStore.getState().addPeer;
-      addPeer({ host, port, deviceName: host, version: '0.0.0' });
-    }
-  }, [manualIp, manualPort]);
-
   // ── Tauri event listeners for peer discovery ─────────────────────────────
   useEffect(() => {
     if (!isTauriAppPlatform() || !localSync.enabled) return;
@@ -137,6 +116,85 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
     return () => {
       unlisten?.();
     };
+  }, [localSync.enabled]);
+
+  // ── WiFi polling: refresh discovered peers every 5s ───────────────────────
+  useEffect(() => {
+    if (!isTauriAppPlatform() || !localSync.enabled) return;
+    const interval = setInterval(async () => {
+      try {
+        const discovered: PeerInfo[] = await invoke('get_discovered_peers');
+        console.log('[LocalSync] WiFi poll: got', discovered.length, 'peers', discovered);
+        const addPeer = useLocalSyncStore.getState().addPeer;
+        const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
+        for (const p of discovered) {
+          addPeer(p);
+          setPeerReachable(peerKey(p.host, p.port), p.reachable ?? true);
+        }
+      } catch {
+        // Silently skip — backend might not be ready
+      }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [localSync.enabled]);
+
+  // ── USB polling: scan ADB devices and auto-configure tunnels every 5s ─────
+  useEffect(() => {
+    if (!isTauriAppPlatform() || !localSync.enabled) return;
+    const interval = setInterval(async () => {
+      try {
+        const serials: string[] = await invoke('list_usb_devices');
+        console.log('[LocalSync] USB poll:', serials.length, 'devices', serials);
+        const port = localSync.port;
+        const addPeer = useLocalSyncStore.getState().addPeer;
+        const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
+        for (const serial of serials) {
+          // Set up tunnel
+          try {
+            await invoke('setup_usb_tunnel', { serial, port });
+          } catch {
+            // Tunnel setup may fail if already configured — continue anyway.
+          }
+          // Health-check via tunnel
+          try {
+            const resp = await fetch(`http://localhost:${port}/health`);
+            if (resp.ok) {
+              const data = await resp.json();
+              addPeer({
+                host: 'localhost',
+                port,
+                deviceName: data.deviceName || serial,
+                version: data.version || '0.0.0',
+              });
+              setPeerReachable(peerKey('localhost', port), true);
+            }
+          } catch {
+            // Device not reachable via tunnel yet — maybe next cycle.
+          }
+        }
+      } catch {
+        // adb not installed or no devices
+      }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [localSync.enabled, localSync.port]);
+
+  // ── Health-check: probe all known peers every 15s ─────────────────────────
+  useEffect(() => {
+    if (!localSync.enabled) return;
+    const interval = setInterval(async () => {
+      const peers = useLocalSyncStore.getState().peers;
+      const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
+      for (const p of peers) {
+        try {
+          const resp = await fetch(`http://${p.host}:${p.port}/health`);
+          setPeerReachable(peerKey(p.host, p.port), resp.ok);
+        } catch {
+          setPeerReachable(peerKey(p.host, p.port), false);
+        }
+      }
+    }, 15_000);
+    return () => clearInterval(interval);
   }, [localSync.enabled]);
 
   const description: string = localSync.enabled
@@ -212,29 +270,6 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
                 {_('Connect via USB or make sure both devices are on the same WiFi network')}
               </p>
             </div>
-          </div>
-        )}
-
-        {/* ── Manual peer entry ─────────────────────────────────────── */}
-        {localSync.enabled && (
-          <div className='flex items-center gap-2'>
-            <input
-              type='text'
-              placeholder={_('Device IP')}
-              value={manualIp}
-              onChange={(e) => setManualIp(e.target.value)}
-              className='input input-bordered input-sm flex-1'
-            />
-            <input
-              type='number'
-              placeholder={_('Port')}
-              value={manualPort}
-              onChange={(e) => setManualPort(e.target.value)}
-              className='input input-bordered input-sm w-20'
-            />
-            <button type='button' onClick={handleAddPeer} className='btn btn-sm btn-outline'>
-              {_('Add')}
-            </button>
           </div>
         )}
 
