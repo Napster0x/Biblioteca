@@ -325,6 +325,25 @@ describe('LocalSyncPanel', () => {
 
       expect(screen.getByText('USB')).toBeDefined();
     });
+
+    // Task 1.5 RED — kind-based badge: peer with kind='usb' shows USB
+    // regardless of host (currently the connectionType function uses host)
+    it('shows "USB" badge for peer with kind=usb on a non-localhost host', () => {
+      mockStoreReturn({ localSync: { enabled: true, port: 7878, deviceName: '' } });
+      seedPeers([
+        {
+          host: '192.168.1.5',
+          port: 7878,
+          deviceName: 'USB Device via ADB',
+          version: '1.0.0',
+          kind: 'usb',
+        },
+      ]);
+
+      render(<LocalSyncPanel onBack={vi.fn()} />);
+
+      expect(screen.getByText('USB')).toBeDefined();
+    });
   });
 
   // ── Peer reachability indicator ───────────────────────────────────────

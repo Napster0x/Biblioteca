@@ -22,8 +22,10 @@ interface LocalSyncPanelProps {
   onBack: () => void;
 }
 
-/** Derive a human-readable connection type label from the peer host. */
-function connectionType(host: string): string {
+/** Derive a human-readable connection type label from the peer kind (preferred) or host. */
+function connectionType(host: string, kind?: 'wifi' | 'usb'): string {
+  if (kind) return kind === 'usb' ? 'USB' : 'WiFi';
+  // Fallback for pre-kind peers
   if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
     return 'USB';
   }
@@ -128,7 +130,7 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
           (event) => {
             console.log('[LocalSync] peer discovered:', event.payload);
             const { host, port, deviceName, version, reachable } = event.payload;
-            addPeer({ host, port, deviceName, version: version ?? '0.0.0' });
+            addPeer({ host, port, deviceName, version: version ?? '0.0.0', kind: 'wifi' });
             setPeerReachable(peerKey(host, port), reachable);
           },
         );
@@ -170,7 +172,13 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
                   clearTimeout(t);
                   if (resp.ok) {
                     const data = await resp.json();
-                    addPeer({ host, port, deviceName: data.deviceName || host, version: '0.0.0' });
+                    addPeer({
+                      host,
+                      port,
+                      deviceName: data.deviceName || host,
+                      version: '0.0.0',
+                      kind: 'wifi',
+                    });
                     setPeerReachable(peerKey(host, port), true);
                     break; // found one, stop scanning this subnet
                   }
@@ -218,6 +226,7 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
                 port,
                 deviceName: data.deviceName || serial,
                 version: data.version || '0.0.0',
+                kind: 'usb',
               });
               setPeerReachable(peerKey('localhost', port), true);
             }
@@ -309,7 +318,7 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
                   description={
                     <span className='flex items-center gap-1.5'>
                       <span className='bg-base-200/80 text-base-content/60 rounded px-1.5 py-px text-[0.75em] font-medium uppercase tracking-wide'>
-                        {connectionType(peer.host)}
+                        {connectionType(peer.host, peer.kind)}
                       </span>
                       {key}
                     </span>
