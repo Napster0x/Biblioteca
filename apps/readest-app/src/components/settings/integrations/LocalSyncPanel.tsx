@@ -1,11 +1,10 @@
 import clsx from 'clsx';
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useReducer, useRef } from 'react';
 import { RiWifiLine } from 'react-icons/ri';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useEnv } from '@/context/EnvContext';
 import { useTranslation } from '@/hooks/useTranslation';
-import { useReplicaSync } from '@/hooks/useReplicaSync';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useLocalSyncStore, peerKey } from '@/store/localSyncStore';
 import { isTauriAppPlatform } from '@/services/environment';
@@ -16,20 +15,124 @@ import {
 } from '@/services/sync/localSyncUtils';
 import SubPageHeader from '../SubPageHeader';
 import { BoxedList, SettingsRow, SettingsSwitchRow } from '../primitives';
-import type { PeerInfo } from '@/types/settings';
+import type { PeerInfo, SyncCategory } from '@/types/settings';
+import type { SyncResult, SyncStep, SyncPhase } from '@/types/replica';
 
 interface LocalSyncPanelProps {
   onBack: () => void;
 }
 
-/** Derive a human-readable connection type label from the peer kind (preferred) or host. */
-function connectionType(host: string, kind?: 'wifi' | 'usb'): string {
-  if (kind) return kind === 'usb' ? 'USB' : 'WiFi';
+// ── 4-state sync UI reducer ────────────────────────────────────────────
+
+type SyncUIState = 'idle' | 'syncing' | 'success' | 'error';
+
+export interface SyncUI {
+  state: SyncUIState;
+  progress: SyncStep | null;
+  result: SyncResult | null;
+  errorPeerId: string;
+  errorMessage: string;
+  lastSyncedAt: Date | null;
+  lastSyncSummary: string;
+}
+
+type SyncAction =
+  | { type: 'START_SYNC' }
+  | { type: 'SYNC_STEP'; step: SyncStep }
+  | { type: 'SYNC_DONE'; result: SyncResult; lastSyncedAt: Date; summary: string }
+  | { type: 'SYNC_ERROR'; peerId: string; message: string }
+  | { type: 'DISMISS' };
+
+function initialSyncUI(
+  lastSyncedAt: number | undefined,
+  lastSyncSummary: string | undefined,
+): SyncUI {
+  return {
+    state: 'idle',
+    progress: null,
+    result: null,
+    errorPeerId: '',
+    errorMessage: '',
+    lastSyncedAt: lastSyncedAt ? new Date(lastSyncedAt) : null,
+    lastSyncSummary: lastSyncSummary ?? '',
+  };
+}
+
+export function syncUIReducer(state: SyncUI, action: SyncAction): SyncUI {
+  switch (action.type) {
+    case 'START_SYNC':
+      return {
+        ...state,
+        state: 'syncing',
+        progress: { phase: 'connecting' },
+        result: null,
+        errorPeerId: '',
+        errorMessage: '',
+      };
+    case 'SYNC_STEP':
+      return { ...state, state: 'syncing', progress: action.step };
+    case 'SYNC_DONE':
+      return {
+        ...state,
+        state: 'success',
+        progress: null,
+        result: action.result,
+        lastSyncedAt: action.lastSyncedAt,
+        lastSyncSummary: action.summary,
+      };
+    case 'SYNC_ERROR':
+      return {
+        ...state,
+        state: 'error',
+        progress: null,
+        result: null,
+        errorPeerId: action.peerId,
+        errorMessage: action.message,
+      };
+    case 'DISMISS':
+      return {
+        ...state,
+        state: 'idle',
+        progress: null,
+        result: null,
+        errorPeerId: '',
+        errorMessage: '',
+      };
+    default:
+      return state;
+  }
+}
+
+const ALL_KINDS: readonly SyncCategory[] = ['annotation', 'quote', 'dictionary-entry'];
+
+// ── Helpers ────────────────────────────────────────────────────────────
+
+/** Derive a human-readable badge label from peer.kind, with fallback. */
+function peerKindLabel(peer: PeerInfo): string {
+  if (peer.kind) return peer.kind === 'usb' ? 'USB' : 'WiFi';
   // Fallback for pre-kind peers
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+  if (peer.host === 'localhost' || peer.host === '127.0.0.1' || peer.host === '::1') {
     return 'USB';
   }
   return 'WiFi';
+}
+
+/** Build a one-line summary string from a SyncResult. */
+function buildSyncSummary(result: SyncResult): string {
+  const parts: string[] = [];
+  let totalPulled = 0;
+  let totalPushed = 0;
+  let totalConflicts = 0;
+  for (const kr of Object.values(result.kinds)) {
+    totalPulled += kr.pulled;
+    totalPushed += kr.pushed;
+    totalConflicts += kr.conflicts;
+  }
+  if (totalPulled > 0) parts.push(`📥 ${totalPulled}`);
+  if (totalPushed > 0) parts.push(`📤 ${totalPushed}`);
+  if (totalConflicts > 0) parts.push(`⚡ ${totalConflicts}`);
+  parts.push(result.peerId);
+  return parts.join(' — ');
 }
 
 /** Derive the dot color, aria label, and CSS from a peer's health status. */
@@ -52,18 +155,41 @@ function healthDotProps(
 const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
   const _ = useTranslation();
   const { envConfig } = useEnv();
-  const { isSyncing } = useReplicaSync();
   const { settings, setSettings, saveSettings } = useSettingsStore();
   const peers = useLocalSyncStore((s) => s.peers);
   const peerHealth = useLocalSyncStore((s) => s.peerHealth);
 
-  const [isSyncingNow, setIsSyncingNow] = useState(false);
-  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
-  const [syncProgress, setSyncProgress] = useState<{ completed: number; total: number } | null>(
-    null,
+  const localSync = settings.localSync;
+
+  const [ui, dispatch] = useReducer(
+    syncUIReducer,
+    initialSyncUI(localSync.lastSyncedAt, localSync.lastSyncSummary),
   );
 
-  const localSync = settings.localSync;
+  // Persist lastSyncedAt / lastSyncSummary to settings after SUCCESS
+  const prevSummaryRef = useRef(ui.lastSyncSummary);
+  useEffect(() => {
+    if (ui.lastSyncSummary && ui.lastSyncSummary !== prevSummaryRef.current) {
+      prevSummaryRef.current = ui.lastSyncSummary;
+      const next = {
+        ...settings,
+        localSync: {
+          ...settings.localSync,
+          lastSyncedAt: ui.lastSyncedAt?.getTime(),
+          lastSyncSummary: ui.lastSyncSummary,
+        },
+      };
+      setSettings(next);
+      saveSettings(envConfig, next).catch(() => {});
+    }
+  }, [ui.lastSyncSummary, ui.lastSyncedAt]);
+
+  // Auto-dismiss from SUCCESS after 5 seconds
+  useEffect(() => {
+    if (ui.state !== 'success') return;
+    const timer = setTimeout(() => dispatch({ type: 'DISMISS' }), 5000);
+    return () => clearTimeout(timer);
+  }, [ui.state]);
 
   // ── Handlers ────────────────────────────────────────────────────────────
 
@@ -92,7 +218,7 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
   }, [envConfig, localSync, saveSettings, setSettings, settings]);
 
   const handleSyncNow = useCallback(async () => {
-    if (isSyncingNow) return;
+    if (ui.state !== 'idle' && ui.state !== 'error') return;
 
     const currentPeers = useLocalSyncStore.getState().peers;
     const currentHealth = useLocalSyncStore.getState().peerHealth;
@@ -100,22 +226,45 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
 
     if (reachable.length === 0) return;
 
-    setIsSyncingNow(true);
-    setSyncProgress({ completed: 0, total: reachable.length });
+    dispatch({ type: 'START_SYNC' });
 
     try {
-      for (let i = 0; i < reachable.length; i++) {
-        const peer = reachable[i]!;
+      let combinedResult: SyncResult | null = null;
+      for (const peer of reachable) {
         const transport = createPeerTransport(peer);
-        await runSyncCycle(transport);
-        setSyncProgress({ completed: i + 1, total: reachable.length });
+        const result = await runSyncCycle(
+          transport,
+          ALL_KINDS,
+          peerKey(peer.host, peer.port),
+          (step) => dispatch({ type: 'SYNC_STEP', step }),
+        );
+        if (!combinedResult) {
+          combinedResult = result;
+        } else {
+          // Merge per-kind counts
+          for (const [kind, kr] of Object.entries(result.kinds)) {
+            const existing = combinedResult.kinds[kind];
+            if (existing) {
+              existing.pulled += kr.pulled;
+              existing.pushed += kr.pushed;
+              existing.conflicts += kr.conflicts;
+            } else {
+              combinedResult.kinds[kind] = { ...kr };
+            }
+          }
+          combinedResult.errors.push(...result.errors);
+          combinedResult.finishedAt = result.finishedAt;
+        }
       }
-      setLastSyncedAt(new Date());
-    } finally {
-      setIsSyncingNow(false);
-      setSyncProgress(null);
+      const now = new Date();
+      const summary = buildSyncSummary(combinedResult!);
+      dispatch({ type: 'SYNC_DONE', result: combinedResult!, lastSyncedAt: now, summary });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const peerName = reachable[0]?.deviceName ?? 'unknown';
+      dispatch({ type: 'SYNC_ERROR', peerId: peerName, message });
     }
-  }, [isSyncingNow]);
+  }, [ui.state]);
 
   // ── Tauri event listeners for peer discovery ─────────────────────────────
   useEffect(() => {
@@ -318,7 +467,7 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
                   description={
                     <span className='flex items-center gap-1.5'>
                       <span className='bg-base-200/80 text-base-content/60 rounded px-1.5 py-px text-[0.75em] font-medium uppercase tracking-wide'>
-                        {connectionType(peer.host, peer.kind)}
+                        {peerKindLabel(peer)}
                       </span>
                       {key}
                     </span>
@@ -341,54 +490,180 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
           </div>
         )}
 
-        {/* ── Sync Now + progress + last synced ──────────────────────── */}
+        {/* ── Sync action area: IDLE / SYNCING / SUCCESS / ERROR ──────── */}
         {localSync.enabled && (
           <div className='flex flex-col items-end gap-2'>
-            {/* Progress bar */}
-            {isSyncingNow && syncProgress && (
-              <div className='w-full space-y-1'>
-                <p className='text-base-content/60 text-xs text-right'>
-                  {_('Syncing…')}{' '}
-                  <span className='tabular-nums'>
-                    {syncProgress.completed}/{syncProgress.total}
+            {/* ── IDLE state: last sync info + Sync Now button ── */}
+            {ui.state === 'idle' && (
+              <div className='flex items-center justify-end gap-3 w-full'>
+                {ui.lastSyncedAt && (
+                  <span className='text-base-content/50 text-xs'>
+                    {_('Last synced:')}{' '}
+                    {ui.lastSyncedAt.toLocaleTimeString(undefined, {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                    {ui.lastSyncSummary && (
+                      <span className='ml-1.5 text-base-content/40'>{ui.lastSyncSummary}</span>
+                    )}
                   </span>
-                </p>
-                <div className='w-full bg-base-200 rounded-full h-1.5'>
-                  <div
-                    className='bg-primary h-1.5 rounded-full transition-all duration-300'
-                    style={{
-                      width: `${(syncProgress.completed / syncProgress.total) * 100}%`,
-                    }}
-                  />
-                </div>
+                )}
+                <button
+                  type='button'
+                  onClick={handleSyncNow}
+                  disabled={false}
+                  className={clsx(
+                    'btn btn-primary',
+                    'h-10 min-h-10 rounded-lg border-0 px-5 text-sm font-medium',
+                    'focus-visible:ring-primary/40 focus-visible:outline-none focus-visible:ring-2',
+                  )}
+                >
+                  {_('Sync Now')}
+                </button>
               </div>
             )}
 
-            {/* Last synced + button row */}
-            <div className='flex items-center justify-end gap-3 w-full'>
-              {lastSyncedAt && (
-                <span className='text-base-content/50 text-xs'>
-                  {_('Last synced:')}{' '}
-                  {lastSyncedAt.toLocaleTimeString(undefined, {
+            {/* ── SYNCING state: progress bar with phase steps ── */}
+            {ui.state === 'syncing' && (
+              <div className='w-full space-y-2'>
+                <div className='flex flex-wrap gap-2 text-xs text-base-content/60'>
+                  {(
+                    ['connecting', 'pulling', 'merging', 'pushing', 'finalizing'] as SyncPhase[]
+                  ).map((phase) => {
+                    const isActive = ui.progress?.phase === phase;
+                    const isDone =
+                      ui.progress &&
+                      ['connecting', 'pulling', 'merging', 'pushing', 'finalizing'].indexOf(phase) <
+                        ['connecting', 'pulling', 'merging', 'pushing', 'finalizing'].indexOf(
+                          ui.progress.phase,
+                        );
+                    return (
+                      <span
+                        key={phase}
+                        className={clsx(
+                          'rounded px-2 py-0.5',
+                          isActive && 'bg-primary/10 text-primary font-medium',
+                          isDone && 'text-base-content/40',
+                          !isActive && !isDone && 'text-base-content/30',
+                        )}
+                      >
+                        {isDone ? '✅' : isActive ? '🔄' : '⏳'}{' '}
+                        {phase === 'connecting' && _('Conectando')}
+                        {phase === 'pulling' && _('Recibiendo')}
+                        {phase === 'merging' && _('Fusionando')}
+                        {phase === 'pushing' && _('Enviando')}
+                        {phase === 'finalizing' && _('Finalizando')}
+                      </span>
+                    );
+                  })}
+                </div>
+                {ui.progress?.detail && (
+                  <p className='text-base-content/60 text-xs'>
+                    {ui.progress.detail}{' '}
+                    {ui.progress.current != null && ui.progress.current > 0 && (
+                      <span className='tabular-nums'>({ui.progress.current})</span>
+                    )}
+                  </p>
+                )}
+                <button
+                  type='button'
+                  disabled={true}
+                  className={clsx(
+                    'btn btn-primary opacity-60',
+                    'h-10 min-h-10 rounded-lg border-0 px-5 text-sm font-medium',
+                  )}
+                >
+                  {_('Sincronizando…')}
+                </button>
+              </div>
+            )}
+
+            {/* ── SUCCESS state: summary card ── */}
+            {ui.state === 'success' && ui.result && (
+              <div className='card eink-bordered border-base-200 bg-base-100 w-full border px-4 py-3'>
+                <p className='text-sm font-medium text-base-content flex items-center gap-1.5'>
+                  ✅ {_('Sincronización completada')}
+                </p>
+                <p className='text-xs text-base-content/60 mt-1'>
+                  {new Date(ui.result.finishedAt).toLocaleTimeString(undefined, {
                     hour: '2-digit',
                     minute: '2-digit',
                   })}
-                </span>
-              )}
-              <button
-                type='button'
-                onClick={handleSyncNow}
-                disabled={isSyncingNow || isSyncing}
-                className={clsx(
-                  'btn btn-primary',
-                  'h-10 min-h-10 rounded-lg border-0 px-5 text-sm font-medium',
-                  'focus-visible:ring-primary/40 focus-visible:outline-none focus-visible:ring-2',
-                  isSyncingNow && 'opacity-60',
+                </p>
+                <div className='mt-2 flex flex-wrap gap-3 text-xs text-base-content/70'>
+                  {(() => {
+                    let totalPulled = 0;
+                    let totalPushed = 0;
+                    let totalConflicts = 0;
+                    for (const kr of Object.values(ui.result.kinds)) {
+                      totalPulled += kr.pulled;
+                      totalPushed += kr.pushed;
+                      totalConflicts += kr.conflicts;
+                    }
+                    return (
+                      <>
+                        <span>
+                          📥 {_('recibido')}: {totalPulled}
+                        </span>
+                        <span>
+                          📤 {_('enviado')}: {totalPushed}
+                        </span>
+                        <span>
+                          ⚡ {_('conflictos')}: {totalConflicts}
+                        </span>
+                      </>
+                    );
+                  })()}
+                </div>
+                {ui.result.errors.length > 0 && (
+                  <p className='mt-1 text-xs text-amber-600'>
+                    ⚠ {ui.result.errors.length} {_('error(es) en la sincronización')}
+                  </p>
                 )}
-              >
-                {_('Sync Now')}
-              </button>
-            </div>
+              </div>
+            )}
+
+            {/* ── ERROR state: error message + Retry / Dismiss ── */}
+            {ui.state === 'error' && (
+              <div className='card eink-bordered border-base-200 bg-base-100 w-full border px-4 py-3'>
+                <p className='text-sm font-medium text-red-600 flex items-center gap-1.5'>
+                  ❌ {_('Error al sincronizar')}
+                </p>
+                <p className='text-xs text-base-content/70 mt-1'>{ui.errorMessage}</p>
+                {ui.errorPeerId && (
+                  <p className='text-xs text-base-content/50 mt-0.5'>
+                    {_('Peer')}: {ui.errorPeerId}
+                  </p>
+                )}
+                <p className='text-xs text-base-content/50 mt-2'>
+                  {ui.errorMessage.includes('refused') || ui.errorMessage.includes('ECONNREFUSED')
+                    ? _('¿Está el otro dispositivo encendido y con sync activado?')
+                    : _('Verifica la conexión e inténtalo de nuevo.')}
+                </p>
+                <div className='mt-3 flex gap-2'>
+                  <button
+                    type='button'
+                    onClick={handleSyncNow}
+                    className={clsx(
+                      'btn btn-primary',
+                      'h-8 min-h-8 rounded-lg border-0 px-4 text-xs font-medium',
+                    )}
+                  >
+                    {_('Reintentar')}
+                  </button>
+                  <button
+                    type='button'
+                    onClick={() => dispatch({ type: 'DISMISS' })}
+                    className={clsx(
+                      'btn btn-ghost',
+                      'h-8 min-h-8 rounded-lg border-0 px-4 text-xs font-medium',
+                    )}
+                  >
+                    {_('Cerrar')}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

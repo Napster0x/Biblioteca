@@ -250,6 +250,106 @@ describe('dictionaryStore — replica applyRemoteDictionaryEntry', () => {
     expect(occs).toHaveLength(0);
   });
 
+  // ---------------------------------------------------------------------------
+  // R5: Merge CRDT idempotente — aplicar la misma réplica dos veces no duplica
+  // ---------------------------------------------------------------------------
+
+  it('aplicar la misma entry dos veces no duplica (R5)', () => {
+    const row = makeEntryRow({
+      id: 'entry-idem-1',
+      hlc: NEW_HLC,
+      fields: {
+        term: 'idempotencia',
+        displayTerm: 'idempotencia',
+        language: 'es',
+        definition:
+          'Propiedad de una operación que puede aplicarse múltiples veces sin cambiar el resultado más allá de la primera aplicación.',
+        curiosity: 'Del latín idem (lo mismo) + potens (poder).',
+        enrichmentStatus: 'ready',
+      },
+    });
+
+    useDictionaryStore.getState().applyRemoteDictionaryEntry(row);
+    useDictionaryStore.getState().applyRemoteDictionaryEntry(row);
+
+    const entries = useDictionaryStore.getState().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.term).toBe('idempotencia');
+    expect(entries[0]!.definition).toBe(
+      'Propiedad de una operación que puede aplicarse múltiples veces sin cambiar el resultado más allá de la primera aplicación.',
+    );
+  });
+
+  it('aplicar la misma entry tras merge no modifica ni duplica (R5, triangulación)', () => {
+    const row = makeEntryRow({
+      id: 'entry-idem-2',
+      hlc: NEW_HLC,
+      fields: {
+        term: 'triangulación',
+        definition: 'Técnica de TDD para forzar lógica real desde una implementación fake.',
+      },
+    });
+
+    useDictionaryStore.getState().applyRemoteDictionaryEntry(row);
+    useDictionaryStore.getState().applyRemoteDictionaryEntry(row);
+
+    const entries = useDictionaryStore.getState().entries;
+    expect(entries).toHaveLength(1);
+    const e = entries[0]!;
+    expect(e.term).toBe('triangulación');
+    expect(e.definition).toBe(
+      'Técnica de TDD para forzar lógica real desde una implementación fake.',
+    );
+  });
+
+  it('aplicar la misma occurrence dos veces no duplica (R5)', () => {
+    useDictionaryStore.getState().setOccurrences('entry-idem', []);
+
+    const row = makeOccurrenceRow({
+      id: 'occ-idem-1',
+      hlc: NEW_HLC,
+      fields: {
+        entryId: 'entry-idem',
+        bookHash: 'hash-idem',
+        bookTitle: 'Idempotent Book',
+        cfi: '/6/2',
+        selectedText: 'idempotencia',
+        contextBefore: 'La',
+        contextAfter: 'es clave en CRDTs.',
+      },
+    });
+
+    useDictionaryStore.getState().applyRemoteDictionaryOccurrence(row);
+    useDictionaryStore.getState().applyRemoteDictionaryOccurrence(row);
+
+    const occurrences = useDictionaryStore.getState().occurrencesByEntryId['entry-idem'];
+    expect(occurrences).toBeDefined();
+    expect(occurrences!).toHaveLength(1);
+    expect(occurrences![0]!.selectedText).toBe('idempotencia');
+  });
+
+  it('aplicar la misma occurrence tras merge no duplica (R5, triangulación)', () => {
+    useDictionaryStore.getState().setOccurrences('entry-idem2', []);
+
+    const row = makeOccurrenceRow({
+      id: 'occ-idem-2',
+      hlc: NEW_HLC,
+      fields: {
+        entryId: 'entry-idem2',
+        bookHash: 'hash-idem2',
+        selectedText: 'triangulación',
+      },
+    });
+
+    useDictionaryStore.getState().applyRemoteDictionaryOccurrence(row);
+    useDictionaryStore.getState().applyRemoteDictionaryOccurrence(row);
+
+    const occurrences = useDictionaryStore.getState().occurrencesByEntryId['entry-idem2'];
+    expect(occurrences).toBeDefined();
+    expect(occurrences!).toHaveLength(1);
+    expect(occurrences![0]!.selectedText).toBe('triangulación');
+  });
+
   // ---- replicaOutbox on entry CRUD ----
 
   it('replicaOutbox starts empty', () => {

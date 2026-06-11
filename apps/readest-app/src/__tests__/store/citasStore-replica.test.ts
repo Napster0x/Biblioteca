@@ -274,6 +274,59 @@ describe('citasStore — replica applyRemoteQuote', () => {
     expect(outbox[0]!.deleted_at_ts).not.toBeNull();
   });
 
+  // ---------------------------------------------------------------------------
+  // R5: Merge CRDT idempotente — aplicar la misma réplica dos veces no duplica
+  // ---------------------------------------------------------------------------
+
+  it('aplicar la misma réplica dos veces no duplica la entrada (R5)', () => {
+    const row = makeQuoteRow({
+      id: 'cite-idem-1',
+      hlc: NEW_HLC,
+      fields: {
+        bookHash: 'hash-idem',
+        bookTitle: 'Idempotent Book',
+        bookAuthor: 'Idempotent Author',
+        cfi: '/6/4',
+        page: 12,
+        text: 'Cita que no debe duplicarse',
+        contextBefore: 'Érase una vez,',
+        contextAfter: 'en un lugar lejano.',
+        contentHash: 'abc123',
+      },
+    });
+
+    useCitasStore.getState().applyRemoteQuote(row);
+    useCitasStore.getState().applyRemoteQuote(row);
+
+    const state = useCitasStore.getState();
+    expect(state.quotes).toHaveLength(1);
+    expect(state.quotes[0]!.text).toBe('Cita que no debe duplicarse');
+  });
+
+  it('aplicar la misma réplica tras merge no modifica los datos ni duplica (R5, triangulación)', () => {
+    const row = makeQuoteRow({
+      id: 'cite-idem-2',
+      hlc: NEW_HLC,
+      fields: {
+        bookHash: 'hash-idem2',
+        bookTitle: 'Triangulation Book',
+        text: 'original quote text',
+        contextBefore: null,
+        contextAfter: null,
+        contentHash: 'def456',
+      },
+    });
+
+    useCitasStore.getState().applyRemoteQuote(row);
+    useCitasStore.getState().applyRemoteQuote(row);
+
+    const state = useCitasStore.getState();
+    expect(state.quotes).toHaveLength(1);
+    const q = state.quotes[0]!;
+    expect(q.text).toBe('original quote text');
+    expect(q.bookHash).toBe('hash-idem2');
+  });
+
   it('outbox entries have monotonic HLCs across multiple mutations', async () => {
     const created1 = {
       id: 'cite-hlc-1',

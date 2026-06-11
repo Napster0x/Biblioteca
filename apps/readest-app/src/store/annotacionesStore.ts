@@ -83,6 +83,12 @@ export interface AnotacionesActions {
    * annotation when `deleted_at_ts` is set on the row.
    */
   applyRemoteAnnotation(row: ReplicaRow): void;
+  /**
+   * Build ReplicaRows for ALL local annotations (not just the outbox).
+   * Used during seed sync (first sync with a new peer) to push the
+   * complete dataset. Deleted annotations produce tombstone rows.
+   */
+  getAllReplicas(deviceId: string): ReplicaRow[];
   reset(): void;
 }
 
@@ -326,6 +332,27 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
 
   exitSelectMode() {
     set({ isSelectMode: false, selectedAnnotationIds: [] });
+  },
+
+  getAllReplicas(deviceId: string): ReplicaRow[] {
+    const state = get();
+    const rows: ReplicaRow[] = [];
+    let lastHLC: Hlc | undefined;
+    for (const ann of state.annotations) {
+      const row = createReplicaRow({
+        kind: 'annotation',
+        item: {
+          id: ann.id,
+          fields: pickReplicaFields(ann),
+          deletedAt: ann.deletedAt ? new Date(ann.deletedAt) : undefined,
+        },
+        deviceId,
+        lastHLC,
+      });
+      lastHLC = row.updated_at_ts;
+      rows.push(row);
+    }
+    return rows;
   },
 
   reset() {

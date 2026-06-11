@@ -88,6 +88,12 @@ export interface DictionaryStoreState {
   updateEntry: (input: UpdateEntryInput, service: DictionaryService) => Promise<void>;
   applyRemoteDictionaryEntry(row: ReplicaRow): void;
   applyRemoteDictionaryOccurrence(row: ReplicaRow): void;
+  /**
+   * Build ReplicaRows for ALL local dictionary entries AND occurrences
+   * (not just the outbox). Used during seed sync (first sync with a
+   * new peer). Deleted entries/occurrences produce tombstone rows.
+   */
+  getAllReplicas(deviceId: string): ReplicaRow[];
   reset: () => void;
 }
 
@@ -464,6 +470,63 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
         },
       };
     });
+  },
+
+  getAllReplicas(deviceId: string): ReplicaRow[] {
+    const state = get();
+    const rows: ReplicaRow[] = [];
+    let lastHLC: Hlc | undefined;
+
+    // Entries
+    for (const entry of state.entries) {
+      const row = createReplicaRow({
+        kind: 'dictionary-entry',
+        item: {
+          id: entry.id,
+          fields: pickReplicaFields(
+            entry as unknown as Record<string, unknown>,
+            ENTRY_REPLICA_FIELDS,
+          ),
+          deletedAt: entry.deletedAt ? new Date(entry.deletedAt) : undefined,
+        },
+        deviceId,
+        lastHLC,
+      });
+      lastHLC = row.updated_at_ts;
+      rows.push(row);
+    }
+
+    // Occurrences
+    for (const [, occurrences] of Object.entries(state.occurrencesByEntryId)) {
+      for (const occ of occurrences) {
+        const row = createReplicaRow({
+          kind: 'dictionary-entry',
+          item: {
+            id: occ.id,
+            fields: pickReplicaFields(occ as unknown as Record<string, unknown>, [
+              'entryId',
+              'bookHash',
+              'bookTitle',
+              'bookAuthor',
+              'cfi',
+              'sectionHref',
+              'page',
+              'selectedText',
+              'contextBefore',
+              'contextAfter',
+              'highlightNoteId',
+            ]),
+            deletedAt: occ.deletedAt ? new Date(occ.deletedAt) : undefined,
+          },
+          deviceId,
+          lastHLC,
+        });
+        lastHLC = row.updated_at_ts;
+        rows.push(row);
+      }
+    }
+
+    return rows;
   },
 
   reset() {

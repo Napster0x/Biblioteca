@@ -12,7 +12,7 @@
  *
  * All HTTP requests carry a 5-second timeout via AbortController.
  */
-import type { ReplicaRow, Hlc } from '@/types/replica';
+import type { ReplicaRow, Hlc, SyncError } from '@/types/replica';
 import type { SyncCategory } from '@/types/settings';
 import type { SyncTransport } from '@/services/sync/SyncTransport';
 
@@ -36,6 +36,23 @@ function filterReplicaRows(data: unknown): ReplicaRow[] {
   );
 }
 
+/** Build a SyncError object from a fetch failure. */
+function syncError(peerId: string, kind: SyncCategory, err: unknown): SyncError {
+  const message =
+    err instanceof Error
+      ? err.message
+      : typeof err === 'object' && err !== null && 'message' in err
+        ? String((err as { message: unknown }).message)
+        : 'Unknown sync error';
+  return {
+    peerId,
+    kind,
+    timestamp: Date.now(),
+    message,
+    cause: message,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // USBHttpTransport
 // ---------------------------------------------------------------------------
@@ -50,23 +67,32 @@ export class USBHttpTransport implements SyncTransport {
   // -------------------------------------------------------------------------
 
   async pull(kind: SyncCategory, since?: Hlc): Promise<ReplicaRow[]> {
+    const peerId = `localhost:${this.port}`;
     let url = `http://localhost:${this.port}/replicas/${encodeURIComponent(kind)}`;
     if (since) {
       url += `?since=${encodeURIComponent(since)}`;
     }
 
+    let res: Response;
     try {
       const { controller, clear } = createTimeoutController();
-      const res = await fetch(url, { signal: controller.signal });
+      res = await fetch(url, { signal: controller.signal });
       clear();
-
-      if (!res.ok) return [];
-
-      const data: unknown = await res.json();
-      return filterReplicaRows(data);
-    } catch {
-      return [];
+    } catch (err) {
+      throw syncError(peerId, kind, err);
     }
+
+    if (!res.ok) {
+      throw {
+        peerId,
+        kind,
+        timestamp: Date.now(),
+        message: `HTTP ${res.status}`,
+      } as SyncError;
+    }
+
+    const data: unknown = await res.json();
+    return filterReplicaRows(data);
   }
 
   // -------------------------------------------------------------------------
@@ -76,19 +102,30 @@ export class USBHttpTransport implements SyncTransport {
   async push(kind: SyncCategory, rows: ReplicaRow[]): Promise<void> {
     if (rows.length === 0) return;
 
+    const peerId = `localhost:${this.port}`;
     const url = `http://localhost:${this.port}/replicas/${encodeURIComponent(kind)}`;
 
+    let res: Response;
     try {
       const { controller, clear } = createTimeoutController();
-      await fetch(url, {
+      res = await fetch(url, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rows),
         signal: controller.signal,
       });
       clear();
-    } catch {
-      // Best-effort push.
+    } catch (err) {
+      throw syncError(peerId, kind, err);
+    }
+
+    if (!res.ok) {
+      throw {
+        peerId,
+        kind,
+        timestamp: Date.now(),
+        message: `HTTP ${res.status}`,
+      } as SyncError;
     }
   }
 
@@ -114,40 +151,62 @@ export class USBHttpTransport implements SyncTransport {
   // -------------------------------------------------------------------------
 
   async pullDictionaryImage(entryId: string): Promise<ArrayBuffer | null> {
+    const peerId = `localhost:${this.port}`;
     const url = `http://localhost:${this.port}/dictionary-images/${encodeURIComponent(entryId)}`;
 
+    let res: Response;
     try {
       const { controller, clear } = createTimeoutController();
-      const res = await fetch(url, { signal: controller.signal });
+      res = await fetch(url, { signal: controller.signal });
       clear();
-
-      if (!res.ok) return null;
-      return await res.arrayBuffer();
-    } catch {
-      return null;
+    } catch (err) {
+      throw syncError(peerId, 'dictionary-entry', err);
     }
+
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      throw {
+        peerId,
+        kind: 'dictionary-entry' as SyncCategory,
+        timestamp: Date.now(),
+        message: `HTTP ${res.status}`,
+      } as SyncError;
+    }
+
+    return await res.arrayBuffer();
   }
 
   async pushDictionaryImage(
     entryId: string,
     imageBytes: ArrayBuffer,
   ): Promise<{ uploaded: boolean }> {
+    const peerId = `localhost:${this.port}`;
     const url = `http://localhost:${this.port}/dictionary-images/${encodeURIComponent(entryId)}`;
 
+    let res: Response;
     try {
       const { controller, clear } = createTimeoutController();
-      const res = await fetch(url, {
+      res = await fetch(url, {
         method: 'PUT',
         headers: { 'Content-Type': 'image/png' },
         body: imageBytes,
         signal: controller.signal,
       });
       clear();
-
-      return { uploaded: res.ok };
-    } catch {
-      return { uploaded: false };
+    } catch (err) {
+      throw syncError(peerId, 'dictionary-entry', err);
     }
+
+    if (!res.ok) {
+      throw {
+        peerId,
+        kind: 'dictionary-entry' as SyncCategory,
+        timestamp: Date.now(),
+        message: `HTTP ${res.status}`,
+      } as SyncError;
+    }
+
+    return { uploaded: true };
   }
 }
 

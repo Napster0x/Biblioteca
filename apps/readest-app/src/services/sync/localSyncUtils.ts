@@ -4,7 +4,14 @@
  * Provides standalone functions that replicate `useReplicaSync`'s sync cycle
  * logic but accept a transport directly, enabling per-peer progress tracking.
  */
-import type { ReplicaRow, Hlc, FieldEnvelope } from '@/types/replica';
+import type {
+  ReplicaRow,
+  Hlc,
+  FieldEnvelope,
+  SyncResult,
+  SyncError,
+  SyncStep,
+} from '@/types/replica';
 import type { SyncCategory } from '@/types/settings';
 import type { SyncTransport } from '@/services/sync/SyncTransport';
 import type { PeerInfo } from '@/types/settings';
@@ -67,34 +74,77 @@ const ALL_KINDS: readonly SyncCategory[] = ['annotation', 'quote', 'dictionary-e
 /**
  * Run one full sync cycle for the given kinds via a transport.
  *
- * Per kind:
- *   1. Pull remote rows
+ * Accepts optional `peerId` to use per-peer cursors in `localSyncCursors`
+ * (for WiFi/USB P2P sync). Without `peerId`, falls back to the shared
+ * `lastSyncedAtReplicas` cursor (WebDAV/KOSync path).
+ *
+ * On the first sync with a peer (`isFirstSync`):
+ *   1. Pull all remote rows (no `?since=` cursor)
  *   2. Apply locally
- *   3. Drain outbox
- *   4. Push outbox
- *   5. Advance HLC cursor
+ *   3. Push ALL local replicas (seed, not just outbox)
+ *   4. Set cursor in `localSyncCursors[peerId]`
+ *
+ * On subsequent syncs:
+ *   1. Pull since last cursor
+ *   2. Apply locally
+ *   3. Push only outbox rows
+ *   4. Advance cursor
+ *
+ * Returns `SyncResult` with per-kind counts and any errors.
+ * Accepts optional `onStep` callback for progress reporting.
  */
 export async function runSyncCycle(
   transport: SyncTransport,
   kinds: readonly SyncCategory[] = ALL_KINDS,
-): Promise<void> {
+  peerId?: string,
+  onStep?: (step: SyncStep) => void,
+): Promise<SyncResult> {
+  const startedAt = Date.now();
+  const errors: SyncError[] = [];
+  const kindsResult: Record<string, { kind: SyncCategory; pulled: number; pushed: number }> = {};
+
+  // Initialize result entries
+  for (const kind of kinds) {
+    kindsResult[kind] = { kind, pulled: 0, pushed: 0 };
+  }
+
+  const settings = useSettingsStore.getState().settings;
+  const deviceId = settings.replicaDeviceId ?? 'unknown-device';
+  const isFirstSync = peerId ? !settings.localSyncCursors?.[peerId] : false;
+
+  // ── connecting ──
+  onStep?.({ phase: 'connecting' });
+
   for (const kind of kinds) {
     // Determine cursor
-    const settings = useSettingsStore.getState().settings;
-    const cursors = settings.lastSyncedAtReplicas ?? {};
-    const since = cursors[kind] as Hlc | undefined;
-
-    // 1. Pull
-    let remoteRows: ReplicaRow[];
-    try {
-      remoteRows = await transport.pull(kind, since);
-    } catch {
-      console.warn(`[localSync] pull failed for ${kind}, skipping`);
-      continue;
+    let since: Hlc | undefined;
+    if (peerId) {
+      const cursors = settings.localSyncCursors?.[peerId] ?? {};
+      since = cursors[kind] as Hlc | undefined;
+    } else {
+      const cursors = settings.lastSyncedAtReplicas ?? {};
+      since = cursors[kind] as Hlc | undefined;
     }
 
-    // 2. Apply each remote row locally
+    // ── 1. Pull ──
+    let remoteRows: ReplicaRow[] = [];
+    try {
+      remoteRows = await transport.pull(kind, since);
+      onStep?.({ phase: 'pulling', kind, current: remoteRows.length });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push({
+        peerId: peerId ?? 'unknown',
+        kind,
+        timestamp: Date.now(),
+        message: msg,
+      });
+      continue; // Try next kind
+    }
+
+    // ── 2. Apply remote rows locally ──
     if (remoteRows.length > 0) {
+      onStep?.({ phase: 'merging', kind, current: remoteRows.length });
       for (const row of remoteRows) {
         switch (kind) {
           case 'annotation':
@@ -112,7 +162,9 @@ export async function runSyncCycle(
         }
       }
 
-      // Dictionary image sync
+      kindsResult[kind]!.pulled = remoteRows.length;
+
+      // Dictionary image sync (same as before — best-effort)
       if (kind === 'dictionary-entry') {
         const appService = await environmentConfig.getAppService();
         for (const row of remoteRows) {
@@ -138,8 +190,11 @@ export async function runSyncCycle(
       }
     }
 
-    // 3. Drain outbox for this kind
-    let outbox: ReplicaRow[];
+    // ── 3. Collect local rows to push ──
+    let toPush: ReplicaRow[] = [];
+    let outbox: ReplicaRow[] = [];
+
+    // Drain outbox for this kind
     switch (kind) {
       case 'annotation':
         outbox = [...useAnotacionesStore.getState().replicaOutbox];
@@ -153,19 +208,37 @@ export async function runSyncCycle(
         outbox = [...useDictionaryStore.getState().replicaOutbox];
         useDictionaryStore.setState({ replicaOutbox: [] });
         break;
-      default:
-        return;
     }
 
-    // 4. Push
-    if (outbox.length > 0) {
-      try {
-        await transport.push(kind, outbox);
+    // Always push outbox rows (incremental changes)
+    toPush = [...outbox];
 
-        // Push dictionary images that were in the outbox
+    // On first sync, additionally push ALL local replicas (seed)
+    if (isFirstSync) {
+      switch (kind) {
+        case 'annotation':
+          toPush = [...toPush, ...useAnotacionesStore.getState().getAllReplicas(deviceId)];
+          break;
+        case 'quote':
+          toPush = [...toPush, ...useCitasStore.getState().getAllReplicas(deviceId)];
+          break;
+        case 'dictionary-entry':
+          toPush = [...toPush, ...useDictionaryStore.getState().getAllReplicas(deviceId)];
+          break;
+      }
+    }
+
+    // ── 4. Push ──
+    onStep?.({ phase: 'pushing', kind, current: toPush.length });
+    if (toPush.length > 0) {
+      try {
+        await transport.push(kind, toPush);
+        kindsResult[kind]!.pushed = toPush.length;
+
+        // Push dictionary images that were in the pushed rows
         if (kind === 'dictionary-entry') {
           const appService = await environmentConfig.getAppService();
-          for (const row of outbox) {
+          for (const row of toPush) {
             if (row.deleted_at_ts) continue;
             const imagePathEnv = row.fields_jsonb['imagePath'] as FieldEnvelope | undefined;
             if (!imagePathEnv) continue;
@@ -182,37 +255,63 @@ export async function runSyncCycle(
             }
           }
         }
-      } catch {
-        // Push failed — put rows back for retry
-        console.warn(`[localSync] push failed for ${kind}, rows kept in outbox`);
-        switch (kind) {
-          case 'annotation':
-            useAnotacionesStore.setState({
-              replicaOutbox: [...useAnotacionesStore.getState().replicaOutbox, ...outbox],
-            });
-            break;
-          case 'quote':
-            useCitasStore.setState({
-              replicaOutbox: [...useCitasStore.getState().replicaOutbox, ...outbox],
-            });
-            break;
-          case 'dictionary-entry':
-            useDictionaryStore.setState({
-              replicaOutbox: [...useDictionaryStore.getState().replicaOutbox, ...outbox],
-            });
-            break;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push({
+          peerId: peerId ?? 'unknown',
+          kind,
+          timestamp: Date.now(),
+          message: msg,
+        });
+        // Restore outbox rows for retry
+        if (outbox.length > 0) {
+          switch (kind) {
+            case 'annotation':
+              useAnotacionesStore.setState({
+                replicaOutbox: [...useAnotacionesStore.getState().replicaOutbox, ...outbox],
+              });
+              break;
+            case 'quote':
+              useCitasStore.setState({
+                replicaOutbox: [...useCitasStore.getState().replicaOutbox, ...outbox],
+              });
+              break;
+            case 'dictionary-entry':
+              useDictionaryStore.setState({
+                replicaOutbox: [...useDictionaryStore.getState().replicaOutbox, ...outbox],
+              });
+              break;
+          }
         }
       }
     }
 
-    // 5. Advance cursor to max observed HLC
+    // ── 5. Advance cursor ──
     let maxHLC: Hlc | undefined = since;
     for (const row of remoteRows) {
       if (!maxHLC || row.updated_at_ts > maxHLC) {
         maxHLC = row.updated_at_ts;
       }
     }
-    if (maxHLC && maxHLC !== since) {
+    if (peerId && (maxHLC || isFirstSync)) {
+      const latest = useSettingsStore.getState().settings;
+      const next = {
+        ...latest,
+        localSyncCursors: {
+          ...latest.localSyncCursors,
+          [peerId]: {
+            ...(latest.localSyncCursors?.[peerId] ?? {}),
+            ...(maxHLC && maxHLC !== since ? { [kind]: maxHLC } : {}),
+            // If no maxHLC (no rows pulled), still record that we synced
+            // so the next cycle isn't another seed.
+            ...(!maxHLC ? { [kind]: since ?? '0000000000000-00000000-synced' } : {}),
+          },
+        },
+      };
+      useSettingsStore.getState().setSettings(next);
+      useSettingsStore.getState().saveSettings(environmentConfig, next);
+    } else if (!peerId && maxHLC && maxHLC !== since) {
+      // Backward compat: update lastSyncedAtReplicas when peerId is absent
       const latest = useSettingsStore.getState().settings;
       const next = {
         ...latest,
@@ -225,4 +324,15 @@ export async function runSyncCycle(
       useSettingsStore.getState().saveSettings(environmentConfig, next);
     }
   }
+
+  // ── finalizing ──
+  onStep?.({ phase: 'finalizing' });
+
+  return {
+    peerId: peerId ?? 'unknown',
+    kinds: kindsResult,
+    errors,
+    startedAt,
+    finishedAt: Date.now(),
+  };
 }

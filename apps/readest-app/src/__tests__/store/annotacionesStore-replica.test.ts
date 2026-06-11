@@ -370,6 +370,65 @@ describe('annotacionesStore — replica applyRemoteAnnotation', () => {
     expect(outbox[0]!.deleted_at_ts).not.toBeNull();
   });
 
+  // ---------------------------------------------------------------------------
+  // R5: Merge CRDT idempotente — aplicar la misma réplica dos veces no duplica
+  // ---------------------------------------------------------------------------
+
+  it('aplicar la misma réplica dos veces no duplica la entrada (R5)', () => {
+    const row = makeAnnotationRow({
+      id: 'annot-idem-1',
+      hlc: NEW_HLC,
+      fields: {
+        bookHash: 'hash-idem',
+        bookTitle: 'Idempotent Book',
+        bookAuthor: 'Idempotent Author',
+        cfi: '/6/4',
+        page: 7,
+        text: 'Texto que no debe duplicarse',
+        note: 'Nota idempotente',
+        style: 'highlight',
+        color: 'blue',
+      },
+    });
+
+    useAnotacionesStore.getState().applyRemoteAnnotation(row);
+    useAnotacionesStore.getState().applyRemoteAnnotation(row);
+
+    const state = useAnotacionesStore.getState();
+    expect(state.annotations).toHaveLength(1);
+    expect(state.annotations[0]!.text).toBe('Texto que no debe duplicarse');
+    expect(state.annotations[0]!.note).toBe('Nota idempotente');
+  });
+
+  it('aplicar la misma réplica tras merge no modifica los datos ni duplica (R5, triangulación)', () => {
+    const row = makeAnnotationRow({
+      id: 'annot-idem-2',
+      hlc: NEW_HLC,
+      fields: {
+        bookHash: 'hash-idem2',
+        bookTitle: 'Triangulation Book',
+        text: 'original text',
+        note: 'original note',
+        style: 'underline',
+        color: 'green',
+      },
+    });
+
+    // Primera aplicación: inserta
+    useAnotacionesStore.getState().applyRemoteAnnotation(row);
+
+    // Segunda aplicación con misma fila: no debe cambiar nada
+    useAnotacionesStore.getState().applyRemoteAnnotation(row);
+
+    const state = useAnotacionesStore.getState();
+    expect(state.annotations).toHaveLength(1);
+    const ann = state.annotations[0]!;
+    expect(ann.text).toBe('original text');
+    expect(ann.note).toBe('original note');
+    expect(ann.style).toBe('underline');
+    expect(ann.color).toBe('green');
+  });
+
   it('outbox entries have monotonic HLCs across multiple mutations', async () => {
     const service = {
       createAnnotation: vi.fn().mockImplementation(async (input: Record<string, unknown>) => ({

@@ -77,6 +77,12 @@ export interface CitasActions {
   deleteSelectedQuotes(service: CitasService): Promise<void>;
   removeQuotesFromState(ids: readonly string[]): void;
   applyRemoteQuote(row: ReplicaRow): void;
+  /**
+   * Build ReplicaRows for ALL local quotes (not just the outbox).
+   * Used during seed sync (first sync with a new peer).
+   * Deleted quotes produce tombstone rows.
+   */
+  getAllReplicas(deviceId: string): ReplicaRow[];
   reset(): void;
 }
 
@@ -325,6 +331,27 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
         quotes: state.quotes.map((q, i) => (i === existingIdx ? (merged as unknown as Cite) : q)),
       };
     });
+  },
+
+  getAllReplicas(deviceId: string): ReplicaRow[] {
+    const state = get();
+    const rows: ReplicaRow[] = [];
+    let lastHLC: Hlc | undefined;
+    for (const quote of state.quotes) {
+      const row = createReplicaRow({
+        kind: 'quote',
+        item: {
+          id: quote.id,
+          fields: pickReplicaFields(quote),
+          deletedAt: quote.deletedAt ? new Date(quote.deletedAt) : undefined,
+        },
+        deviceId,
+        lastHLC,
+      });
+      lastHLC = row.updated_at_ts;
+      rows.push(row);
+    }
+    return rows;
   },
 
   reset() {

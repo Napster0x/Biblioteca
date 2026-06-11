@@ -9,6 +9,9 @@ import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vite
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { useLocalSyncStore } from '@/store/localSyncStore';
 import type { PeerInfo } from '@/types/settings';
+import type { SyncResult, SyncStep } from '@/types/replica';
+import { syncUIReducer } from '@/components/settings/integrations/LocalSyncPanel';
+import type { SyncUI } from '@/components/settings/integrations/LocalSyncPanel';
 
 // Hoisted mock for runSyncCycle — accessible in both vi.mock factory and tests.
 const { mockRunSyncCycle } = vi.hoisted(() => ({
@@ -232,7 +235,7 @@ describe('LocalSyncPanel', () => {
   // ── Sync progress bar ─────────────────────────────────────────────────
 
   describe('sync progress bar', () => {
-    it('shows progress bar with "Syncing X/Y devices..." while sync is in progress', async () => {
+    it('shows disabled button with "Sincronizando…" while sync is in progress', async () => {
       // Make runSyncCycle never resolve — keeps sync in "in progress" state
       mockRunSyncCycle.mockImplementationOnce(() => new Promise(() => {}));
 
@@ -250,16 +253,19 @@ describe('LocalSyncPanel', () => {
       const btn = screen.getByRole('button', { name: /Sync Now/i });
       fireEvent.click(btn);
 
-      // Should show progress text
-      const progressText = await screen.findByText(/Syncing/i, {}, { timeout: 3000 });
-      expect(progressText).toBeDefined();
-
-      // Button should be disabled during sync
-      expect((btn as HTMLButtonElement).disabled).toBe(true);
+      // Button should show "Sincronizando…" and be disabled
+      const syncingBtn = await screen.findByRole(
+        'button',
+        { name: /Sincronizando/i },
+        { timeout: 3000 },
+      );
+      expect(syncingBtn).toBeDefined();
+      expect((syncingBtn as HTMLButtonElement).disabled).toBe(true);
     });
 
-    it('shows last synced timestamp and hides progress bar when sync completes', async () => {
-      mockRunSyncCycle.mockResolvedValueOnce(undefined);
+    it('shows last synced timestamp when sync completes successfully', async () => {
+      const result = makeSyncResult();
+      mockSyncThatCallsOnStep(result);
 
       mockStoreReturn({ localSync: { enabled: true, port: 7878, deviceName: '' } });
       seedPeers([{ host: '192.168.1.5', port: 7878, deviceName: 'Tablet', version: '1.0' }]);
@@ -271,15 +277,12 @@ describe('LocalSyncPanel', () => {
       const btn = screen.getByRole('button', { name: /Sync Now/i });
       fireEvent.click(btn);
 
-      // After sync completes, timestamp should appear
-      const timestamp = await screen.findByText(/Last synced:/, {}, { timeout: 3000 });
-      expect(timestamp).toBeDefined();
+      // After sync completes, success summary should appear with timestamp
+      const successText = await screen.findByText(/recibido.*5/i, {}, { timeout: 3000 });
+      expect(successText).toBeDefined();
 
-      // Progress bar should be gone
-      expect(screen.queryByText(/Syncing/i)).toBeNull();
-
-      // Button should be enabled again
-      expect((btn as HTMLButtonElement).disabled).toBe(false);
+      // Button should not be visible in success state (no "Sync Now")
+      expect(screen.queryByRole('button', { name: /Sync Now/i })).toBeNull();
     });
   });
 
@@ -389,23 +392,26 @@ describe('LocalSyncPanel', () => {
   // ── Last synced timestamp ─────────────────────────────────────────────
 
   describe('last synced timestamp', () => {
-    it('shows last synced timestamp after sync is triggered', async () => {
+    it('shows last synced info after sync is triggered', async () => {
+      const result = makeSyncResult();
+      mockSyncThatCallsOnStep(result);
+
       mockStoreReturn({ localSync: { enabled: true, port: 7878, deviceName: '' } });
       seedPeers([{ host: '192.168.1.5', port: 7878, deviceName: 'Tablet', version: '1.0.0' }]);
       useLocalSyncStore.getState().setPeerReachable('192.168.1.5:7878', true);
 
       render(<LocalSyncPanel onBack={vi.fn()} />);
 
-      // Initially, no timestamp shown.
-      expect(screen.queryByText(/Last synced:/)).toBeNull();
+      // Initially, no success summary shown.
+      expect(screen.queryByText(/recibido/i)).toBeNull();
 
       // Click Sync Now.
       const btn = screen.getByRole('button', { name: /Sync Now/i });
       fireEvent.click(btn);
 
-      // After sync completes (timeout resolves), timestamp should appear.
-      const timestamp = await screen.findByText(/Last synced:/, {}, { timeout: 3000 });
-      expect(timestamp).toBeDefined();
+      // After sync completes, success summary should appear.
+      const successText = await screen.findByText(/recibido.*5/i, {}, { timeout: 3000 });
+      expect(successText).toBeDefined();
     });
 
     it('does NOT show last synced timestamp before first sync', () => {
@@ -439,6 +445,268 @@ describe('LocalSyncPanel', () => {
 
       // BoxedList renders a SectionTitle above the card.
       expect(screen.getByText('Discovered Devices')).toBeDefined();
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // Phase 4 — 4-state sync UI: idle | syncing | success | error
+  // ────────────────────────────────────────────────────────────────────
+
+  /** Build a minimal SyncResult for test assertions. */
+  function makeSyncResult(overrides: Partial<SyncResult> = {}): SyncResult {
+    return {
+      peerId: '192.168.1.5:7878',
+      kinds: {
+        annotation: { kind: 'annotation', pulled: 3, pushed: 1, conflicts: 0 },
+        quote: { kind: 'quote', pulled: 2, pushed: 0, conflicts: 1 },
+        'dictionary-entry': {
+          kind: 'dictionary-entry',
+          pulled: 0,
+          pushed: 0,
+          conflicts: 0,
+        },
+      },
+      errors: [],
+      startedAt: Date.now() - 2000,
+      finishedAt: Date.now(),
+      ...overrides,
+    };
+  }
+
+  /** Utility that creates a mock for runSyncCycle which calls onStep then resolves. */
+  function mockSyncThatCallsOnStep(result: SyncResult) {
+    mockRunSyncCycle.mockImplementationOnce(
+      (
+        _transport: unknown,
+        _kinds: unknown,
+        _peerId?: string,
+        onStep?: (step: SyncStep) => void,
+      ) => {
+        if (onStep) {
+          onStep({ phase: 'connecting' });
+          onStep({ phase: 'pulling', kind: 'annotation', current: 3 });
+          onStep({ phase: 'merging', kind: 'annotation', current: 3 });
+          onStep({ phase: 'pushing', kind: 'annotation', current: 1 });
+          onStep({ phase: 'pulling', kind: 'quote', current: 2 });
+          onStep({ phase: 'merging', kind: 'quote', current: 2 });
+          onStep({ phase: 'pushing', kind: 'quote', current: 0 });
+          onStep({ phase: 'finalizing' });
+        }
+        return Promise.resolve(result);
+      },
+    );
+  }
+
+  describe('sync state machine', () => {
+    // ── SYNCING ──────────────────────────────────────────────────────
+
+    it('shows button disabled with "Sincronizando..." text during sync (R13)', async () => {
+      // Keep sync pending forever
+      mockRunSyncCycle.mockImplementationOnce(() => new Promise(() => {}));
+
+      mockStoreReturn({ localSync: { enabled: true, port: 7878, deviceName: '' } });
+      seedPeers([{ host: '192.168.1.5', port: 7878, deviceName: 'Tablet', version: '1.0' }]);
+      useLocalSyncStore.getState().setPeerReachable('192.168.1.5:7878', true);
+
+      render(<LocalSyncPanel onBack={vi.fn()} />);
+
+      // Click Sync Now
+      const btn = screen.getByRole('button', { name: /Sync Now/i });
+      fireEvent.click(btn);
+
+      // Button text changes to "Sincronizando..."
+      const syncingBtn = await screen.findByRole(
+        'button',
+        { name: /Sincronizando/i },
+        { timeout: 3000 },
+      );
+      expect(syncingBtn).toBeDefined();
+      expect((syncingBtn as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('shows progress phase indicators during sync (R10)', async () => {
+      mockRunSyncCycle.mockImplementationOnce(
+        (_t: unknown, _k: unknown, _p?: string, onStep?: (step: SyncStep) => void) => {
+          // Fire a couple of steps so UI renders phase info
+          onStep?.({ phase: 'connecting' });
+          onStep?.({
+            phase: 'pulling',
+            kind: 'annotation',
+            current: 5,
+            detail: 'Recibiendo anotaciones...',
+          });
+          return new Promise(() => {}); // never resolve
+        },
+      );
+
+      mockStoreReturn({ localSync: { enabled: true, port: 7878, deviceName: '' } });
+      seedPeers([{ host: '192.168.1.5', port: 7878, deviceName: 'Tablet', version: '1.0' }]);
+      useLocalSyncStore.getState().setPeerReachable('192.168.1.5:7878', true);
+
+      render(<LocalSyncPanel onBack={vi.fn()} />);
+
+      const btn = screen.getByRole('button', { name: /Sync Now/i });
+      fireEvent.click(btn);
+
+      // Phase indicators should be visible (may appear in pills and detail)
+      const progressEls = await screen.findAllByText(/Recibiendo/u, {}, { timeout: 3000 });
+      expect(progressEls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    // ── SUCCESS ───────────────────────────────────────────────────────
+
+    it('shows summary with received/sent/conflict counters after sync completes (R11)', async () => {
+      const result = makeSyncResult({
+        kinds: {
+          annotation: { kind: 'annotation', pulled: 5, pushed: 2, conflicts: 1 },
+          quote: { kind: 'quote', pulled: 3, pushed: 0, conflicts: 0 },
+          'dictionary-entry': { kind: 'dictionary-entry', pulled: 0, pushed: 1, conflicts: 0 },
+        },
+      });
+      mockSyncThatCallsOnStep(result);
+
+      mockStoreReturn({ localSync: { enabled: true, port: 7878, deviceName: '' } });
+      seedPeers([{ host: '192.168.1.5', port: 7878, deviceName: 'Tablet', version: '1.0' }]);
+      useLocalSyncStore.getState().setPeerReachable('192.168.1.5:7878', true);
+
+      render(<LocalSyncPanel onBack={vi.fn()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /Sync Now/i }));
+
+      // Wait for success summary elements
+      const receivedText = await screen.findByText(/recibido.*8/i, {}, { timeout: 3000 });
+      expect(receivedText).toBeDefined();
+      const sentText = screen.getByText(/enviado.*3/i);
+      expect(sentText).toBeDefined();
+      const conflictsText = screen.getByText(/conflictos.*1/i);
+      expect(conflictsText).toBeDefined();
+    });
+
+    it('auto-transitions from SUCCESS back to IDLE when DISMISS is dispatched (R11)', async () => {
+      // Test that the reducer transitions from success to idle on DISMISS
+      const successState: SyncUI = {
+        state: 'success',
+        progress: null,
+        result: makeSyncResult(),
+        errorPeerId: '',
+        errorMessage: '',
+        lastSyncedAt: new Date(),
+        lastSyncSummary: 'test',
+      };
+      const dismissed = syncUIReducer(successState, { type: 'DISMISS' });
+      expect(dismissed.state).toBe('idle');
+      expect(dismissed.result).toBeNull();
+      expect(dismissed.errorPeerId).toBe('');
+      expect(dismissed.errorMessage).toBe('');
+    });
+
+    // ── ERROR ─────────────────────────────────────────────────────────
+
+    it('shows error message with peer name when sync fails (R12)', async () => {
+      mockRunSyncCycle.mockRejectedValueOnce(new Error('Connection refused'));
+
+      mockStoreReturn({ localSync: { enabled: true, port: 7878, deviceName: '' } });
+      seedPeers([{ host: '192.168.1.5', port: 7878, deviceName: 'Tablet', version: '1.0' }]);
+      useLocalSyncStore.getState().setPeerReachable('192.168.1.5:7878', true);
+
+      render(<LocalSyncPanel onBack={vi.fn()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /Sync Now/i }));
+
+      // Error message should mention the peer
+      const errorText = await screen.findByText(
+        /Tablet|Connection refused/i,
+        {},
+        { timeout: 3000 },
+      );
+      expect(errorText).toBeDefined();
+      // The error icon is shown
+      expect(screen.getByText(/❌|Error/i)).toBeDefined();
+    });
+
+    it('shows Retry button in ERROR state that re-initiates sync (R12)', async () => {
+      // First call: fail
+      mockRunSyncCycle.mockRejectedValueOnce(new Error('Connection refused'));
+      // Second call (retry): succeed
+      const retryResult = makeSyncResult();
+      mockSyncThatCallsOnStep(retryResult);
+
+      mockStoreReturn({ localSync: { enabled: true, port: 7878, deviceName: '' } });
+      seedPeers([{ host: '192.168.1.5', port: 7878, deviceName: 'Tablet', version: '1.0' }]);
+      useLocalSyncStore.getState().setPeerReachable('192.168.1.5:7878', true);
+
+      render(<LocalSyncPanel onBack={vi.fn()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /Sync Now/i }));
+
+      // Wait for error state
+      await screen.findByText(/Connection refused/i, {}, { timeout: 3000 });
+
+      // Retry button should exist
+      const retryBtn = screen.getByRole('button', { name: /Reintentar|Retry/i });
+      expect(retryBtn).toBeDefined();
+
+      // Click retry
+      fireEvent.click(retryBtn);
+
+      // Should transition to success
+      const summaryEl = await screen.findByText(/recibido.*5/i, {}, { timeout: 3000 });
+      expect(summaryEl).toBeDefined();
+    });
+
+    it('shows Dismiss button in ERROR state that returns to IDLE (R12)', async () => {
+      mockRunSyncCycle.mockRejectedValueOnce(new Error('Connection refused'));
+
+      mockStoreReturn({ localSync: { enabled: true, port: 7878, deviceName: '' } });
+      seedPeers([{ host: '192.168.1.5', port: 7878, deviceName: 'Tablet', version: '1.0' }]);
+      useLocalSyncStore.getState().setPeerReachable('192.168.1.5:7878', true);
+
+      render(<LocalSyncPanel onBack={vi.fn()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /Sync Now/i }));
+
+      await screen.findByText(/Connection refused/i, {}, { timeout: 3000 });
+
+      // Find dismiss button (not "Retry")
+      const dismissBtn = screen.getByRole('button', { name: /Cerrar|Close|Dismiss/i });
+      expect(dismissBtn).toBeDefined();
+      fireEvent.click(dismissBtn);
+
+      // Should return to IDLE
+      const syncNowBtn = await screen.findByRole('button', { name: /Sync Now/i });
+      expect(syncNowBtn).toBeDefined();
+      expect((syncNowBtn as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    // ── Partial errors (errors[] in SyncResult) ───────────────────────
+
+    it('shows summary with partial error count when SyncResult has errors (R16)', async () => {
+      const result = makeSyncResult({
+        errors: [
+          {
+            peerId: '192.168.1.5:7878',
+            kind: 'annotation',
+            timestamp: Date.now(),
+            message: 'Timeout pulling annotations',
+          },
+        ],
+      });
+      mockSyncThatCallsOnStep(result);
+
+      mockStoreReturn({ localSync: { enabled: true, port: 7878, deviceName: '' } });
+      seedPeers([{ host: '192.168.1.5', port: 7878, deviceName: 'Tablet', version: '1.0' }]);
+      useLocalSyncStore.getState().setPeerReachable('192.168.1.5:7878', true);
+
+      render(<LocalSyncPanel onBack={vi.fn()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /Sync Now/i }));
+
+      // Summary still shows (success despite partial errors)
+      const summaryEl = await screen.findByText(/recibido.*5/i, {}, { timeout: 3000 });
+      expect(summaryEl).toBeDefined();
+      // Error count visible — error note should show
+      const errorNote = screen.getByText(/error/i);
+      expect(errorNote).toBeDefined();
     });
   });
 });

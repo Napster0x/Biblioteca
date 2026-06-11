@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReplicaRow, Hlc, FieldsObject } from '@/types/replica';
+import type { ReplicaRow, Hlc, FieldsObject, SyncError } from '@/types/replica';
 import type { SyncCategory } from '@/types/settings';
 
 // ---------------------------------------------------------------------------
@@ -157,22 +157,26 @@ describe('USBHttpTransport', () => {
       expect(result[0]!.replica_id).toBe('annotation:annot-1');
     });
 
-    it('returns empty array on HTTP error', async () => {
+    it('throws SyncError on HTTP error', async () => {
       mockFetchResponse = createMockResponse('Not Found', 404);
       const t = new USBHttpTransport(7878);
 
-      const result = await t.pull('annotation' as SyncCategory);
-
-      expect(result).toEqual([]);
+      await expect(t.pull('annotation' as SyncCategory)).rejects.toMatchObject({
+        peerId: 'localhost:7878',
+        kind: 'annotation',
+        message: expect.stringContaining('404'),
+      } as SyncError);
     });
 
-    it('returns empty array on connection refused', async () => {
+    it('throws SyncError on connection refused', async () => {
       mockFetch.mockRejectedValueOnce(new TypeError('Connection refused'));
       const t = new USBHttpTransport(7878);
 
-      const result = await t.pull('annotation' as SyncCategory);
-
-      expect(result).toEqual([]);
+      await expect(t.pull('annotation' as SyncCategory)).rejects.toMatchObject({
+        peerId: 'localhost:7878',
+        kind: 'annotation',
+        message: 'Connection refused',
+      } as SyncError);
     });
 
     it('uses AbortController signal for timeout', async () => {
@@ -224,13 +228,30 @@ describe('USBHttpTransport', () => {
       expect(body).toHaveLength(2);
     });
 
-    it('silently swallows network errors', async () => {
+    it('throws SyncError on connection refused', async () => {
       mockFetch.mockRejectedValueOnce(new Error('Connection refused'));
       const t = new USBHttpTransport(7878);
 
       await expect(
         t.push('annotation' as SyncCategory, [makeRow('annot-1', HLC_A)]),
-      ).resolves.toBeUndefined();
+      ).rejects.toMatchObject({
+        peerId: 'localhost:7878',
+        kind: 'annotation',
+        message: 'Connection refused',
+      } as SyncError);
+    });
+
+    it('throws SyncError on HTTP 500 error', async () => {
+      mockFetchResponse = createMockResponse('Internal Server Error', 500);
+      const t = new USBHttpTransport(7878);
+
+      await expect(
+        t.push('annotation' as SyncCategory, [makeRow('annot-1', HLC_A)]),
+      ).rejects.toMatchObject({
+        peerId: 'localhost:7878',
+        kind: 'annotation',
+        message: expect.stringContaining('500'),
+      } as SyncError);
     });
   });
 
@@ -302,13 +323,15 @@ describe('USBHttpTransport', () => {
       expect(result).toBeNull();
     });
 
-    it('returns null on connection refused', async () => {
+    it('throws SyncError on connection refused', async () => {
       mockFetch.mockRejectedValueOnce(new TypeError('Connection refused'));
       const t = new USBHttpTransport(7878);
 
-      const result = await t.pullDictionaryImage!('any');
-
-      expect(result).toBeNull();
+      await expect(t.pullDictionaryImage!('any')).rejects.toMatchObject({
+        peerId: 'localhost:7878',
+        kind: 'dictionary-entry',
+        message: 'Connection refused',
+      } as SyncError);
     });
 
     it('uses AbortController signal', async () => {
@@ -351,22 +374,30 @@ describe('USBHttpTransport', () => {
       expect(fetchCalls[0]!.init!.body).toBe(bytes);
     });
 
-    it('returns uploaded: false on network error', async () => {
+    it('throws SyncError on connection refused', async () => {
       mockFetch.mockRejectedValueOnce(new Error('Connection refused'));
       const t = new USBHttpTransport(7878);
 
-      const result = await t.pushDictionaryImage!('entry-1', new Uint8Array([1]).buffer);
-
-      expect(result.uploaded).toBe(false);
+      await expect(
+        t.pushDictionaryImage!('entry-1', new Uint8Array([1]).buffer),
+      ).rejects.toMatchObject({
+        peerId: 'localhost:7878',
+        kind: 'dictionary-entry',
+        message: 'Connection refused',
+      } as SyncError);
     });
 
-    it('returns uploaded: false on non-2xx', async () => {
+    it('throws SyncError on non-2xx', async () => {
       mockFetchResponse = createMockResponse('Error', 500);
       const t = new USBHttpTransport(7878);
 
-      const result = await t.pushDictionaryImage!('entry-1', new Uint8Array([1]).buffer);
-
-      expect(result.uploaded).toBe(false);
+      await expect(
+        t.pushDictionaryImage!('entry-1', new Uint8Array([1]).buffer),
+      ).rejects.toMatchObject({
+        peerId: 'localhost:7878',
+        kind: 'dictionary-entry',
+        message: expect.stringContaining('500'),
+      } as SyncError);
     });
 
     it('uses AbortController signal', async () => {

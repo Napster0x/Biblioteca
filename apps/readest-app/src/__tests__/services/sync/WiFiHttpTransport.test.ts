@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReplicaRow, Hlc, FieldsObject } from '@/types/replica';
+import type { ReplicaRow, Hlc, FieldsObject, SyncError } from '@/types/replica';
 import type { SyncCategory } from '@/types/settings';
 
 // ---------------------------------------------------------------------------
@@ -176,32 +176,39 @@ describe('WiFiHttpTransport', () => {
       expect(result).toEqual([]);
     });
 
-    it('returns empty array on HTTP error status (4xx, 5xx)', async () => {
+    it('throws SyncError on HTTP error status (4xx, 5xx)', async () => {
       mockFetchResponse = createMockResponse('Not Found', 404);
 
       const t = new WiFiHttpTransport('192.168.1.10', 7878);
-      const result = await t.pull('annotation' as SyncCategory);
-
-      expect(result).toEqual([]);
+      await expect(t.pull('annotation' as SyncCategory)).rejects.toMatchObject({
+        peerId: '192.168.1.10:7878',
+        kind: 'annotation',
+        message: expect.stringContaining('404'),
+      } as SyncError);
     });
 
-    it('returns empty array on connection refused (fetch throws)', async () => {
+    it('throws SyncError with peerId on connection refused', async () => {
       mockFetch.mockRejectedValueOnce(new TypeError('fetch failed'));
 
       const t = new WiFiHttpTransport('192.168.1.10', 7878);
-      const result = await t.pull('annotation' as SyncCategory);
-
-      expect(result).toEqual([]);
+      await expect(t.pull('annotation' as SyncCategory)).rejects.toMatchObject({
+        peerId: '192.168.1.10:7878',
+        kind: 'annotation',
+        message: 'fetch failed',
+        cause: 'fetch failed',
+      } as SyncError);
     });
 
-    it('returns empty array on network timeout', async () => {
+    it('throws SyncError on network timeout', async () => {
       const abortError = new DOMException('The operation was aborted', 'AbortError');
       mockFetch.mockRejectedValueOnce(abortError);
 
       const t = new WiFiHttpTransport('192.168.1.10', 7878);
-      const result = await t.pull('annotation' as SyncCategory);
-
-      expect(result).toEqual([]);
+      await expect(t.pull('annotation' as SyncCategory)).rejects.toMatchObject({
+        peerId: '192.168.1.10:7878',
+        kind: 'annotation',
+        message: 'The operation was aborted',
+      } as SyncError);
     });
 
     it('passes an AbortController signal to fetch (5s timeout)', async () => {
@@ -265,14 +272,30 @@ describe('WiFiHttpTransport', () => {
       expect(fetchCalls[0]!.url).toBe('http://192.168.1.10:7878/replicas/quote');
     });
 
-    it('silently fails on network error (push is best-effort)', async () => {
+    it('throws SyncError on connection refused', async () => {
       mockFetch.mockRejectedValueOnce(new Error('Connection refused'));
       const t = new WiFiHttpTransport('192.168.1.10', 7878);
 
-      // Should not throw
       await expect(
         t.push('annotation' as SyncCategory, [makeRow('annot-1', HLC_A)]),
-      ).resolves.toBeUndefined();
+      ).rejects.toMatchObject({
+        peerId: '192.168.1.10:7878',
+        kind: 'annotation',
+        message: 'Connection refused',
+      } as SyncError);
+    });
+
+    it('throws SyncError on HTTP 500 error', async () => {
+      mockFetchResponse = createMockResponse('Internal Server Error', 500);
+      const t = new WiFiHttpTransport('192.168.1.10', 7878);
+
+      await expect(
+        t.push('annotation' as SyncCategory, [makeRow('annot-1', HLC_A)]),
+      ).rejects.toMatchObject({
+        peerId: '192.168.1.10:7878',
+        kind: 'annotation',
+        message: expect.stringContaining('500'),
+      } as SyncError);
     });
 
     it('passes AbortController signal for timeout protection', async () => {
@@ -387,13 +410,15 @@ describe('WiFiHttpTransport', () => {
       expect(result).toBeNull();
     });
 
-    it('returns null on connection refused (fetch throws)', async () => {
+    it('throws SyncError on connection refused', async () => {
       mockFetch.mockRejectedValueOnce(new TypeError('fetch failed'));
       const t = new WiFiHttpTransport('192.168.1.10', 7878);
 
-      const result = await t.pullDictionaryImage!('any-entry');
-
-      expect(result).toBeNull();
+      await expect(t.pullDictionaryImage!('any-entry')).rejects.toMatchObject({
+        peerId: '192.168.1.10:7878',
+        kind: 'dictionary-entry',
+        message: 'fetch failed',
+      } as SyncError);
     });
 
     it('uses AbortController signal for timeout', async () => {
@@ -446,24 +471,28 @@ describe('WiFiHttpTransport', () => {
       expect(fetchCalls[0]!.init!.body).toBe(bytes);
     });
 
-    it('returns uploaded: false on network error', async () => {
+    it('throws SyncError on connection refused', async () => {
       mockFetch.mockRejectedValueOnce(new Error('Connection refused'));
       const t = new WiFiHttpTransport('192.168.1.10', 7878);
       const bytes = new Uint8Array([1]).buffer;
 
-      const result = await t.pushDictionaryImage!('entry-1', bytes);
-
-      expect(result.uploaded).toBe(false);
+      await expect(t.pushDictionaryImage!('entry-1', bytes)).rejects.toMatchObject({
+        peerId: '192.168.1.10:7878',
+        kind: 'dictionary-entry',
+        message: 'Connection refused',
+      } as SyncError);
     });
 
-    it('returns uploaded: false on non-2xx response', async () => {
+    it('throws SyncError on non-2xx response', async () => {
       mockFetchResponse = createMockResponse('Internal Error', 500);
       const t = new WiFiHttpTransport('192.168.1.10', 7878);
       const bytes = new Uint8Array([1]).buffer;
 
-      const result = await t.pushDictionaryImage!('entry-1', bytes);
-
-      expect(result.uploaded).toBe(false);
+      await expect(t.pushDictionaryImage!('entry-1', bytes)).rejects.toMatchObject({
+        peerId: '192.168.1.10:7878',
+        kind: 'dictionary-entry',
+        message: expect.stringContaining('500'),
+      } as SyncError);
     });
 
     it('uses AbortController signal for timeout', async () => {
