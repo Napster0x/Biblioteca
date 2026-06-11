@@ -229,12 +229,112 @@ describe('localSyncUtils', () => {
 
       expect(result).toEqual([]);
     });
+
+    // ── USB peer filter (Task 1.1 RED — new test cases) ──────────────
+
+    it('includes USB peer on localhost when reachable (R6)', () => {
+      const peer: PeerInfo = {
+        host: 'localhost',
+        port: 7878,
+        deviceName: 'USB Phone',
+        version: '1.0',
+        kind: 'usb',
+        reachable: true,
+      };
+      useLocalSyncStore.getState().addPeer(peer);
+      useLocalSyncStore.getState().setPeerReachable(peerKey('localhost', 7878), true);
+
+      const result = mod.filterReachablePeers(
+        useLocalSyncStore.getState().peers,
+        useLocalSyncStore.getState().peerHealth,
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0]!.host).toBe('localhost');
+      expect(result[0]!.kind).toBe('usb');
+    });
+
+    it('excludes WiFi peer on localhost even when reachable (R7)', () => {
+      const peer: PeerInfo = {
+        host: '127.0.0.1',
+        port: 7878,
+        deviceName: 'Self WiFi',
+        version: '1.0',
+        kind: 'wifi',
+        reachable: true,
+      };
+      useLocalSyncStore.getState().addPeer(peer);
+      useLocalSyncStore.getState().setPeerReachable(peerKey('127.0.0.1', 7878), true);
+
+      const result = mod.filterReachablePeers(
+        useLocalSyncStore.getState().peers,
+        useLocalSyncStore.getState().peerHealth,
+      );
+
+      expect(result).toEqual([]);
+    });
+
+    it('includes USB peer on IPv6 loopback when reachable', () => {
+      const peer: PeerInfo = {
+        host: '::1',
+        port: 7878,
+        deviceName: 'USB Tablet IPv6',
+        version: '1.0',
+        kind: 'usb',
+        reachable: true,
+      };
+      useLocalSyncStore.getState().addPeer(peer);
+      useLocalSyncStore.getState().setPeerReachable(peerKey('::1', 7878), true);
+
+      const result = mod.filterReachablePeers(
+        useLocalSyncStore.getState().peers,
+        useLocalSyncStore.getState().peerHealth,
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0]!.kind).toBe('usb');
+    });
+
+    it('WiFi peer with normal IP still passes through (behavior unchanged)', () => {
+      const peer: PeerInfo = {
+        host: '192.168.1.100',
+        port: 7878,
+        deviceName: 'WiFi Tablet',
+        version: '1.0',
+        kind: 'wifi',
+        reachable: true,
+      };
+      useLocalSyncStore.getState().addPeer(peer);
+      useLocalSyncStore.getState().setPeerReachable(peerKey('192.168.1.100', 7878), true);
+
+      const result = mod.filterReachablePeers(
+        useLocalSyncStore.getState().peers,
+        useLocalSyncStore.getState().peerHealth,
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0]!.host).toBe('192.168.1.100');
+    });
   });
 
   // ── createPeerTransport ───────────────────────────────────────────────
 
   describe('createPeerTransport', () => {
-    it('creates a WiFiHttpTransport for non-localhost peers', () => {
+    it('creates a WiFiHttpTransport for peers with kind "wifi"', () => {
+      const peer: PeerInfo = {
+        host: '192.168.1.5',
+        port: 7878,
+        deviceName: 'Device',
+        version: '1.0',
+        kind: 'wifi',
+      };
+
+      const transport = mod.createPeerTransport(peer);
+
+      expect(transport.kind).toBe('wifi');
+    });
+
+    it('creates a WiFiHttpTransport for peers without kind (backward compat)', () => {
       const peer: PeerInfo = {
         host: '192.168.1.5',
         port: 7878,
@@ -247,12 +347,13 @@ describe('localSyncUtils', () => {
       expect(transport.kind).toBe('wifi');
     });
 
-    it('creates a USBHttpTransport for localhost peers', () => {
+    it('creates a USBHttpTransport for peers with kind "usb"', () => {
       const peer: PeerInfo = {
         host: 'localhost',
         port: 7878,
         deviceName: 'Device',
         version: '1.0',
+        kind: 'usb',
       };
 
       const transport = mod.createPeerTransport(peer);
@@ -260,12 +361,13 @@ describe('localSyncUtils', () => {
       expect(transport.kind).toBe('usb');
     });
 
-    it('creates a USBHttpTransport for 127.0.0.1 peers', () => {
+    it('creates a USBHttpTransport for 127.0.0.1 peer with kind usb', () => {
       const peer: PeerInfo = {
         host: '127.0.0.1',
         port: 7878,
         deviceName: 'Device',
         version: '1.0',
+        kind: 'usb',
       };
 
       const transport = mod.createPeerTransport(peer);
@@ -273,8 +375,14 @@ describe('localSyncUtils', () => {
       expect(transport.kind).toBe('usb');
     });
 
-    it('creates a USBHttpTransport for ::1 (IPv6 loopback) peers', () => {
-      const peer: PeerInfo = { host: '::1', port: 7878, deviceName: 'Device', version: '1.0' };
+    it('creates a USBHttpTransport for ::1 peer with kind usb', () => {
+      const peer: PeerInfo = {
+        host: '::1',
+        port: 7878,
+        deviceName: 'Device',
+        version: '1.0',
+        kind: 'usb',
+      };
 
       const transport = mod.createPeerTransport(peer);
 

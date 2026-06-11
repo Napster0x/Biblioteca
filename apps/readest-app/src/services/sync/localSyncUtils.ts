@@ -32,8 +32,11 @@ export function filterReachablePeers(
   peerHealth: Record<PeerKey, { reachable: boolean }>,
 ): PeerInfo[] {
   return peers.filter((p) => {
-    // Skip self — localhost/loopback is our own device
-    if (p.host === 'localhost' || p.host === '127.0.0.1' || p.host === '::1') return false;
+    // USB peers (ADB tunnel) legitimately report localhost — allow them.
+    // WiFi peers on localhost are our own device and must be excluded.
+    if (p.kind !== 'usb') {
+      if (p.host === 'localhost' || p.host === '127.0.0.1' || p.host === '::1') return false;
+    }
     const health = peerHealth[peerKey(p.host, p.port)];
     return health?.reachable === true;
   });
@@ -46,11 +49,10 @@ export function filterReachablePeers(
 /**
  * Create a SyncTransport for a given peer.
  *
- * Localhost/loopback peers get USBHttpTransport (ADB tunnel),
- * remote IP peers get WiFiHttpTransport.
+ * Uses peer.kind to determine transport: 'usb' → USBHttpTransport, 'wifi' (or absent) → WiFiHttpTransport.
  */
 export function createPeerTransport(peer: PeerInfo): SyncTransport {
-  if (peer.host === 'localhost' || peer.host === '127.0.0.1' || peer.host === '::1') {
+  if (peer.kind === 'usb') {
     return new USBHttpTransport(peer.port);
   }
   return new WiFiHttpTransport(peer.host, peer.port);
