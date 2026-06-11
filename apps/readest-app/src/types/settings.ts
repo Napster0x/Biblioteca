@@ -98,6 +98,11 @@ export interface PeerInfo {
   version: string;
   /** Whether the peer was reachable at last health-check. */
   reachable?: boolean;
+  /**
+   * Discovery origin — set by the discover handler.
+   * 'wifi' for mDNS/subnet scan peers, 'usb' for ADB tunnel peers.
+   */
+  kind?: 'wifi' | 'usb';
 }
 
 export interface LocalSyncSettings {
@@ -110,6 +115,18 @@ export interface LocalSyncSettings {
   port: number;
   /** Human-readable device name shown to peers. Defaults to hostname. */
   deviceName: string;
+  /**
+   * Wall-clock ms timestamp of the last completed local sync cycle.
+   * Persisted so the IDLE state can show "Last synced at …" even
+   * after app restart.
+   */
+  lastSyncedAt?: number;
+  /**
+   * One-line summary of the last sync result (e.g. "Received 5 annotations,
+   * 2 quotes. Sent 1 dictionary entry."). Displayed beneath "Last synced:"
+   * in the IDLE state.
+   */
+  lastSyncSummary?: string;
 }
 
 export interface WebDAVSettings {
@@ -366,6 +383,12 @@ export interface SystemSettings {
    * pulled row per kind. Absent kinds pull from the beginning.
    */
   lastSyncedAtReplicas?: Record<string, string>;
+  /**
+   * Per-peer cursor map for local sync (WiFi/USB). Maps peerKey
+   * (`host:port`) to per-kind HLC cursor strings. Independent from
+   * `lastSyncedAtReplicas` which is used by WebDAV/KOSync.
+   */
+  localSyncCursors?: Record<string, Record<string, string>>;
   /**
    * Per-category sync toggles. Missing keys default to ON. The
    * 'progress' category gates the existing book-config (reading

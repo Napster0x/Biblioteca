@@ -52,3 +52,42 @@ export const isCipherEnvelope = (v: unknown): v is CipherEnvelope =>
   typeof (v as CipherEnvelope).s === 'string' &&
   typeof (v as CipherEnvelope).alg === 'string' &&
   typeof (v as CipherEnvelope).h === 'string';
+
+// ───────────────────────────────────────────────────────────────────
+// sync-fix-crdt — new types for local sync progress, results, errors
+// ───────────────────────────────────────────────────────────────────
+
+import type { SyncCategory } from '@/types/settings';
+
+export interface SyncKindResult {
+  kind: SyncCategory;
+  pulled: number;
+  pushed: number;
+  conflicts: number;
+}
+
+export interface SyncError {
+  peerId: string;
+  kind: SyncCategory;
+  timestamp: number;
+  message: string;
+  cause?: string;
+}
+
+export interface SyncResult {
+  peerId: string;
+  kinds: Record<string, SyncKindResult>;
+  errors: SyncError[];
+  startedAt: number;
+  finishedAt: number;
+}
+
+export type SyncPhase = 'connecting' | 'pulling' | 'merging' | 'pushing' | 'finalizing';
+
+export interface SyncStep {
+  phase: SyncPhase;
+  kind?: SyncCategory;
+  current?: number;
+  total?: number;
+  detail?: string;
+}
