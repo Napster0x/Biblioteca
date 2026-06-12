@@ -501,9 +501,49 @@ fn build_setup_usb_tunnel_args(serial: &str, port: u16) -> Vec<String> {
     ]
 }
 
+/// Resolve the `adb` binary path, checking common locations.
+fn resolve_adb() -> Option<String> {
+    let candidates = [
+        "adb",
+        "/opt/android-sdk/platform-tools/adb",
+        "/usr/bin/adb",
+        "/usr/local/bin/adb",
+    ];
+    // Also check ANDROID_HOME and ANDROID_SDK_ROOT env vars
+    if let Ok(home) = std::env::var("ANDROID_HOME") {
+        let p = std::path::Path::new(&home).join("platform-tools/adb");
+        if p.exists() {
+            return Some(p.to_string_lossy().to_string());
+        }
+    }
+    if let Ok(root) = std::env::var("ANDROID_SDK_ROOT") {
+        let p = std::path::Path::new(&root).join("platform-tools/adb");
+        if p.exists() {
+            return Some(p.to_string_lossy().to_string());
+        }
+    }
+    for c in &candidates {
+        if std::path::Path::new(c).exists() {
+            return Some(c.to_string());
+        }
+    }
+    // Fallback: if "adb" is in PATH
+    if std::path::Path::new("adb").exists() {
+        // Try via PATH: just running it may work
+        return Some("adb".to_string());
+    }
+    None
+}
+
+fn adb_cmd() -> std::process::Command {
+    let adb = resolve_adb().unwrap_or_else(|| "adb".to_string());
+    std::process::Command::new(adb)
+}
+
 #[tauri::command]
 fn check_adb() -> Result<(), String> {
-    let output = std::process::Command::new("adb")
+    let adb = resolve_adb().ok_or_else(|| "adb not found".to_string())?;
+    let output = std::process::Command::new(&adb)
         .arg("version")
         .output()
         .map_err(|e| format!("Failed to run adb: {e}"))?;
@@ -523,7 +563,7 @@ fn check_adb() -> Result<(), String> {
 /// if `adb` is not installed or no devices are connected.
 #[tauri::command]
 fn list_usb_devices() -> Vec<String> {
-    match std::process::Command::new("adb")
+    match adb_cmd()
         .args(["devices", "-l"])
         .output()
     {
@@ -540,7 +580,7 @@ fn list_usb_devices() -> Vec<String> {
 
 #[tauri::command]
 fn list_usb_devices_detailed() -> Vec<UsbDeviceStatus> {
-    match std::process::Command::new("adb")
+    match adb_cmd()
         .args(["devices", "-l"])
         .output()
     {
@@ -557,7 +597,7 @@ fn list_usb_devices_detailed() -> Vec<UsbDeviceStatus> {
 
 #[tauri::command]
 fn list_forward_rules(serial: String, sync_port: u16) -> Result<Vec<AdbForwardRule>, String> {
-    let output = std::process::Command::new("adb")
+    let output = adb_cmd()
         .args(build_list_forward_rules_args(&serial))
         .output()
         .map_err(|e| format!("Failed to run adb: {e}"))?;
@@ -578,7 +618,7 @@ fn list_forward_rules(serial: String, sync_port: u16) -> Result<Vec<AdbForwardRu
 #[tauri::command]
 fn setup_usb_tunnel(serial: String, port: u16) -> Result<String, String> {
     let args = build_setup_usb_tunnel_args(&serial, port);
-    let output = std::process::Command::new("adb")
+    let output = adb_cmd()
         .args(args)
         .output()
         .map_err(|e| format!("Failed to run adb: {e}"))?;
