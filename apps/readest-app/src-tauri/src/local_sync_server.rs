@@ -148,14 +148,35 @@ impl SyncServer {
                     Ok(Some(req)) => {
                         // Catch panics from request handling to prevent
                         // the server thread from crashing the whole app.
-                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             handle_request(req, &replicas_dir, &device_name, &visible_repo);
                         }));
+                        if let Err(panic) = result {
+                            let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                                s.to_string()
+                            } else if let Some(s) = panic.downcast_ref::<String>() {
+                                s.to_string()
+                            } else {
+                                "unknown panic".to_string()
+                            };
+                            log::error!("[local-sync] Panic in request handler: {msg}");
+                        }
                     }
                     Ok(None) => { /* timeout — check running flag */ }
-                    Err(_) => break,
+                    Err(e) => {
+                        log::error!(
+                            "[local-sync] recv_timeout error: {e}. Server thread restarting..."
+                        );
+                        // Don't break — retry after a short sleep.
+                        // The listener socket may be recoverable.
+                        std::thread::sleep(Duration::from_secs(1));
+                        if !running_clone.load(Ordering::Relaxed) {
+                            break;
+                        }
+                    }
                 }
             }
+            log::info!("[local-sync] Server thread exiting.");
         });
 
         Ok(SyncServer {
@@ -163,6 +184,36 @@ impl SyncServer {
             handle: Some(handle),
             port,
         })
+    }
+
+    /// Verify the server is actually listening (blocking health check).
+    pub fn verify_health(&self, timeout: Duration) -> Result<(), String> {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        let addr = format!("127.0.0.1:{}", self.port);
+        let mut stream = TcpStream::connect_timeout(
+            &addr.parse().map_err(|e| format!("invalid address: {e}"))?,
+            timeout,
+        )
+        .map_err(|e| format!("Server not listening on {addr}: {e}"))?;
+        stream
+            .set_read_timeout(Some(timeout))
+            .map_err(|e| format!("set_read_timeout: {e}"))?;
+        write!(stream, "GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            .map_err(|e| format!("health write: {e}"))?;
+        let mut buf = [0u8; 256];
+        let n = stream
+            .read(&mut buf)
+            .map_err(|e| format!("health read: {e}"))?;
+        if n == 0 {
+            return Err("Server accepted connection but sent no data".to_string());
+        }
+        let response = String::from_utf8_lossy(&buf[..n]);
+        if response.contains("200") || response.contains("ok") {
+            Ok(())
+        } else {
+            Err(format!("Unexpected health response: {:.100}", response))
+        }
     }
 
     /// Signal shutdown and wait for the server thread to exit.
