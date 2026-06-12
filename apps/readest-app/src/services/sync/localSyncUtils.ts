@@ -290,7 +290,7 @@ export async function runSyncCycle(
         maxHLC = row.updated_at_ts;
       }
     }
-    if (peerId && (maxHLC || isFirstSync)) {
+    if (peerId && maxHLC && maxHLC !== since) {
       const latest = useSettingsStore.getState().settings;
       const next = {
         ...latest,
@@ -298,10 +298,7 @@ export async function runSyncCycle(
           ...latest.localSyncCursors,
           [peerId]: {
             ...(latest.localSyncCursors?.[peerId] ?? {}),
-            ...(maxHLC && maxHLC !== since ? { [kind]: maxHLC } : {}),
-            // If no maxHLC (no rows pulled), still record that we synced
-            // so the next cycle isn't another seed.
-            ...(!maxHLC ? { [kind]: since ?? '0000000000000-00000000-synced' } : {}),
+            [kind]: maxHLC,
           },
         },
       };
