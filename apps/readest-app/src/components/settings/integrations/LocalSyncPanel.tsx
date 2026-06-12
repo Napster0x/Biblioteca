@@ -171,8 +171,8 @@ function statusCopy(state: UsbSyncState, errorMessage: string): UsbStatusCopy {
       return { title: 'Syncing…', action: 'Keep the USB cable connected.' };
     case 'success':
       return {
-        title: 'USB CRDT transfer completed',
-        action: 'Visible-data convergence is still blocked by the server repository gate.',
+        title: 'Sync completed',
+        action: 'Data has been transferred. Check the other device.',
       };
     case 'error':
       return {
