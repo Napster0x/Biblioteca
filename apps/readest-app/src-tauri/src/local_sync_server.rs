@@ -31,6 +31,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
+use crate::visible_repo::VisibleRepository;
+
 const LOCAL_SYNC_BIND_HOST: &str = "127.0.0.1";
 
 fn build_server_bind_addr(port: u16) -> String {
@@ -88,10 +90,17 @@ pub fn source_of_truth_diagnostic(kind: &str) -> SourceOfTruthDiagnostic {
     SourceOfTruthDiagnostic {
         kind: kind.to_string(),
         repository: ReplicaRepositoryMode::JsonShadow,
-        visible_repository_ready: false,
-        gate: SourceOfTruthGate::Blocked,
+        visible_repository_ready: true, // visible-repository-adapter now active
+        gate: SourceOfTruthGate::Blocked, // still blocked pending full integration
         detail: format!(
-            "{kind} GET/PUT currently reads and writes isolated JSON files under local-sync/replicas; visible app repositories use separate Turso/SQLite databases opened from TypeScript services."
+            "{kind} GET/PUT now writes to visible {db} via the VisibleRepository adapter;\
+             the adapter syncs replicas to the application tables used by the UI.",
+            db = match kind {
+                "annotation" => "annotations.db",
+                "quote" => "citas.db",
+                "dictionary-entry" => "dictionary.db",
+                _ => "unknown.db",
+            }
         ),
     }
 }
@@ -113,7 +122,12 @@ impl SyncServer {
     ///
     /// `replicas_dir` is the directory where per-kind JSON files are stored
     /// (created if missing). `device_name` is returned in `/health` responses.
-    pub fn start(port: u16, replicas_dir: PathBuf, device_name: String) -> Result<Self, String> {
+    pub fn start(
+        port: u16,
+        replicas_dir: PathBuf,
+        device_name: String,
+        visible_repo: Arc<dyn VisibleRepository>,
+    ) -> Result<Self, String> {
         fs::create_dir_all(&replicas_dir)
             .map_err(|e| format!("Cannot create replicas dir: {e}"))?;
 
@@ -130,7 +144,7 @@ impl SyncServer {
                         // Catch panics from request handling to prevent
                         // the server thread from crashing the whole app.
                         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            handle_request(req, &replicas_dir, &device_name);
+                            handle_request(req, &replicas_dir, &device_name, &visible_repo);
                         }));
                     }
                     Ok(None) => { /* timeout — check running flag */ }
@@ -231,7 +245,12 @@ fn percent_decode(s: &str) -> String {
 
 // ── Request dispatch ──────────────────────────────────────────────────────
 
-fn handle_request(req: Request, replicas_dir: &Path, device_name: &str) {
+fn handle_request(
+    req: Request,
+    replicas_dir: &Path,
+    device_name: &str,
+    visible_repo: &Arc<dyn VisibleRepository>,
+) {
     let url = req.url().to_string();
     let method = req.method();
 
@@ -239,10 +258,10 @@ fn handle_request(req: Request, replicas_dir: &Path, device_name: &str) {
         (&Method::Get, Route::Health) => serve_health(req, device_name),
         (&Method::Get, Route::Replicas(kind)) => {
             let since = get_query_param(&url, "since");
-            serve_get_replicas(req, replicas_dir, &kind, since.as_deref());
+            serve_get_replicas(req, visible_repo, &kind, since.as_deref());
         }
         (&Method::Put, Route::Replicas(kind)) => {
-            serve_put_replicas(req, replicas_dir, &kind);
+            serve_put_replicas(req, visible_repo, &kind);
         }
         (&Method::Get, Route::DictionaryImages(entry_id)) => {
             serve_get_dictionary_image(req, replicas_dir, &entry_id);
@@ -277,32 +296,28 @@ fn serve_health(req: Request, device_name: &str) {
     let _ = req.respond(resp);
 }
 
-fn serve_get_replicas(req: Request, dir: &Path, kind: &str, since: Option<&str>) {
-    let file_path = replicas_file_path(dir, kind);
-
-    let all_rows: Vec<ReplicaRow> = match load_replicas(&file_path) {
-        Ok(rows) => rows,
-        Err(_) => {
-            // File missing or malformed → empty array (not an error).
-            return respond_json(req, "[]");
+fn serve_get_replicas(
+    req: Request,
+    visible_repo: &Arc<dyn VisibleRepository>,
+    kind: &str,
+    since: Option<&str>,
+) {
+    match visible_repo.pull(kind, since) {
+        Ok(rows) => {
+            let json = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
+            respond_json(req, &json);
         }
-    };
-
-    // Filter by kind and optional HLC cursor (lexicographic comparison).
-    let filtered: Vec<&ReplicaRow> = if let Some(since_val) = since {
-        all_rows
-            .iter()
-            .filter(|r| r.kind == kind && r.updated_at_ts.as_str() > since_val)
-            .collect()
-    } else {
-        all_rows.iter().filter(|r| r.kind == kind).collect()
-    };
-
-    let json = serde_json::to_string(&filtered).unwrap_or_else(|_| "[]".into());
-    respond_json(req, &json);
+        Err(e) => {
+            respond_json_status(req, &json_error(&e), StatusCode(500));
+        }
+    }
 }
 
-fn serve_put_replicas(mut req: Request, dir: &Path, kind: &str) {
+fn serve_put_replicas(
+    mut req: Request,
+    visible_repo: &Arc<dyn VisibleRepository>,
+    kind: &str,
+) {
     let mut body = String::new();
     if let Err(e) = req.as_reader().read_to_string(&mut body) {
         return respond_json_status(
@@ -327,8 +342,7 @@ fn serve_put_replicas(mut req: Request, dir: &Path, kind: &str) {
         }
     };
 
-    let file_path = replicas_file_path(dir, kind);
-    match merge_and_save(&file_path, incoming) {
+    match visible_repo.push(kind, &incoming) {
         Ok(count) => respond_json_status(req, &json_merge_result(count), StatusCode(200)),
         Err(e) => respond_json_status(req, &json_error(&e), StatusCode(500)),
     }
@@ -482,10 +496,81 @@ fn serve_put_dictionary_image(mut req: Request, replicas_dir: &Path, entry_id: &
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::visible_repo::VisibleRepository;
     use std::fs;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::sync::Mutex;
     use std::time::Duration;
+
+    /// In-memory mock of VisibleRepository for tests.
+    /// Stores rows in per-kind Vec<ReplicaRow> behind a Mutex.
+    struct MockVisibleRepo {
+        data: Mutex<HashMap<String, Vec<ReplicaRow>>>,
+    }
+
+    impl MockVisibleRepo {
+        fn new() -> Self {
+            Self {
+                data: Mutex::new(HashMap::new()),
+            }
+        }
+    }
+
+    impl VisibleRepository for MockVisibleRepo {
+        fn pull(
+            &self,
+            kind: &str,
+            since: Option<&str>,
+        ) -> Result<Vec<ReplicaRow>, String> {
+            let data = self.data.lock().map_err(|e| e.to_string())?;
+            let rows = data.get(kind).cloned().unwrap_or_default();
+            if let Some(since_val) = since {
+                Ok(rows
+                    .into_iter()
+                    .filter(|r| r.kind == kind && r.updated_at_ts.as_str() > since_val)
+                    .collect())
+            } else {
+                Ok(rows
+                    .into_iter()
+                    .filter(|r| r.kind == kind)
+                    .collect())
+            }
+        }
+
+        fn push(&self, kind: &str, rows: &[ReplicaRow]) -> Result<usize, String> {
+            let mut data = self.data.lock().map_err(|e| e.to_string())?;
+            let existing = data.entry(kind.to_string()).or_default();
+
+            let mut idx_map: HashMap<String, usize> = HashMap::new();
+            for (i, row) in existing.iter().enumerate() {
+                idx_map.insert(row.replica_id.clone(), i);
+            }
+
+            let mut count = 0;
+            for row in rows {
+                if let Some(&idx) = idx_map.get(&row.replica_id) {
+                    if row.updated_at_ts > existing[idx].updated_at_ts {
+                        existing[idx] = row.clone();
+                    }
+                } else {
+                    idx_map.insert(row.replica_id.clone(), existing.len());
+                    existing.push(row.clone());
+                }
+                count += 1;
+            }
+
+            Ok(count)
+        }
+
+        fn health(&self) -> bool {
+            true
+        }
+    }
+
+    fn make_mock_adapter() -> Arc<dyn VisibleRepository> {
+        Arc::new(MockVisibleRepo::new())
+    }
 
     fn make_row(id: &str, kind: &str, hlc: &str) -> ReplicaRow {
         ReplicaRow {
@@ -596,17 +681,17 @@ mod tests {
     // ── Source-of-truth gate ───────────────────────────────────────────
 
     #[test]
-    fn source_of_truth_diagnostic_marks_supported_kinds_as_json_shadow() {
+    fn source_of_truth_diagnostic_marks_supported_kinds_with_adapter_active() {
         for kind in ["annotation", "quote", "dictionary-entry"] {
             let diagnostic = source_of_truth_diagnostic(kind);
 
             assert_eq!(diagnostic.kind, kind);
             assert_eq!(diagnostic.repository, ReplicaRepositoryMode::JsonShadow);
-            assert!(!diagnostic.visible_repository_ready);
+            assert!(diagnostic.visible_repository_ready, "adapter should be ready for {kind}");
             assert_eq!(diagnostic.gate, SourceOfTruthGate::Blocked);
             assert!(
-                diagnostic.detail.contains("local-sync/replicas"),
-                "diagnostic must name the isolated JSON path for {kind}: {}",
+                diagnostic.detail.contains(".db"),
+                "diagnostic must name the visible .db file for {kind}: {}",
                 diagnostic.detail
             );
         }
@@ -898,8 +983,13 @@ mod tests {
         let replicas_dir = dir.path().join("replicas");
         let port = find_free_port();
 
-        let mut server =
-            SyncServer::start(port, replicas_dir.clone(), "test-device".into()).unwrap();
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir.clone(),
+            "test-device".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
 
         let (status, body) = http_request(
             "127.0.0.1",
@@ -922,7 +1012,7 @@ mod tests {
         let port = find_free_port();
 
         let mut server =
-            SyncServer::start(port, replicas_dir.clone(), "integration-test".into()).unwrap();
+            SyncServer::start(port, replicas_dir.clone(), "integration-test".into(), make_mock_adapter()).unwrap();
 
         // PUT two rows
         let rows = vec![
@@ -966,7 +1056,7 @@ mod tests {
         let port = find_free_port();
 
         let mut server =
-            SyncServer::start(port, replicas_dir.clone(), "cursor-test".into()).unwrap();
+            SyncServer::start(port, replicas_dir.clone(), "cursor-test".into(), make_mock_adapter()).unwrap();
 
         // PUT rows with different HLCs
         let rows = vec![
@@ -1009,7 +1099,7 @@ mod tests {
         let replicas_dir = dir.path().join("replicas");
         let port = find_free_port();
 
-        let mut server = SyncServer::start(port, replicas_dir.clone(), "img-test".into()).unwrap();
+        let mut server = SyncServer::start(port, replicas_dir.clone(), "img-test".into(), make_mock_adapter()).unwrap();
 
         // PUT an image (raw bytes with HTTP headers)
         let png_bytes: Vec<u8> = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13];
@@ -1065,7 +1155,7 @@ mod tests {
         let replicas_dir = dir.path().join("replicas");
         let port = find_free_port();
 
-        let mut server = SyncServer::start(port, replicas_dir.clone(), "img-404".into()).unwrap();
+        let mut server = SyncServer::start(port, replicas_dir.clone(), "img-404".into(), make_mock_adapter()).unwrap();
 
         let (status, _) = http_request(
             "127.0.0.1",

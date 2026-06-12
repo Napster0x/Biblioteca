@@ -28,6 +28,7 @@ mod dir_scanner;
 mod discord_rpc;
 mod local_sync_discovery;
 mod local_sync_server;
+mod visible_repo;
 #[cfg(target_os = "macos")]
 mod macos;
 mod transfer_file;
@@ -277,7 +278,9 @@ fn start_local_sync_server(
 
     let device_name = get_device_hostname();
 
-    let server = local_sync_server::SyncServer::start(port, replicas_dir, device_name)?;
+    let visible_repo = std::sync::Arc::new(visible_repo::LibsqlVisibleRepo::new(data_dir.clone()));
+
+    let server = local_sync_server::SyncServer::start(port, replicas_dir, device_name, visible_repo)?;
 
     let mut locked = state.lock().map_err(|e| e.to_string())?;
     locked.server = Some(server);
