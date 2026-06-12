@@ -6,13 +6,13 @@ import { useTranslation } from '@/hooks/useTranslation';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useLocalSyncStore, type UsbSyncState } from '@/store/localSyncStore';
 import { isTauriAppPlatform } from '@/services/environment';
-
-const isAndroid = () => typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
 import { createPeerTransport, runSyncCycle } from '@/services/sync/localSyncUtils';
 import SubPageHeader from '../SubPageHeader';
 import { BoxedList, SettingsRow, SettingsSwitchRow } from '../primitives';
 import type { PeerInfo, SyncCategory } from '@/types/settings';
 import type { SyncPhase, SyncResult, SyncStep } from '@/types/replica';
+
+const isAndroid = () => typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
 
 interface LocalSyncPanelProps {
   onBack: () => void;
@@ -231,7 +231,8 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
     };
     setSettings(next);
     saveSettings(envConfig, next).catch(() => {});
-  }, [envConfig, saveSettings, setSettings, settings, ui.lastSyncSummary, ui.lastSyncedAt]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ui.lastSyncSummary, ui.lastSyncedAt]);
 
   const configureUsb = useCallback(async () => {
     const port = localSync.port;
