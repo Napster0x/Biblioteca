@@ -242,7 +242,7 @@ describe('LocalSyncPanel USB-only', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sync Now' }));
 
     expect(await screen.findByText(/Transferencia CRDT completada/i)).toBeDefined();
-    expect(screen.getByText(/convergencia visible pendiente/i)).toBeDefined();
+    expect(screen.queryByText(/convergencia visible pendiente/i)).toBeNull();
     expect(screen.queryByText(/Sincronización completada/i)).toBeNull();
     expect(screen.getByText(/recibido.*5/i)).toBeDefined();
     expect(screen.getByText(/enviado.*2/i)).toBeDefined();

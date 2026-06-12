@@ -53,6 +53,23 @@ function syncError(peerId: string, kind: SyncCategory, err: unknown): SyncError 
   };
 }
 
+async function httpError(peerId: string, kind: SyncCategory, res: Response): Promise<SyncError> {
+  let detail = '';
+  try {
+    detail = await res.text();
+  } catch {
+    detail = '';
+  }
+  const suffix = detail ? `: ${detail}` : '';
+  return {
+    peerId,
+    kind,
+    timestamp: Date.now(),
+    message: `HTTP ${res.status}${suffix}`,
+    cause: detail || `HTTP ${res.status}`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // USBHttpTransport
 // ---------------------------------------------------------------------------
@@ -83,12 +100,7 @@ export class USBHttpTransport implements SyncTransport {
     }
 
     if (!res.ok) {
-      throw {
-        peerId,
-        kind,
-        timestamp: Date.now(),
-        message: `HTTP ${res.status}`,
-      } as SyncError;
+      throw await httpError(peerId, kind, res);
     }
 
     const data: unknown = await res.json();
@@ -120,12 +132,7 @@ export class USBHttpTransport implements SyncTransport {
     }
 
     if (!res.ok) {
-      throw {
-        peerId,
-        kind,
-        timestamp: Date.now(),
-        message: `HTTP ${res.status}`,
-      } as SyncError;
+      throw await httpError(peerId, kind, res);
     }
   }
 

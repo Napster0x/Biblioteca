@@ -340,6 +340,12 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
       const now = new Date();
       const summary = buildSyncSummary(result);
       setLastResult(result);
+      if (result.errors.length > 0) {
+        const message = result.errors.map((error) => `${error.kind}: ${error.message}`).join('\n');
+        setUsbState('error', message);
+        dispatch({ type: 'SYNC_ERROR', peerId: usbPeer.deviceName, message });
+        return;
+      }
       setUsbState('success');
       dispatch({ type: 'SYNC_DONE', result, lastSyncedAt: now, summary });
     } catch (err) {
@@ -426,11 +432,6 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
                 <p className='text-sm font-medium text-base-content'>
                   ✅ {_('Transferencia CRDT completada')}
                 </p>
-                <p className='mt-1 text-xs text-amber-600'>
-                  {_(
-                    'Convergencia visible pendiente: el servidor Android todavía usa JSON shadow.',
-                  )}
-                </p>
                 <div className='mt-2 flex flex-wrap gap-3 text-xs text-base-content/70'>
                   {(() => {
                     let totalPulled = 0;
@@ -467,7 +468,9 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
             {ui.state === 'error' && (
               <div className='card eink-bordered border-base-200 bg-base-100 w-full border px-4 py-3'>
                 <p className='text-sm font-medium text-red-600'>❌ {_('Error al sincronizar')}</p>
-                <p className='text-xs text-base-content/70 mt-1'>{ui.errorMessage}</p>
+                <p className='text-xs text-base-content/70 mt-1 whitespace-pre-wrap'>
+                  {ui.errorMessage}
+                </p>
                 <button
                   type='button'
                   onClick={handleSyncNow}
