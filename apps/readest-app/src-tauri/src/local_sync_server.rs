@@ -1,8 +1,8 @@
 /**
- * local_sync_server — embedded HTTP server for peer-to-peer local sync.
+ * local_sync_server — embedded HTTP server for USB local sync.
  *
- * Serves and accepts ReplicaRow JSON arrays so WiFi/USB peers can pull
- * and push CRDT data without an intermediate cloud service.
+ * Serves and accepts ReplicaRow JSON arrays so the desktop peer can
+ * pull and push CRDT data via ADB forward tunnel (USB-only).
  *
  * ## Endpoints
  *
@@ -14,10 +14,14 @@
  *
  * ## Architecture
  *
- * The server runs on a dedicated `std::thread` with a 500ms request
- * timeout so the shutdown flag is checked regularly. Replica state is
- * persisted as per-kind JSON files in `{data_dir}/local-sync/replicas/`.
- * The TypeScript side bridges the turso database ↔ JSON files in Phase 4.
+ * USB-only: binds to 127.0.0.1 and is reachable via `adb forward`.
+ * Replica state is persisted directly in the visible SQLite databases
+ * ({app_data_dir}/annotations.db, citas.db, dictionary.db) via
+ * the VisibleRepository adapter — not in JSON shadow files. The
+ * TypeScript services read the same .db files, so transferred data
+ * appears immediately in the UI.
+ *
+ * Dictionary images are stored as PNG files in {app_data_dir}/Dictionaries/.
  */
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -70,11 +74,12 @@ struct HealthResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplicaRepositoryMode {
     JsonShadow,
+    VisibleAdapter,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceOfTruthGate {
-    Blocked,
+    Unblocked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,9 +94,9 @@ pub struct SourceOfTruthDiagnostic {
 pub fn source_of_truth_diagnostic(kind: &str) -> SourceOfTruthDiagnostic {
     SourceOfTruthDiagnostic {
         kind: kind.to_string(),
-        repository: ReplicaRepositoryMode::JsonShadow,
+        repository: ReplicaRepositoryMode::VisibleAdapter,
         visible_repository_ready: true, // visible-repository-adapter now active
-        gate: SourceOfTruthGate::Blocked, // still blocked pending full integration
+        gate: SourceOfTruthGate::Unblocked, // visible-repository-adapter integrated
         detail: format!(
             "{kind} GET/PUT now writes to visible {db} via the VisibleRepository adapter;\
              the adapter syncs replicas to the application tables used by the UI.",
@@ -686,9 +691,9 @@ mod tests {
             let diagnostic = source_of_truth_diagnostic(kind);
 
             assert_eq!(diagnostic.kind, kind);
-            assert_eq!(diagnostic.repository, ReplicaRepositoryMode::JsonShadow);
+            assert_eq!(diagnostic.repository, ReplicaRepositoryMode::VisibleAdapter);
             assert!(diagnostic.visible_repository_ready, "adapter should be ready for {kind}");
-            assert_eq!(diagnostic.gate, SourceOfTruthGate::Blocked);
+            assert_eq!(diagnostic.gate, SourceOfTruthGate::Unblocked);
             assert!(
                 diagnostic.detail.contains(".db"),
                 "diagnostic must name the visible .db file for {kind}: {}",

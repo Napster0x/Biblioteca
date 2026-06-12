@@ -4,7 +4,7 @@
  *
  * Returns a concrete SyncTransport:
  *   - 'webdav' → WebDAVTransport (cloud sync via WebDAV)
- *   - 'wifi'   → WiFiHttpTransport (LAN peer via HTTP)
+ *   - 'wifi'   → WiFiHttpTransport (LAN peer via HTTP) — deprecated for local sync, USB-only now
  *   - 'usb'    → USBHttpTransport (localhost via ADB tunnel)
  *
  * Throws for unknown transport types.
