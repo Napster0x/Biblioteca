@@ -6,6 +6,8 @@ import { useTranslation } from '@/hooks/useTranslation';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useLocalSyncStore, type UsbSyncState } from '@/store/localSyncStore';
 import { isTauriAppPlatform } from '@/services/environment';
+
+const isAndroid = () => typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
 import { createPeerTransport, runSyncCycle } from '@/services/sync/localSyncUtils';
 import SubPageHeader from '../SubPageHeader';
 import { BoxedList, SettingsRow, SettingsSwitchRow } from '../primitives';
@@ -283,6 +285,13 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
     await saveSettings(envConfig, newSettings);
 
     if (!enabling) {
+      if (isTauriAppPlatform()) {
+        try {
+          await invoke('stop_local_sync_server');
+        } catch {
+          /* best-effort */
+        }
+      }
       resetUsbSync();
       return;
     }
@@ -290,7 +299,18 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
       setUsbState('error', 'USB local sync requires the Tauri desktop app.');
       return;
     }
-    await configureUsb();
+    // Desktop: coordinate via ADB. Android: start the HTTP server.
+    if (isAndroid()) {
+      try {
+        await invoke('start_local_sync_server', { port: localSync.port });
+        setUsbState('ready');
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        setUsbState('server-unreachable', message);
+      }
+    } else {
+      await configureUsb();
+    }
   }, [
     configureUsb,
     enabled,
