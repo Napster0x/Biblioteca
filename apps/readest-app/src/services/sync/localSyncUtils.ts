@@ -22,6 +22,10 @@ import { useSettingsStore } from '@/store/settingsStore';
 import { peerKey, type PeerKey } from '@/store/localSyncStore';
 import { USBHttpTransport } from '@/services/sync/USBHttpTransport';
 import environmentConfig from '@/services/environment';
+import {
+  defaultVisibleSeedProvider,
+  type VisibleSeedProvider,
+} from '@/services/sync/visibleSeedRepository';
 
 // ---------------------------------------------------------------------------
 // filterReachablePeers
@@ -95,6 +99,7 @@ export async function runSyncCycle(
   kinds: readonly SyncCategory[] = ALL_KINDS,
   peerId?: string,
   onStep?: (step: SyncStep) => void,
+  seedProvider: VisibleSeedProvider = defaultVisibleSeedProvider,
 ): Promise<SyncResult> {
   const startedAt = Date.now();
   const errors: SyncError[] = [];
@@ -212,17 +217,7 @@ export async function runSyncCycle(
 
     // On first sync, additionally push ALL local replicas (seed)
     if (isFirstSync) {
-      switch (kind) {
-        case 'annotation':
-          toPush = [...toPush, ...useAnotacionesStore.getState().getAllReplicas(deviceId)];
-          break;
-        case 'quote':
-          toPush = [...toPush, ...useCitasStore.getState().getAllReplicas(deviceId)];
-          break;
-        case 'dictionary-entry':
-          toPush = [...toPush, ...useDictionaryStore.getState().getAllReplicas(deviceId)];
-          break;
-      }
+      toPush = [...toPush, ...(await seedProvider(kind, deviceId))];
     }
 
     // ── 4. Push ──

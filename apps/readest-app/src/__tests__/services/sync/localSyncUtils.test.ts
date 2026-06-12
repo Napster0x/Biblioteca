@@ -11,6 +11,13 @@ import type { PeerInfo } from '@/types/settings';
 import type { ReplicaRow, Hlc, SyncResult, SyncError, SyncStep } from '@/types/replica';
 import type { SyncTransport } from '@/services/sync/SyncTransport';
 import type { SyncCategory } from '@/types/settings';
+import type { VisibleSeedProvider } from '@/services/sync/visibleSeedRepository';
+
+const mockDefaultVisibleSeedProvider = vi.hoisted(() => vi.fn<VisibleSeedProvider>());
+
+vi.mock('@/services/sync/visibleSeedRepository', () => ({
+  defaultVisibleSeedProvider: mockDefaultVisibleSeedProvider,
+}));
 
 // ---------------------------------------------------------------------------
 // Mock stores for runSyncCycle testing
@@ -192,6 +199,8 @@ describe('localSyncUtils', () => {
     mockGetAllAnnotations.mockReturnValue([]);
     mockGetAllQuotes.mockReturnValue([]);
     mockGetAllDictionaryEntries.mockReturnValue([]);
+    mockDefaultVisibleSeedProvider.mockReset();
+    mockDefaultVisibleSeedProvider.mockResolvedValue([]);
     mockSettingsState.settings = {
       lastSyncedAtReplicas: {},
       localSyncCursors: {},
@@ -650,25 +659,48 @@ describe('localSyncUtils', () => {
       expect(transport.pull).toHaveBeenCalledWith('dictionary-entry', undefined);
     });
 
-    it('pushes ALL local replicas (seed push) not just outbox on first sync (R3)', async () => {
+    it('pushes seed rows from the visible seed provider on first sync (R3)', async () => {
       const transport = createMockTransport();
       const seedRow1 = makeAnnotationRow('seed-a', HLC_A);
       const seedRow2 = makeAnnotationRow('seed-b', HLC_B);
-      // getAllReplicas returns seed rows for the annotation store
-      mockGetAllAnnotations.mockReturnValue([seedRow1, seedRow2]);
+      const seedProvider = vi.fn<VisibleSeedProvider>().mockResolvedValue([seedRow1, seedRow2]);
 
-      // outbox is empty — proves push comes from seed, not outbox
+      // outbox and store are empty — proves push comes from visible seed provider
       mockAnotacionesStore.replicaOutbox = [];
+      mockGetAllAnnotations.mockReturnValue([]);
 
-      await mod.runSyncCycle(transport, ['annotation'], SEED_PEER);
+      await mod.runSyncCycle(transport, ['annotation'], SEED_PEER, undefined, seedProvider);
 
       // The two seed rows should have been pushed
       expect(transport.push).toHaveBeenCalledTimes(1);
       expect(transport.pushedRows).toContainEqual(seedRow1);
       expect(transport.pushedRows).toContainEqual(seedRow2);
       expect(transport.pushedRows).toHaveLength(2);
+      expect(mockGetAllAnnotations).not.toHaveBeenCalled();
 
       // SyncResult should report pushed count
+    });
+
+    it('pushes visible DB seed rows when Zustand stores are empty on first sync', async () => {
+      const transport = createMockTransport();
+      const visibleSeedRow = makeAnnotationRow('visible-db-a', HLC_A);
+      const seedProvider = vi.fn<VisibleSeedProvider>().mockResolvedValue([visibleSeedRow]);
+      mockGetAllAnnotations.mockReturnValue([]);
+      mockAnotacionesStore.replicaOutbox = [];
+
+      const result = await mod.runSyncCycle(
+        transport,
+        ['annotation'],
+        SEED_PEER,
+        undefined,
+        seedProvider,
+      );
+
+      expect(seedProvider).toHaveBeenCalledWith('annotation', 'test-dev');
+      expect(mockGetAllAnnotations).not.toHaveBeenCalled();
+      expect(transport.push).toHaveBeenCalledTimes(1);
+      expect(transport.pushedRows).toEqual([visibleSeedRow]);
+      expect(result.kinds['annotation']!.pushed).toBe(1);
     });
 
     it('pushes outbox rows (incremental) on subsequent syncs when cursor exists (R4)', async () => {
@@ -692,6 +724,23 @@ describe('localSyncUtils', () => {
       expect(transport.pushedRows).toContainEqual(outboxRow);
       expect(transport.pushedRows).not.toContainEqual(seedRow);
       expect(transport.pushedRows).toHaveLength(1);
+    });
+
+    it('does not call the visible seed provider on subsequent syncs when cursor exists', async () => {
+      mockSettingsState.settings.localSyncCursors[SEED_PEER] = {
+        annotation: HLC_A,
+      };
+      const transport = createMockTransport();
+      const outboxRow = makeAnnotationRow('out-inc-visible', HLC_B);
+      mockAnotacionesStore.replicaOutbox = [outboxRow];
+      const seedProvider = vi
+        .fn<VisibleSeedProvider>()
+        .mockResolvedValue([makeAnnotationRow('visible-db-ignored', HLC_C)]);
+
+      await mod.runSyncCycle(transport, ['annotation'], SEED_PEER, undefined, seedProvider);
+
+      expect(seedProvider).not.toHaveBeenCalled();
+      expect(transport.pushedRows).toEqual([outboxRow]);
     });
 
     it('pull uses cursor since= for incremental sync when cursor exists', async () => {
