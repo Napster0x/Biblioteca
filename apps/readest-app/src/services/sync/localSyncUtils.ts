@@ -1,5 +1,5 @@
 /**
- * localSyncUtils — sync utilities for local peer-to-peer Wi-Fi/USB sync.
+ * localSyncUtils — sync utilities for local USB-only peer-to-peer sync.
  *
  * Provides standalone functions that replicate `useReplicaSync`'s sync cycle
  * logic but accept a transport directly, enabling per-peer progress tracking.
@@ -20,7 +20,6 @@ import { useCitasStore } from '@/store/citasStore';
 import { useDictionaryStore } from '@/store/dictionaryStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { peerKey, type PeerKey } from '@/store/localSyncStore';
-import { WiFiHttpTransport } from '@/services/sync/WiFiHttpTransport';
 import { USBHttpTransport } from '@/services/sync/USBHttpTransport';
 import environmentConfig from '@/services/environment';
 
@@ -39,11 +38,8 @@ export function filterReachablePeers(
   peerHealth: Record<PeerKey, { reachable: boolean }>,
 ): PeerInfo[] {
   return peers.filter((p) => {
-    // USB peers (ADB tunnel) legitimately report localhost — allow them.
-    // WiFi peers on localhost are our own device and must be excluded.
-    if (p.kind !== 'usb') {
-      if (p.host === 'localhost' || p.host === '127.0.0.1' || p.host === '::1') return false;
-    }
+    if (p.kind !== 'usb') return false;
+
     const health = peerHealth[peerKey(p.host, p.port)];
     return health?.reachable === true;
   });
@@ -56,13 +52,14 @@ export function filterReachablePeers(
 /**
  * Create a SyncTransport for a given peer.
  *
- * Uses peer.kind to determine transport: 'usb' → USBHttpTransport, 'wifi' (or absent) → WiFiHttpTransport.
+ * Uses only USB peers. WiFi/mDNS peers are intentionally rejected from the
+ * local sync flow so a USB failure cannot fall back to LAN discovery.
  */
 export function createPeerTransport(peer: PeerInfo): SyncTransport {
   if (peer.kind === 'usb') {
     return new USBHttpTransport(peer.port);
   }
-  return new WiFiHttpTransport(peer.host, peer.port);
+  throw new Error('USB-only local sync requires a USB peer');
 }
 
 // ---------------------------------------------------------------------------

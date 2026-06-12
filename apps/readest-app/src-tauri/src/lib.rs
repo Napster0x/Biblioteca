@@ -31,7 +31,7 @@ mod local_sync_server;
 #[cfg(target_os = "macos")]
 mod macos;
 mod transfer_file;
-use local_sync_discovery::PeerInfo;
+use local_sync_discovery::{find_local_ipv4, PeerInfo};
 #[cfg(target_os = "windows")]
 use tauri::webview::ScrollBarStyle;
 use tauri::{command, Emitter, WebviewUrl, WebviewWindowBuilder};
@@ -45,11 +45,10 @@ use transfer_file::{download_file, upload_file};
 
 // ── Local sync shared state ───────────────────────────────────────────────
 
-/// Managed state for the local sync subsystem (WiFi + USB peer-to-peer).
+/// Managed state for the local sync subsystem (USB peer-to-peer).
 ///
-/// Holds the optional running HTTP server, mDNS discovery instance, and
-/// the list of peers discovered on the LAN. Wrapped in `Arc<Mutex<>>` so
-/// it can be accessed from both Tauri commands and background threads.
+/// Holds the optional running HTTP server for USB-only local sync. Wrapped in
+/// `Arc<Mutex<>>` so it can be accessed from Tauri commands.
 #[derive(Default)]
 pub struct LocalSyncState {
     pub server: Option<local_sync_server::SyncServer>,
@@ -246,9 +245,19 @@ fn get_executable_dir() -> String {
 
 // ── Local sync commands ───────────────────────────────────────────────────
 
+const USB_ONLY_LOCAL_SYNC_COMMANDS: &[&str] = &[
+    "start_local_sync_server",
+    "stop_local_sync_server",
+    "check_adb",
+    "list_usb_devices",
+    "list_usb_devices_detailed",
+    "list_forward_rules",
+    "setup_usb_tunnel",
+];
+
 /// Start the embedded HTTP server for peer-to-peer sync.
 ///
-/// Listens on `0.0.0.0:{port}` and serves replicas from
+/// Listens on `127.0.0.1:{port}` and serves replicas from
 /// `{app_data_dir}/local-sync/replicas/`. The device name shown in
 /// `/health` responses is derived from the system hostname.
 #[tauri::command]
@@ -293,6 +302,7 @@ fn stop_local_sync_server(
 /// New peers are emitted to the frontend via the
 /// `local-sync:peer-discovered` Tauri event.
 #[tauri::command]
+#[allow(dead_code)]
 fn start_discovery(
     app: tauri::AppHandle,
     state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<LocalSyncState>>>,
@@ -331,6 +341,7 @@ fn start_discovery(
 
 /// Stop mDNS discovery: unregister service and stop browsing.
 #[tauri::command]
+#[allow(dead_code)]
 fn stop_discovery(
     state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<LocalSyncState>>>,
 ) -> Result<String, String> {
@@ -343,6 +354,7 @@ fn stop_discovery(
 
 /// Return the list of peers discovered since the last `start_discovery`.
 #[tauri::command]
+#[allow(dead_code)]
 fn get_discovered_peers(
     state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<LocalSyncState>>>,
 ) -> Result<Vec<PeerInfo>, String> {
@@ -365,6 +377,29 @@ pub(crate) fn get_device_hostname() -> String {
         .unwrap_or_else(|| "readest".to_string())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum AdbDeviceState {
+    Device,
+    Unauthorized,
+    Offline,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsbDeviceStatus {
+    serial: String,
+    state: AdbDeviceState,
+    model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct AdbForwardRule {
+    serial: String,
+    local: String,
+    remote: String,
+}
+
 /// Parse the output of `adb devices` into a list of device serial numbers.
 ///
 /// Input format (example):
@@ -378,24 +413,104 @@ pub(crate) fn get_device_hostname() -> String {
 /// state (both are potentially connectable). Filters out the header line
 /// and empty lines. Empty output returns an empty vector.
 fn parse_adb_devices(output: &str) -> Vec<String> {
+    parse_adb_devices_detailed(output)
+        .into_iter()
+        .filter(|device| {
+            matches!(
+                device.state,
+                AdbDeviceState::Device | AdbDeviceState::Unauthorized
+            )
+        })
+        .map(|device| device.serial)
+        .collect()
+}
+
+fn parse_adb_devices_detailed(output: &str) -> Vec<UsbDeviceStatus> {
     output
         .lines()
-        .skip(1) // skip "List of devices attached"
+        .skip_while(|line| line.trim().starts_with("List of devices attached"))
         .filter_map(|line| {
             let line = line.trim();
             if line.is_empty() {
                 return None;
             }
+
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let status = parts[1];
-                if status == "device" || status == "unauthorized" {
-                    return Some(parts[0].to_string());
-                }
-            }
-            None
+            let serial = parts.first()?;
+            let state = match *parts.get(1)? {
+                "device" => AdbDeviceState::Device,
+                "unauthorized" => AdbDeviceState::Unauthorized,
+                "offline" => AdbDeviceState::Offline,
+                _ => return None,
+            };
+            let model = parts
+                .iter()
+                .find_map(|part| part.strip_prefix("model:"))
+                .map(ToOwned::to_owned);
+
+            Some(UsbDeviceStatus {
+                serial: (*serial).to_string(),
+                state,
+                model,
+            })
         })
         .collect()
+}
+
+fn parse_adb_forward_list(output: &str, serial: &str, sync_port: u16) -> Vec<AdbForwardRule> {
+    let sync_endpoint = format!("tcp:{sync_port}");
+
+    output
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() != 3 || parts[0] != serial {
+                return None;
+            }
+
+            let local = parts[1];
+            let remote = parts[2];
+            if local == sync_endpoint && remote.starts_with("tcp:") {
+                Some(AdbForwardRule {
+                    serial: parts[0].to_string(),
+                    local: local.to_string(),
+                    remote: remote.to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn build_list_forward_rules_args(serial: &str) -> Vec<String> {
+    vec!["-s".into(), serial.into(), "forward".into(), "--list".into()]
+}
+
+fn build_setup_usb_tunnel_args(serial: &str, port: u16) -> Vec<String> {
+    let endpoint = format!("tcp:{port}");
+    vec![
+        "-s".into(),
+        serial.into(),
+        "forward".into(),
+        endpoint.clone(),
+        endpoint,
+    ]
+}
+
+#[tauri::command]
+fn check_adb() -> Result<(), String> {
+    let output = std::process::Command::new("adb")
+        .arg("version")
+        .output()
+        .map_err(|e| format!("Failed to run adb: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("adb version failed: {}", stderr.trim()))
+    }
 }
 
 /// Return a list of ADB-connected device serials.
@@ -420,15 +535,48 @@ fn list_usb_devices() -> Vec<String> {
     }
 }
 
+#[tauri::command]
+fn list_usb_devices_detailed() -> Vec<UsbDeviceStatus> {
+    match std::process::Command::new("adb")
+        .args(["devices", "-l"])
+        .output()
+    {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            parse_adb_devices_detailed(&stdout)
+        }
+        Err(e) => {
+            log::warn!("[local-sync] adb command failed: {e}");
+            Vec::new()
+        }
+    }
+}
+
+#[tauri::command]
+fn list_forward_rules(serial: String, sync_port: u16) -> Result<Vec<AdbForwardRule>, String> {
+    let output = std::process::Command::new("adb")
+        .args(build_list_forward_rules_args(&serial))
+        .output()
+        .map_err(|e| format!("Failed to run adb: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("adb forward --list failed: {}", stderr.trim()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_adb_forward_list(&stdout, &serial, sync_port))
+}
+
 /// Set up an ADB port forward tunnel for USB local sync.
 ///
 /// Runs `adb -s {serial} forward tcp:{port} tcp:{port}` so the desktop
 /// can reach a connected Android device's sync server on `localhost:{port}`.
 #[tauri::command]
 fn setup_usb_tunnel(serial: String, port: u16) -> Result<String, String> {
-    let port_str = port.to_string();
+    let args = build_setup_usb_tunnel_args(&serial, port);
     let output = std::process::Command::new("adb")
-        .args(["-s", &serial, "forward", "tcp", &port_str, "tcp", &port_str])
+        .args(args)
         .output()
         .map_err(|e| format!("Failed to run adb: {e}"))?;
 
@@ -438,6 +586,16 @@ fn setup_usb_tunnel(serial: String, port: u16) -> Result<String, String> {
     }
 
     Ok(format!("Tunnel set up for {} on port {}", serial, port))
+}
+
+/// Return this device's primary non-loopback IPv4 address.
+///
+/// Falls back to "127.0.0.1" if no non-loopback interface is found
+/// (e.g. in containers or CI without network).
+#[tauri::command]
+#[allow(dead_code)]
+fn get_local_ip() -> String {
+    find_local_ipv4().unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
 // ── End local sync commands ───────────────────────────────────────────────
@@ -470,10 +628,10 @@ pub fn run() {
             dir_scanner::read_dir,
             start_local_sync_server,
             stop_local_sync_server,
-            start_discovery,
-            stop_discovery,
-            get_discovered_peers,
+            check_adb,
             list_usb_devices,
+            list_usb_devices_detailed,
+            list_forward_rules,
             setup_usb_tunnel,
             #[cfg(target_os = "macos")]
             macos::safari_auth::auth_with_safari,
@@ -840,5 +998,86 @@ mod tests {
         let output = "List of devices attached\n";
         let result = parse_adb_devices(output);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_adb_devices_detailed_preserves_device_unauthorized_and_offline_states() {
+        let output = "List of devices attached\nABC123\tdevice product:foo model:Pixel_8 device:husky\nDEF456\tunauthorized usb:1-2\nGHI789\toffline transport_id:4\n";
+
+        let result = parse_adb_devices_detailed(output);
+
+        assert_eq!(
+            result,
+            vec![
+                UsbDeviceStatus {
+                    serial: "ABC123".into(),
+                    state: AdbDeviceState::Device,
+                    model: Some("Pixel_8".into()),
+                },
+                UsbDeviceStatus {
+                    serial: "DEF456".into(),
+                    state: AdbDeviceState::Unauthorized,
+                    model: None,
+                },
+                UsbDeviceStatus {
+                    serial: "GHI789".into(),
+                    state: AdbDeviceState::Offline,
+                    model: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_adb_forward_list_filters_serial_and_tcp_sync_port() {
+        let output = "ABC123 tcp:7878 tcp:7878\nABC123 tcp:3000 tcp:3000\nDEF456 tcp:7878 tcp:7878\nABC123 localabstract:webview_devtools remoteabstract:webview_devtools\n";
+
+        let result = parse_adb_forward_list(output, "ABC123", 7878);
+
+        assert_eq!(
+            result,
+            vec![AdbForwardRule {
+                serial: "ABC123".into(),
+                local: "tcp:7878".into(),
+                remote: "tcp:7878".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn list_forward_rules_args_are_serial_scoped_and_non_destructive() {
+        let args = build_list_forward_rules_args("ABC123");
+
+        assert_eq!(args, vec!["-s", "ABC123", "forward", "--list"]);
+        assert!(!args.windows(2).any(|w| w == ["forward", "--remove-all"]));
+        assert!(!args.windows(2).any(|w| w == ["reverse", "--remove-all"]));
+        assert!(!args.windows(3).any(|w| w == ["shell", "am", "force-stop"]));
+    }
+
+    #[test]
+    fn setup_usb_tunnel_args_are_serial_scoped_and_never_global_destructive() {
+        let args = build_setup_usb_tunnel_args("ABC123", 7878);
+
+        assert_eq!(
+            args,
+            vec!["-s", "ABC123", "forward", "tcp:7878", "tcp:7878"]
+        );
+        assert!(!args.windows(2).any(|w| w == ["forward", "--remove-all"]));
+        assert!(!args.windows(2).any(|w| w == ["reverse", "--remove-all"]));
+        assert!(!args.windows(3).any(|w| w == ["shell", "am", "force-stop"]));
+        assert!(!args
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "kill" | "install" | "uninstall")));
+    }
+
+    #[test]
+    fn usb_only_local_sync_command_set_excludes_mdns_discovery() {
+        assert!(USB_ONLY_LOCAL_SYNC_COMMANDS.contains(&"start_local_sync_server"));
+        assert!(USB_ONLY_LOCAL_SYNC_COMMANDS.contains(&"setup_usb_tunnel"));
+        assert!(USB_ONLY_LOCAL_SYNC_COMMANDS.contains(&"list_forward_rules"));
+        assert!(!USB_ONLY_LOCAL_SYNC_COMMANDS.contains(&"get_local_ip"));
+        assert!(!USB_ONLY_LOCAL_SYNC_COMMANDS.contains(&"start_discovery"));
+        assert!(!USB_ONLY_LOCAL_SYNC_COMMANDS.contains(&"stop_discovery"));
+        assert!(!USB_ONLY_LOCAL_SYNC_COMMANDS.contains(&"get_discovered_peers"));
     }
 }

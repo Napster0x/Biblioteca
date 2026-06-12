@@ -1,6 +1,10 @@
 /**
  * local_sync_discovery — mDNS service registration and browsing.
  *
+ * Deprecated for the local-sync UI: the active flow is USB/ADB-only and no
+ * Tauri handler registers these commands. This module remains isolated as a
+ * legacy rollback seam until the broader transport factory/types are removed.
+ *
  * Registers this device as `_readest-sync._tcp.local.` on the configured
  * TCP port and simultaneously browses for other instances. Discovered
  * peers are reported via a caller-supplied callback, which the Tauri
@@ -197,7 +201,7 @@ pub(crate) fn build_mdns_hostname(hostname: &str) -> String {
         format!("readest-{}.local.", base)
     }
 }
-fn find_local_ipv4() -> Option<String> {
+pub(crate) fn find_local_ipv4() -> Option<String> {
     let ifaces = if_addrs::get_if_addrs().ok()?;
 
     ifaces

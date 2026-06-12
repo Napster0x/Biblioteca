@@ -6,7 +6,7 @@
  * Run with: npx vitest run src/__tests__/services/sync/localSyncUtils.test.ts
  */
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
-import { useLocalSyncStore, peerKey } from '@/store/localSyncStore';
+import { peerKey } from '@/store/localSyncStore';
 import type { PeerInfo } from '@/types/settings';
 import type { ReplicaRow, Hlc, SyncResult, SyncError, SyncStep } from '@/types/replica';
 import type { SyncTransport } from '@/services/sync/SyncTransport';
@@ -198,45 +198,43 @@ describe('localSyncUtils', () => {
       replicaDeviceId: 'test-dev',
     };
     mockSaveSettings.mockClear();
-    useLocalSyncStore.setState({ peers: [], peerHealth: {} });
   });
 
   // ── filterReachablePeers ──────────────────────────────────────────────
 
   describe('filterReachablePeers', () => {
-    it('returns only peers with reachable=true in peerHealth', () => {
+    it('returns only USB peers with reachable=true in peerHealth', () => {
       const peers: PeerInfo[] = [
-        { host: '192.168.1.5', port: 7878, deviceName: 'Device A', version: '1.0' },
-        { host: '192.168.1.6', port: 7878, deviceName: 'Device B', version: '1.0' },
-        { host: '192.168.1.7', port: 7878, deviceName: 'Device C', version: '1.0' },
+        { host: 'localhost', port: 7878, deviceName: 'USB Device A', version: '1.0', kind: 'usb' },
+        { host: '127.0.0.1', port: 7879, deviceName: 'USB Device B', version: '1.0', kind: 'usb' },
+        {
+          host: '192.168.1.7',
+          port: 7878,
+          deviceName: 'WiFi Device C',
+          version: '1.0',
+          kind: 'wifi',
+        },
       ];
-      useLocalSyncStore.getState().addPeer(peers[0]!);
-      useLocalSyncStore.getState().addPeer(peers[1]!);
-      useLocalSyncStore.getState().addPeer(peers[2]!);
-      useLocalSyncStore.getState().setPeerReachable(peerKey('192.168.1.5', 7878), true);
-      useLocalSyncStore.getState().setPeerReachable(peerKey('192.168.1.6', 7878), false);
-      // peer C — no health data, UNKNOWN
+      const peerHealth = {
+        [peerKey('localhost', 7878)]: { reachable: true },
+        [peerKey('127.0.0.1', 7879)]: { reachable: false },
+        [peerKey('192.168.1.7', 7878)]: { reachable: true },
+      };
 
-      const result = mod.filterReachablePeers(
-        useLocalSyncStore.getState().peers,
-        useLocalSyncStore.getState().peerHealth,
-      );
+      const result = mod.filterReachablePeers(peers, peerHealth);
 
       expect(result).toHaveLength(1);
-      expect(result[0]!.host).toBe('192.168.1.5');
+      expect(result[0]!.host).toBe('localhost');
+      expect(result[0]!.kind).toBe('usb');
     });
 
     it('returns empty array when no peers are reachable', () => {
       const peers: PeerInfo[] = [
         { host: '10.0.0.1', port: 7878, deviceName: 'Device X', version: '1.0' },
       ];
-      useLocalSyncStore.getState().addPeer(peers[0]!);
-      useLocalSyncStore.getState().setPeerReachable(peerKey('10.0.0.1', 7878), false);
+      const peerHealth = { [peerKey('10.0.0.1', 7878)]: { reachable: false } };
 
-      const result = mod.filterReachablePeers(
-        useLocalSyncStore.getState().peers,
-        useLocalSyncStore.getState().peerHealth,
-      );
+      const result = mod.filterReachablePeers(peers, peerHealth);
 
       expect(result).toEqual([]);
     });
@@ -245,13 +243,9 @@ describe('localSyncUtils', () => {
       const peers: PeerInfo[] = [
         { host: '192.168.1.5', port: 7878, deviceName: 'Device A', version: '1.0' },
       ];
-      useLocalSyncStore.getState().addPeer(peers[0]!);
       // Do NOT call setPeerReachable — health is unknown
 
-      const result = mod.filterReachablePeers(
-        useLocalSyncStore.getState().peers,
-        useLocalSyncStore.getState().peerHealth,
-      );
+      const result = mod.filterReachablePeers(peers, {});
 
       expect(result).toEqual([]);
     });
@@ -267,13 +261,9 @@ describe('localSyncUtils', () => {
         kind: 'usb',
         reachable: true,
       };
-      useLocalSyncStore.getState().addPeer(peer);
-      useLocalSyncStore.getState().setPeerReachable(peerKey('localhost', 7878), true);
+      const peerHealth = { [peerKey('localhost', 7878)]: { reachable: true } };
 
-      const result = mod.filterReachablePeers(
-        useLocalSyncStore.getState().peers,
-        useLocalSyncStore.getState().peerHealth,
-      );
+      const result = mod.filterReachablePeers([peer], peerHealth);
 
       expect(result).toHaveLength(1);
       expect(result[0]!.host).toBe('localhost');
@@ -289,13 +279,9 @@ describe('localSyncUtils', () => {
         kind: 'wifi',
         reachable: true,
       };
-      useLocalSyncStore.getState().addPeer(peer);
-      useLocalSyncStore.getState().setPeerReachable(peerKey('127.0.0.1', 7878), true);
+      const peerHealth = { [peerKey('127.0.0.1', 7878)]: { reachable: true } };
 
-      const result = mod.filterReachablePeers(
-        useLocalSyncStore.getState().peers,
-        useLocalSyncStore.getState().peerHealth,
-      );
+      const result = mod.filterReachablePeers([peer], peerHealth);
 
       expect(result).toEqual([]);
     });
@@ -309,19 +295,15 @@ describe('localSyncUtils', () => {
         kind: 'usb',
         reachable: true,
       };
-      useLocalSyncStore.getState().addPeer(peer);
-      useLocalSyncStore.getState().setPeerReachable(peerKey('::1', 7878), true);
+      const peerHealth = { [peerKey('::1', 7878)]: { reachable: true } };
 
-      const result = mod.filterReachablePeers(
-        useLocalSyncStore.getState().peers,
-        useLocalSyncStore.getState().peerHealth,
-      );
+      const result = mod.filterReachablePeers([peer], peerHealth);
 
       expect(result).toHaveLength(1);
       expect(result[0]!.kind).toBe('usb');
     });
 
-    it('WiFi peer with normal IP still passes through (behavior unchanged)', () => {
+    it('excludes WiFi peer with normal IP because local sync is USB-only', () => {
       const peer: PeerInfo = {
         host: '192.168.1.100',
         port: 7878,
@@ -330,23 +312,18 @@ describe('localSyncUtils', () => {
         kind: 'wifi',
         reachable: true,
       };
-      useLocalSyncStore.getState().addPeer(peer);
-      useLocalSyncStore.getState().setPeerReachable(peerKey('192.168.1.100', 7878), true);
+      const peerHealth = { [peerKey('192.168.1.100', 7878)]: { reachable: true } };
 
-      const result = mod.filterReachablePeers(
-        useLocalSyncStore.getState().peers,
-        useLocalSyncStore.getState().peerHealth,
-      );
+      const result = mod.filterReachablePeers([peer], peerHealth);
 
-      expect(result).toHaveLength(1);
-      expect(result[0]!.host).toBe('192.168.1.100');
+      expect(result).toEqual([]);
     });
   });
 
   // ── createPeerTransport ───────────────────────────────────────────────
 
   describe('createPeerTransport', () => {
-    it('creates a WiFiHttpTransport for peers with kind "wifi"', () => {
+    it('rejects peers with kind "wifi" because local sync is USB-only', () => {
       const peer: PeerInfo = {
         host: '192.168.1.5',
         port: 7878,
@@ -355,12 +332,10 @@ describe('localSyncUtils', () => {
         kind: 'wifi',
       };
 
-      const transport = mod.createPeerTransport(peer);
-
-      expect(transport.kind).toBe('wifi');
+      expect(() => mod.createPeerTransport(peer)).toThrow('USB-only');
     });
 
-    it('creates a WiFiHttpTransport for peers without kind (backward compat)', () => {
+    it('rejects peers without kind because implicit WiFi fallback is disabled', () => {
       const peer: PeerInfo = {
         host: '192.168.1.5',
         port: 7878,
@@ -368,9 +343,7 @@ describe('localSyncUtils', () => {
         version: '1.0',
       };
 
-      const transport = mod.createPeerTransport(peer);
-
-      expect(transport.kind).toBe('wifi');
+      expect(() => mod.createPeerTransport(peer)).toThrow('USB-only');
     });
 
     it('creates a USBHttpTransport for peers with kind "usb"', () => {

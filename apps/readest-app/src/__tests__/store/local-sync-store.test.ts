@@ -1,96 +1,45 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { useLocalSyncStore } from '@/store/localSyncStore';
 import type { PeerInfo } from '@/types/settings';
 
-const makePeer = (host: string): PeerInfo => ({
-  host,
+const usbPeer: PeerInfo = {
+  host: 'localhost',
   port: 7878,
-  deviceName: `Device-${host}`,
-  version: '1.0.9',
-});
+  deviceName: 'USB Phone',
+  version: '1.0.0',
+  kind: 'usb',
+  reachable: true,
+};
 
-describe('localSyncStore', () => {
+describe('localSyncStore USB-only state', () => {
   beforeEach(() => {
-    useLocalSyncStore.setState({
-      peers: [],
-      isDiscovering: false,
-    });
+    useLocalSyncStore.getState().resetUsbSync();
   });
 
-  describe('peers management', () => {
-    it('starts with an empty peers array', () => {
-      expect(useLocalSyncStore.getState().peers).toEqual([]);
-    });
+  it('starts in the off state without a peer or discovery flags', () => {
+    const state = useLocalSyncStore.getState();
 
-    it('adds a peer to the list', () => {
-      const peer = makePeer('192.168.1.5');
-      useLocalSyncStore.getState().addPeer(peer);
-      expect(useLocalSyncStore.getState().peers).toEqual([peer]);
-    });
-
-    it('adds multiple peers', () => {
-      const peer1 = makePeer('192.168.1.5');
-      const peer2 = makePeer('192.168.1.6');
-      useLocalSyncStore.getState().addPeer(peer1);
-      useLocalSyncStore.getState().addPeer(peer2);
-      expect(useLocalSyncStore.getState().peers).toEqual([peer1, peer2]);
-    });
-
-    it('upserts peer by host+port (deduplication)', () => {
-      const peer1 = makePeer('192.168.1.5');
-      const peer2 = { ...peer1, deviceName: 'Updated' };
-      useLocalSyncStore.getState().addPeer(peer1);
-      useLocalSyncStore.getState().addPeer(peer2);
-      expect(useLocalSyncStore.getState().peers).toHaveLength(1);
-      expect(useLocalSyncStore.getState().peers[0].deviceName).toBe('Updated');
-    });
-
-    it('removes a peer by host', () => {
-      const peer1 = makePeer('192.168.1.5');
-      const peer2 = makePeer('192.168.1.6');
-      useLocalSyncStore.setState({ peers: [peer1, peer2] });
-      useLocalSyncStore.getState().removePeer('192.168.1.5');
-      expect(useLocalSyncStore.getState().peers).toEqual([peer2]);
-    });
-
-    it('removing a non-existent peer is a no-op', () => {
-      const peer = makePeer('192.168.1.5');
-      useLocalSyncStore.setState({ peers: [peer] });
-      useLocalSyncStore.getState().removePeer('no-such-host');
-      expect(useLocalSyncStore.getState().peers).toEqual([peer]);
-    });
-
-    it('clears all peers', () => {
-      useLocalSyncStore.setState({
-        peers: [makePeer('192.168.1.5'), makePeer('192.168.1.6')],
-      });
-      useLocalSyncStore.getState().clearPeers();
-      expect(useLocalSyncStore.getState().peers).toEqual([]);
-    });
+    expect(state.usbState).toBe('off');
+    expect(state.usbPeer).toBeNull();
+    expect('isDiscovering' in state).toBe(false);
+    expect('peers' in state).toBe(false);
   });
 
-  describe('discovery state', () => {
-    it('starts with isDiscovering set to false', () => {
-      expect(useLocalSyncStore.getState().isDiscovering).toBe(false);
-    });
+  it('stores exactly one USB peer for the active ADB tunnel', () => {
+    useLocalSyncStore.getState().setUsbPeer(usbPeer);
 
-    it('startDiscovery sets isDiscovering to true', () => {
-      useLocalSyncStore.getState().startDiscovery();
-      expect(useLocalSyncStore.getState().isDiscovering).toBe(true);
-    });
+    expect(useLocalSyncStore.getState().usbPeer).toEqual(usbPeer);
+  });
 
-    it('stopDiscovery sets isDiscovering to false', () => {
-      useLocalSyncStore.getState().startDiscovery();
-      useLocalSyncStore.getState().stopDiscovery();
-      expect(useLocalSyncStore.getState().isDiscovering).toBe(false);
-    });
+  it('resetUsbSync clears USB-only runtime state', () => {
+    useLocalSyncStore.getState().setUsbState('ready');
+    useLocalSyncStore.getState().setUsbPeer(usbPeer);
+    useLocalSyncStore.getState().setSyncPort(9999);
 
-    it('stopDiscovery does not clear peers', () => {
-      const peer = makePeer('192.168.1.5');
-      useLocalSyncStore.setState({ peers: [peer], isDiscovering: true });
-      useLocalSyncStore.getState().stopDiscovery();
-      expect(useLocalSyncStore.getState().peers).toEqual([peer]);
-      expect(useLocalSyncStore.getState().isDiscovering).toBe(false);
-    });
+    useLocalSyncStore.getState().resetUsbSync();
+
+    expect(useLocalSyncStore.getState().usbState).toBe('off');
+    expect(useLocalSyncStore.getState().usbPeer).toBeNull();
+    expect(useLocalSyncStore.getState().syncPort).toBe(7878);
   });
 });

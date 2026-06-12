@@ -1,28 +1,20 @@
 import clsx from 'clsx';
-import React, { useCallback, useEffect, useReducer, useRef } from 'react';
-import { RiWifiLine } from 'react-icons/ri';
+import React, { useCallback, useEffect, useReducer, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import { useEnv } from '@/context/EnvContext';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useSettingsStore } from '@/store/settingsStore';
-import { useLocalSyncStore, peerKey } from '@/store/localSyncStore';
+import { useLocalSyncStore, type UsbSyncState } from '@/store/localSyncStore';
 import { isTauriAppPlatform } from '@/services/environment';
-import {
-  filterReachablePeers,
-  createPeerTransport,
-  runSyncCycle,
-} from '@/services/sync/localSyncUtils';
+import { createPeerTransport, runSyncCycle } from '@/services/sync/localSyncUtils';
 import SubPageHeader from '../SubPageHeader';
 import { BoxedList, SettingsRow, SettingsSwitchRow } from '../primitives';
 import type { PeerInfo, SyncCategory } from '@/types/settings';
-import type { SyncResult, SyncStep, SyncPhase } from '@/types/replica';
+import type { SyncPhase, SyncResult, SyncStep } from '@/types/replica';
 
 interface LocalSyncPanelProps {
   onBack: () => void;
 }
-
-// ── 4-state sync UI reducer ────────────────────────────────────────────
 
 type SyncUIState = 'idle' | 'syncing' | 'success' | 'error';
 
@@ -66,7 +58,6 @@ export function syncUIReducer(state: SyncUI, action: SyncAction): SyncUI {
         state: 'syncing',
         progress: { phase: 'connecting' },
         result: null,
-        errorPeerId: '',
         errorMessage: '',
       };
     case 'SYNC_STEP':
@@ -103,340 +94,257 @@ export function syncUIReducer(state: SyncUI, action: SyncAction): SyncUI {
   }
 }
 
-const ALL_KINDS: readonly SyncCategory[] = ['annotation', 'quote', 'dictionary-entry'];
-
-// ── Helpers ────────────────────────────────────────────────────────────
-
-/** Derive a human-readable badge label from peer.kind, with fallback. */
-function peerKindLabel(peer: PeerInfo): string {
-  if (peer.kind) return peer.kind === 'usb' ? 'USB' : 'WiFi';
-  // Fallback for pre-kind peers
-  if (peer.host === 'localhost' || peer.host === '127.0.0.1' || peer.host === '::1') {
-    return 'USB';
-  }
-  return 'WiFi';
+interface UsbDeviceStatus {
+  serial: string;
+  state: 'device' | 'unauthorized' | 'offline';
+  model?: string;
 }
 
-/** Build a one-line summary string from a SyncResult. */
+interface UsbStatusCopy {
+  title: string;
+  action?: string;
+}
+
+const ALL_KINDS: readonly SyncCategory[] = ['annotation', 'quote', 'dictionary-entry'];
+const USB_HOST = 'localhost';
+
+function usbPeerId(port: number): string {
+  return `usb:${USB_HOST}:${port}`;
+}
+
+function buildUsbPeer(port: number, serial: string, health: unknown): PeerInfo {
+  const healthData = health && typeof health === 'object' ? health : {};
+  const deviceName =
+    'deviceName' in healthData && typeof healthData.deviceName === 'string'
+      ? healthData.deviceName
+      : serial;
+  const version =
+    'version' in healthData && typeof healthData.version === 'string'
+      ? healthData.version
+      : '0.0.0';
+  return { host: USB_HOST, port, deviceName, version, kind: 'usb', reachable: true };
+}
+
 function buildSyncSummary(result: SyncResult): string {
-  const parts: string[] = [];
   let totalPulled = 0;
   let totalPushed = 0;
   let totalConflicts = 0;
-  for (const kr of Object.values(result.kinds)) {
-    totalPulled += kr.pulled;
-    totalPushed += kr.pushed;
-    totalConflicts += kr.conflicts;
+  for (const kindResult of Object.values(result.kinds)) {
+    totalPulled += kindResult.pulled;
+    totalPushed += kindResult.pushed;
+    totalConflicts += kindResult.conflicts;
   }
-  if (totalPulled > 0) parts.push(`📥 ${totalPulled}`);
-  if (totalPushed > 0) parts.push(`📤 ${totalPushed}`);
-  if (totalConflicts > 0) parts.push(`⚡ ${totalConflicts}`);
-  parts.push(result.peerId);
-  return parts.join(' — ');
+  return `📥 ${totalPulled} — 📤 ${totalPushed} — ⚡ ${totalConflicts} — ${result.peerId}`;
 }
 
-/** Derive the dot color, aria label, and CSS from a peer's health status. */
-function healthDotProps(
-  reachable: boolean | undefined,
-  _: (s: string) => string,
-): { colorClass: string; label: string } {
-  if (reachable === true) return { colorClass: 'bg-green-500', label: _('Connected') };
-  if (reachable === false) return { colorClass: 'bg-red-500', label: _('Not connected') };
-  return { colorClass: 'bg-gray-400', label: _('Unknown') };
+function statusCopy(state: UsbSyncState, errorMessage: string): UsbStatusCopy {
+  switch (state) {
+    case 'checking-adb':
+      return { title: 'Checking ADB…', action: 'Looking for Android Platform Tools.' };
+    case 'adb-missing':
+      return {
+        title: 'ADB is not installed or not available in PATH.',
+        action: 'Install Android Platform Tools and restart Biblioteca.',
+      };
+    case 'no-device':
+      return {
+        title: 'No Android device detected over USB.',
+        action: 'Connect your Android device with USB and enable USB debugging.',
+      };
+    case 'unauthorized':
+      return {
+        title: 'USB debugging is not authorized yet.',
+        action: 'Accept the RSA fingerprint prompt on Android.',
+      };
+    case 'configuring-tunnel':
+      return { title: 'Configuring USB tunnel…', action: 'Preparing adb forward to localhost.' };
+    case 'server-unreachable':
+      return {
+        title: 'Android sync server is not reachable.',
+        action: 'Open Biblioteca on Android and enable Local Sync there.',
+      };
+    case 'ready':
+      return { title: 'USB device ready', action: 'Manual sync is available.' };
+    case 'syncing':
+      return { title: 'Syncing…', action: 'Keep the USB cable connected.' };
+    case 'success':
+      return {
+        title: 'USB CRDT transfer completed',
+        action: 'Visible-data convergence is still blocked by the server repository gate.',
+      };
+    case 'error':
+      return {
+        title: 'USB sync failed',
+        action: errorMessage || 'Check the USB connection and try again.',
+      };
+    case 'off':
+    default:
+      return {
+        title: 'Connect your Android device with USB and enable ADB debugging.',
+        action: 'Turn Local Sync on to check ADB, configure the tunnel, and unlock manual sync.',
+      };
+  }
 }
 
-/**
- * LocalSyncPanel — sub-page for WiFi/USB local sync configuration.
- *
- * Follows the same sub-page pattern as KOSyncForm, ReadwiseForm, etc.:
- * <SubPageHeader> breadcrumb, <BoxedList> cards for settings rows,
- * peer discovery state with reachability indicators, and manual sync.
- */
 const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
   const _ = useTranslation();
   const { envConfig } = useEnv();
   const { settings, setSettings, saveSettings } = useSettingsStore();
-  const peers = useLocalSyncStore((s) => s.peers);
-  const peerHealth = useLocalSyncStore((s) => s.peerHealth);
+  const usbState = useLocalSyncStore((s) => s.usbState);
+  const usbPeer = useLocalSyncStore((s) => s.usbPeer);
+  const errorMessage = useLocalSyncStore((s) => s.errorMessage);
+  const setUsbState = useLocalSyncStore((s) => s.setUsbState);
+  const setUsbPeer = useLocalSyncStore((s) => s.setUsbPeer);
+  const setSyncPort = useLocalSyncStore((s) => s.setSyncPort);
+  const setLastResult = useLocalSyncStore((s) => s.setLastResult);
+  const resetUsbSync = useLocalSyncStore((s) => s.resetUsbSync);
 
   const localSync = settings.localSync;
-
+  const [enabled, setEnabled] = useState(localSync.enabled);
   const [ui, dispatch] = useReducer(
     syncUIReducer,
     initialSyncUI(localSync.lastSyncedAt, localSync.lastSyncSummary),
   );
 
-  // Persist lastSyncedAt / lastSyncSummary to settings after SUCCESS
-  const prevSummaryRef = useRef(ui.lastSyncSummary);
   useEffect(() => {
-    if (ui.lastSyncSummary && ui.lastSyncSummary !== prevSummaryRef.current) {
-      prevSummaryRef.current = ui.lastSyncSummary;
-      const next = {
-        ...settings,
-        localSync: {
-          ...settings.localSync,
-          lastSyncedAt: ui.lastSyncedAt?.getTime(),
-          lastSyncSummary: ui.lastSyncSummary,
-        },
-      };
-      setSettings(next);
-      saveSettings(envConfig, next).catch(() => {});
-    }
-  }, [ui.lastSyncSummary, ui.lastSyncedAt]);
+    setEnabled(localSync.enabled);
+    setSyncPort(localSync.port);
+  }, [localSync.enabled, localSync.port, setSyncPort]);
 
-  // Auto-dismiss from SUCCESS after 5 seconds
   useEffect(() => {
     if (ui.state !== 'success') return;
     const timer = setTimeout(() => dispatch({ type: 'DISMISS' }), 5000);
     return () => clearTimeout(timer);
   }, [ui.state]);
 
-  // ── Handlers ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!ui.lastSyncSummary) return;
+    const next = {
+      ...settings,
+      localSync: {
+        ...settings.localSync,
+        lastSyncedAt: ui.lastSyncedAt?.getTime(),
+        lastSyncSummary: ui.lastSyncSummary,
+      },
+    };
+    setSettings(next);
+    saveSettings(envConfig, next).catch(() => {});
+  }, [envConfig, saveSettings, setSettings, settings, ui.lastSyncSummary, ui.lastSyncedAt]);
+
+  const configureUsb = useCallback(async () => {
+    const port = localSync.port;
+    setSyncPort(port);
+    setUsbPeer(null);
+    setUsbState('checking-adb');
+
+    try {
+      await invoke('check_adb');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setUsbState('adb-missing', message);
+      return;
+    }
+
+    const devices = await invoke<UsbDeviceStatus[]>('list_usb_devices_detailed');
+    if (devices.length === 0) {
+      setUsbState('no-device');
+      return;
+    }
+
+    const authorized = devices.find((device) => device.state === 'device');
+    if (!authorized) {
+      const hasUnauthorized = devices.some((device) => device.state === 'unauthorized');
+      setUsbState(hasUnauthorized ? 'unauthorized' : 'no-device');
+      return;
+    }
+
+    setUsbState('configuring-tunnel');
+    try {
+      await invoke('setup_usb_tunnel', { serial: authorized.serial, port });
+      const response = await fetch(`http://localhost:${port}/health`);
+      if (!response.ok) {
+        setUsbState('server-unreachable');
+        return;
+      }
+      const health = (await response.json()) as unknown;
+      setUsbPeer(buildUsbPeer(port, authorized.model ?? authorized.serial, health));
+      setUsbState('ready');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setUsbState('server-unreachable', message);
+    }
+  }, [localSync.port, setSyncPort, setUsbPeer, setUsbState]);
 
   const handleToggleEnabled = useCallback(async () => {
-    const enabling = !localSync.enabled;
-    const newLocalSync = { ...localSync, enabled: enabling };
-    const newSettings = { ...settings, localSync: newLocalSync };
+    const enabling = !enabled;
+    setEnabled(enabling);
+    const newSettings = { ...settings, localSync: { ...localSync, enabled: enabling } };
     setSettings(newSettings);
     await saveSettings(envConfig, newSettings);
 
-    if (!isTauriAppPlatform()) return;
-    try {
-      if (enabling) {
-        await invoke('start_local_sync_server', { port: localSync.port });
-        await invoke('start_discovery', {
-          port: localSync.port,
-          deviceName: localSync.deviceName || 'Readest',
-        });
-      } else {
-        await invoke('stop_discovery');
-        await invoke('stop_local_sync_server');
-      }
-    } catch (e) {
-      console.error('[LocalSync] invoke failed:', e);
+    if (!enabling) {
+      resetUsbSync();
+      return;
     }
-  }, [envConfig, localSync, saveSettings, setSettings, settings]);
+    if (!isTauriAppPlatform()) {
+      setUsbState('error', 'USB local sync requires the Tauri desktop app.');
+      return;
+    }
+    await configureUsb();
+  }, [
+    configureUsb,
+    enabled,
+    envConfig,
+    localSync,
+    resetUsbSync,
+    saveSettings,
+    setSettings,
+    setUsbState,
+    settings,
+  ]);
 
   const handleSyncNow = useCallback(async () => {
-    if (ui.state !== 'idle' && ui.state !== 'error') return;
+    const canSync = usbState === 'ready' || (usbState === 'error' && usbPeer);
+    if (!canSync || !usbPeer || ui.state === 'syncing') return;
 
-    const currentPeers = useLocalSyncStore.getState().peers;
-    const currentHealth = useLocalSyncStore.getState().peerHealth;
-    const reachable = filterReachablePeers(currentPeers, currentHealth);
-
-    if (reachable.length === 0) return;
-
+    setUsbState('syncing');
     dispatch({ type: 'START_SYNC' });
-
     try {
-      let combinedResult: SyncResult | null = null;
-      for (const peer of reachable) {
-        const transport = createPeerTransport(peer);
-        const result = await runSyncCycle(
-          transport,
-          ALL_KINDS,
-          peerKey(peer.host, peer.port),
-          (step) => dispatch({ type: 'SYNC_STEP', step }),
-        );
-        if (!combinedResult) {
-          combinedResult = result;
-        } else {
-          // Merge per-kind counts
-          for (const [kind, kr] of Object.entries(result.kinds)) {
-            const existing = combinedResult.kinds[kind];
-            if (existing) {
-              existing.pulled += kr.pulled;
-              existing.pushed += kr.pushed;
-              existing.conflicts += kr.conflicts;
-            } else {
-              combinedResult.kinds[kind] = { ...kr };
-            }
-          }
-          combinedResult.errors.push(...result.errors);
-          combinedResult.finishedAt = result.finishedAt;
-        }
-      }
+      const result = await runSyncCycle(
+        createPeerTransport(usbPeer),
+        ALL_KINDS,
+        usbPeerId(usbPeer.port),
+        (step) => dispatch({ type: 'SYNC_STEP', step }),
+      );
       const now = new Date();
-      const summary = buildSyncSummary(combinedResult!);
-      dispatch({ type: 'SYNC_DONE', result: combinedResult!, lastSyncedAt: now, summary });
-    } catch (err: unknown) {
+      const summary = buildSyncSummary(result);
+      setLastResult(result);
+      setUsbState('success');
+      dispatch({ type: 'SYNC_DONE', result, lastSyncedAt: now, summary });
+    } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const peerName = reachable[0]?.deviceName ?? 'unknown';
-      dispatch({ type: 'SYNC_ERROR', peerId: peerName, message });
+      setUsbState('error', message);
+      dispatch({ type: 'SYNC_ERROR', peerId: usbPeer.deviceName, message });
     }
-  }, [ui.state]);
+  }, [setLastResult, setUsbState, ui.state, usbPeer, usbState]);
 
-  // ── Tauri event listeners for peer discovery ─────────────────────────────
-  useEffect(() => {
-    if (!isTauriAppPlatform() || !localSync.enabled) return;
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      try {
-        const addPeer = useLocalSyncStore.getState().addPeer;
-        const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
-        unlisten = await listen<PeerInfo & { reachable: boolean }>(
-          'local-sync:peer-discovered',
-          (event) => {
-            console.log('[LocalSync] peer discovered:', event.payload);
-            const { host, port, deviceName, version, reachable } = event.payload;
-            addPeer({ host, port, deviceName, version: version ?? '0.0.0', kind: 'wifi' });
-            setPeerReachable(peerKey(host, port), reachable);
-          },
-        );
-      } catch (e) {
-        console.warn('LocalSync: failed to listen for peer events', e);
-      }
-    })();
-    return () => {
-      unlisten?.();
-    };
-  }, [localSync.enabled]);
-
-  // ── WiFi polling: refresh discovered peers every 5s ───────────────────────
-  useEffect(() => {
-    if (!isTauriAppPlatform() || !localSync.enabled) return;
-    // Delay first poll to let the Rust server finish starting up
-    const startPolling = () => {
-      const interval = setInterval(async () => {
-        try {
-          const discovered: PeerInfo[] = await invoke('get_discovered_peers');
-          const addPeer = useLocalSyncStore.getState().addPeer;
-          const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
-          for (const p of discovered) {
-            addPeer(p);
-            setPeerReachable(peerKey(p.host, p.port), p.reachable ?? true);
-          }
-          // Fallback: if mDNS found nothing, scan subnet for Readest instances
-          if (discovered.length === 0) {
-            const port = localSync.port;
-            for (const base of ['192.168.1', '192.168.0', '10.0.0']) {
-              for (let i = 30; i <= 60; i++) {
-                const host = `${base}.${i}`;
-                try {
-                  const ctrl = new AbortController();
-                  const t = setTimeout(() => ctrl.abort(), 200);
-                  const resp = await fetch(`http://${host}:${port}/health`, {
-                    signal: ctrl.signal,
-                  });
-                  clearTimeout(t);
-                  if (resp.ok) {
-                    const data = await resp.json();
-                    addPeer({
-                      host,
-                      port,
-                      deviceName: data.deviceName || host,
-                      version: '0.0.0',
-                      kind: 'wifi',
-                    });
-                    setPeerReachable(peerKey(host, port), true);
-                    break; // found one, stop scanning this subnet
-                  }
-                } catch {
-                  // unreachable, continue
-                }
-              }
-            }
-          }
-        } catch {
-          // Silently skip — backend might not be ready
-        }
-      }, 5000);
-      return () => clearInterval(interval);
-    };
-    const delay = setTimeout(startPolling, 2000);
-    return () => {
-      clearTimeout(delay);
-    };
-  }, [localSync.enabled]);
-
-  // ── USB polling: scan ADB devices and auto-configure tunnels every 5s ─────
-  useEffect(() => {
-    if (!isTauriAppPlatform() || !localSync.enabled) return;
-    const interval = setInterval(async () => {
-      try {
-        const serials: string[] = await invoke('list_usb_devices');
-        const port = localSync.port;
-        const addPeer = useLocalSyncStore.getState().addPeer;
-        const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
-        for (const serial of serials) {
-          // Set up tunnel
-          try {
-            await invoke('setup_usb_tunnel', { serial, port });
-          } catch {
-            // Tunnel setup may fail if already configured — continue anyway.
-          }
-          // Health-check via tunnel
-          try {
-            const resp = await fetch(`http://localhost:${port}/health`);
-            if (resp.ok) {
-              const data = await resp.json();
-              addPeer({
-                host: 'localhost',
-                port,
-                deviceName: data.deviceName || serial,
-                version: data.version || '0.0.0',
-                kind: 'usb',
-              });
-              setPeerReachable(peerKey('localhost', port), true);
-            }
-          } catch {
-            // Device not reachable via tunnel yet — maybe next cycle.
-          }
-        }
-      } catch {
-        // adb not installed or no devices
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [localSync.enabled, localSync.port]);
-
-  // ── Health-check: probe all known peers every 15s ─────────────────────────
-  useEffect(() => {
-    if (!localSync.enabled) return;
-    const interval = setInterval(async () => {
-      const peers = useLocalSyncStore.getState().peers;
-      const setPeerReachable = useLocalSyncStore.getState().setPeerReachable;
-      for (const p of peers) {
-        // On Android, outbound TCP to LAN peers is blocked — only probe localhost
-        const isLocal = p.host === 'localhost' || p.host === '127.0.0.1';
-        if (!isLocal && !isTauriAppPlatform()) continue;
-        // Also skip non-local on Android (detect via userAgent or osType)
-        if (!isLocal && typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent))
-          continue;
-        try {
-          const resp = await fetch(`http://${p.host}:${p.port}/health`);
-          setPeerReachable(peerKey(p.host, p.port), resp.ok);
-        } catch {
-          setPeerReachable(peerKey(p.host, p.port), false);
-        }
-      }
-    }, 15_000);
-    return () => clearInterval(interval);
-  }, [localSync.enabled]);
-
-  const description: string = localSync.enabled
-    ? _('Discover and sync with nearby devices on the same WiFi network.')
-    : _('Connect via USB or make sure both devices are on the same WiFi network');
-
-  const hasPeers = peers.length > 0;
-
-  // ── Render ──────────────────────────────────────────────────────────────
+  const copy = statusCopy(usbState, errorMessage);
+  const syncButtonDisabled = usbState !== 'ready' || ui.state === 'syncing';
 
   return (
     <div className='w-full'>
       <SubPageHeader
         parentLabel={_('Integrations')}
         currentLabel={_('Local Sync')}
-        description={description}
+        description={_('Connect your Android device with USB and enable ADB debugging.')}
         onBack={onBack}
       />
 
       <div className='space-y-5'>
-        {/* ── Settings ─────────────────────────────────────────────── */}
         <BoxedList>
           <SettingsSwitchRow
             label={_('Local Sync')}
-            checked={localSync.enabled}
+            checked={enabled}
             onChange={handleToggleEnabled}
           />
           <SettingsRow label={_('Port')}>
@@ -444,86 +352,22 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
           </SettingsRow>
         </BoxedList>
 
-        {/* ── Peer list ────────────────────────────────────────────── */}
-        {localSync.enabled && hasPeers && (
-          <BoxedList title={_('Discovered Devices')}>
-            {peers.map((peer) => {
-              const key = peerKey(peer.host, peer.port);
-              const health = peerHealth[key];
-              const dot = healthDotProps(health?.reachable, _);
-              return (
-                <SettingsRow
-                  key={key}
-                  label={
-                    <span className='flex items-center gap-2'>
-                      {/* Reachability indicator dot */}
-                      <span
-                        className={clsx(dot.colorClass, 'h-2.5 w-2.5 flex-shrink-0 rounded-full')}
-                        aria-label={dot.label}
-                      />
-                      {peer.deviceName}
-                    </span>
-                  }
-                  description={
-                    <span className='flex items-center gap-1.5'>
-                      <span className='bg-base-200/80 text-base-content/60 rounded px-1.5 py-px text-[0.75em] font-medium uppercase tracking-wide'>
-                        {peerKindLabel(peer)}
-                      </span>
-                      {key}
-                    </span>
-                  }
-                />
-              );
-            })}
-          </BoxedList>
-        )}
-
-        {/* ── Empty state ──────────────────────────────────────────── */}
-        {localSync.enabled && !hasPeers && (
-          <div className='card eink-bordered border-base-200 bg-base-100 overflow-hidden border'>
-            <div className='flex flex-col items-center gap-3 px-4 py-8 text-center'>
-              <RiWifiLine className='text-base-content/30 h-10 w-10' />
-              <p className='text-base-content/60 max-w-xs text-sm leading-relaxed'>
-                {_('Connect via USB or make sure both devices are on the same WiFi network')}
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* ── Sync action area: IDLE / SYNCING / SUCCESS / ERROR ──────── */}
-        {localSync.enabled && (
-          <div className='flex flex-col items-end gap-2'>
-            {/* ── IDLE state: last sync info + Sync Now button ── */}
-            {ui.state === 'idle' && (
-              <div className='flex items-center justify-end gap-3 w-full'>
-                {ui.lastSyncedAt && (
-                  <span className='text-base-content/50 text-xs'>
-                    {_('Last synced:')}{' '}
-                    {ui.lastSyncedAt.toLocaleTimeString(undefined, {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                    {ui.lastSyncSummary && (
-                      <span className='ml-1.5 text-base-content/40'>{ui.lastSyncSummary}</span>
-                    )}
-                  </span>
-                )}
-                <button
-                  type='button'
-                  onClick={handleSyncNow}
-                  disabled={false}
-                  className={clsx(
-                    'btn btn-primary',
-                    'h-10 min-h-10 rounded-lg border-0 px-5 text-sm font-medium',
-                    'focus-visible:ring-primary/40 focus-visible:outline-none focus-visible:ring-2',
-                  )}
-                >
-                  {_('Sync Now')}
-                </button>
-              </div>
+        <div className='card eink-bordered border-base-200 bg-base-100 overflow-hidden border'>
+          <div className='space-y-2 px-4 py-5'>
+            <p className='text-base-content text-sm font-medium'>{_(copy.title)}</p>
+            {copy.action && (
+              <p className='text-base-content/60 text-sm leading-relaxed'>{_(copy.action)}</p>
             )}
+            {usbPeer && (
+              <p className='text-base-content/50 text-xs'>
+                USB · {usbPeer.deviceName} · {usbPeerId(usbPeer.port)}
+              </p>
+            )}
+          </div>
+        </div>
 
-            {/* ── SYNCING state: progress bar with phase steps ── */}
+        {enabled && (
+          <div className='flex flex-col items-end gap-2'>
             {ui.state === 'syncing' && (
               <div className='w-full space-y-2'>
                 <div className='flex flex-wrap gap-2 text-xs text-base-content/60'>
@@ -531,23 +375,16 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
                     ['connecting', 'pulling', 'merging', 'pushing', 'finalizing'] as SyncPhase[]
                   ).map((phase) => {
                     const isActive = ui.progress?.phase === phase;
-                    const isDone =
-                      ui.progress &&
-                      ['connecting', 'pulling', 'merging', 'pushing', 'finalizing'].indexOf(phase) <
-                        ['connecting', 'pulling', 'merging', 'pushing', 'finalizing'].indexOf(
-                          ui.progress.phase,
-                        );
                     return (
                       <span
                         key={phase}
                         className={clsx(
                           'rounded px-2 py-0.5',
-                          isActive && 'bg-primary/10 text-primary font-medium',
-                          isDone && 'text-base-content/40',
-                          !isActive && !isDone && 'text-base-content/30',
+                          isActive
+                            ? 'bg-primary/10 text-primary font-medium'
+                            : 'text-base-content/40',
                         )}
                       >
-                        {isDone ? '✅' : isActive ? '🔄' : '⏳'}{' '}
                         {phase === 'connecting' && _('Conectando')}
                         {phase === 'pulling' && _('Recibiendo')}
                         {phase === 'merging' && _('Fusionando')}
@@ -558,47 +395,30 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
                   })}
                 </div>
                 {ui.progress?.detail && (
-                  <p className='text-base-content/60 text-xs'>
-                    {ui.progress.detail}{' '}
-                    {ui.progress.current != null && ui.progress.current > 0 && (
-                      <span className='tabular-nums'>({ui.progress.current})</span>
-                    )}
-                  </p>
+                  <p className='text-base-content/60 text-xs'>{ui.progress.detail}</p>
                 )}
-                <button
-                  type='button'
-                  disabled={true}
-                  className={clsx(
-                    'btn btn-primary opacity-60',
-                    'h-10 min-h-10 rounded-lg border-0 px-5 text-sm font-medium',
-                  )}
-                >
-                  {_('Sincronizando…')}
-                </button>
               </div>
             )}
 
-            {/* ── SUCCESS state: summary card ── */}
             {ui.state === 'success' && ui.result && (
               <div className='card eink-bordered border-base-200 bg-base-100 w-full border px-4 py-3'>
-                <p className='text-sm font-medium text-base-content flex items-center gap-1.5'>
-                  ✅ {_('Sincronización completada')}
+                <p className='text-sm font-medium text-base-content'>
+                  ✅ {_('Transferencia CRDT completada')}
                 </p>
-                <p className='text-xs text-base-content/60 mt-1'>
-                  {new Date(ui.result.finishedAt).toLocaleTimeString(undefined, {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
+                <p className='mt-1 text-xs text-amber-600'>
+                  {_(
+                    'Convergencia visible pendiente: el servidor Android todavía usa JSON shadow.',
+                  )}
                 </p>
                 <div className='mt-2 flex flex-wrap gap-3 text-xs text-base-content/70'>
                   {(() => {
                     let totalPulled = 0;
                     let totalPushed = 0;
                     let totalConflicts = 0;
-                    for (const kr of Object.values(ui.result.kinds)) {
-                      totalPulled += kr.pulled;
-                      totalPushed += kr.pushed;
-                      totalConflicts += kr.conflicts;
+                    for (const result of Object.values(ui.result.kinds)) {
+                      totalPulled += result.pulled;
+                      totalPushed += result.pushed;
+                      totalConflicts += result.conflicts;
                     }
                     return (
                       <>
@@ -623,46 +443,50 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
               </div>
             )}
 
-            {/* ── ERROR state: error message + Retry / Dismiss ── */}
             {ui.state === 'error' && (
               <div className='card eink-bordered border-base-200 bg-base-100 w-full border px-4 py-3'>
-                <p className='text-sm font-medium text-red-600 flex items-center gap-1.5'>
-                  ❌ {_('Error al sincronizar')}
-                </p>
+                <p className='text-sm font-medium text-red-600'>❌ {_('Error al sincronizar')}</p>
                 <p className='text-xs text-base-content/70 mt-1'>{ui.errorMessage}</p>
-                {ui.errorPeerId && (
-                  <p className='text-xs text-base-content/50 mt-0.5'>
-                    {_('Peer')}: {ui.errorPeerId}
-                  </p>
-                )}
-                <p className='text-xs text-base-content/50 mt-2'>
-                  {ui.errorMessage.includes('refused') || ui.errorMessage.includes('ECONNREFUSED')
-                    ? _('¿Está el otro dispositivo encendido y con sync activado?')
-                    : _('Verifica la conexión e inténtalo de nuevo.')}
-                </p>
-                <div className='mt-3 flex gap-2'>
-                  <button
-                    type='button'
-                    onClick={handleSyncNow}
-                    className={clsx(
-                      'btn btn-primary',
-                      'h-8 min-h-8 rounded-lg border-0 px-4 text-xs font-medium',
-                    )}
-                  >
-                    {_('Reintentar')}
-                  </button>
-                  <button
-                    type='button'
-                    onClick={() => dispatch({ type: 'DISMISS' })}
-                    className={clsx(
-                      'btn btn-ghost',
-                      'h-8 min-h-8 rounded-lg border-0 px-4 text-xs font-medium',
-                    )}
-                  >
-                    {_('Cerrar')}
-                  </button>
-                </div>
+                <button
+                  type='button'
+                  onClick={handleSyncNow}
+                  className='btn btn-primary mt-3 h-8 min-h-8 rounded-lg border-0 px-4 text-xs font-medium'
+                >
+                  {_('Reintentar')}
+                </button>
               </div>
+            )}
+
+            {(ui.state === 'idle' || ui.state === 'success') && ui.lastSyncedAt && (
+              <span className='text-base-content/50 text-xs'>
+                {_('Last synced:')}{' '}
+                {ui.lastSyncedAt.toLocaleTimeString(undefined, {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </span>
+            )}
+            {(ui.state === 'idle' || ui.state === 'success' || ui.state === 'error') && (
+              <button
+                type='button'
+                onClick={handleSyncNow}
+                disabled={syncButtonDisabled}
+                className={clsx(
+                  'btn btn-primary h-10 min-h-10 rounded-lg border-0 px-5 text-sm font-medium',
+                  syncButtonDisabled && 'opacity-60',
+                )}
+              >
+                {_('Sync Now')}
+              </button>
+            )}
+            {ui.state === 'syncing' && (
+              <button
+                type='button'
+                disabled={true}
+                className='btn btn-primary h-10 min-h-10 rounded-lg border-0 px-5 text-sm font-medium opacity-60'
+              >
+                {_('Sincronizando…')}
+              </button>
             )}
           </div>
         )}

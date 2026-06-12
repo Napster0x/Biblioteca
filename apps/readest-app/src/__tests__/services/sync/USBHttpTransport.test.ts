@@ -448,7 +448,7 @@ describe('setupUsbTunnel', () => {
     vi.clearAllMocks();
   });
 
-  it('executes the correct adb reverse command', async () => {
+  it('executes the correct adb forward command', async () => {
     mockExec.mockImplementation(
       (_cmd: string, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
         callback(null, '', '');
@@ -459,7 +459,7 @@ describe('setupUsbTunnel', () => {
 
     expect(result.success).toBe(true);
     expect(mockExec).toHaveBeenCalledWith(
-      'adb -s emulator-5554 reverse tcp:7878 tcp:7878',
+      'adb -s emulator-5554 forward tcp:7878 tcp:7878',
       expect.any(Function),
     );
   });
@@ -487,7 +487,7 @@ describe('setupUsbTunnel', () => {
     await setupUsbTunnel('device-1', 9999);
 
     expect(mockExec).toHaveBeenCalledWith(
-      'adb -s device-1 reverse tcp:9999 tcp:9999',
+      'adb -s device-1 forward tcp:9999 tcp:9999',
       expect.any(Function),
     );
   });

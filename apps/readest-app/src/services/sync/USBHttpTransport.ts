@@ -1,8 +1,8 @@
 /**
- * USB HTTP SyncTransport — syncs CRDT replica data via an ADB reverse
+ * USB HTTP SyncTransport — syncs CRDT replica data via an ADB forward
  * tunnel to a device connected over USB.
  *
- * The ADB tunnel maps the remote device's sync port to localhost, so the
+ * The ADB forward maps the remote Android sync port to desktop localhost, so the
  * transport connects to `http://localhost:{port}/replicas/{kind}` — the
  * same HTTP endpoints served by the Rust tiny_http server on the device.
  *
@@ -215,10 +215,10 @@ export class USBHttpTransport implements SyncTransport {
 // ---------------------------------------------------------------------------
 
 /**
- * Set up a reverse ADB tunnel so the remote device's sync port is forwarded
- * to localhost.
+ * Set up an ADB forward tunnel so the remote device's sync port is reachable
+ * from desktop localhost.
  *
- * Executes `adb -s {deviceSerial} reverse tcp:{port} tcp:{port}`.
+ * Executes `adb -s {deviceSerial} forward tcp:{port} tcp:{port}`.
  * Returns `{ success: true }` when the command succeeds, or
  * `{ success: false, error }` when adb is not available or the command
  * fails.
@@ -230,7 +230,7 @@ export async function setupUsbTunnel(
   try {
     const { exec } = await import('child_process');
     return new Promise((resolve) => {
-      const cmd = `adb -s ${deviceSerial} reverse tcp:${port} tcp:${port}`;
+      const cmd = `adb -s ${deviceSerial} forward tcp:${port} tcp:${port}`;
       exec(cmd, (error) => {
         if (error) {
           resolve({ success: false, error: error.message });

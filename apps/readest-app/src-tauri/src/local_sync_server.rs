@@ -31,6 +31,12 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
+const LOCAL_SYNC_BIND_HOST: &str = "127.0.0.1";
+
+fn build_server_bind_addr(port: u16) -> String {
+    format!("{LOCAL_SYNC_BIND_HOST}:{port}")
+}
+
 // ── Models ────────────────────────────────────────────────────────────────
 
 /// Mirror of the TypeScript `ReplicaRow` interface (src/types/replica.ts).
@@ -59,6 +65,37 @@ struct HealthResponse {
     device_name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplicaRepositoryMode {
+    JsonShadow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceOfTruthGate {
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceOfTruthDiagnostic {
+    pub kind: String,
+    pub repository: ReplicaRepositoryMode,
+    pub visible_repository_ready: bool,
+    pub gate: SourceOfTruthGate,
+    pub detail: String,
+}
+
+pub fn source_of_truth_diagnostic(kind: &str) -> SourceOfTruthDiagnostic {
+    SourceOfTruthDiagnostic {
+        kind: kind.to_string(),
+        repository: ReplicaRepositoryMode::JsonShadow,
+        visible_repository_ready: false,
+        gate: SourceOfTruthGate::Blocked,
+        detail: format!(
+            "{kind} GET/PUT currently reads and writes isolated JSON files under local-sync/replicas; visible app repositories use separate Turso/SQLite databases opened from TypeScript services."
+        ),
+    }
+}
+
 // ── Server ────────────────────────────────────────────────────────────────
 
 /// A background HTTP server for local peer-to-peer sync.
@@ -72,7 +109,7 @@ pub struct SyncServer {
 }
 
 impl SyncServer {
-    /// Start the server listening on `0.0.0.0:{port}`.
+    /// Start the server listening on `127.0.0.1:{port}` for USB/ADB forward.
     ///
     /// `replicas_dir` is the directory where per-kind JSON files are stored
     /// (created if missing). `device_name` is returned in `/health` responses.
@@ -83,7 +120,7 @@ impl SyncServer {
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = Arc::clone(&running);
 
-        let server = Server::http(format!("0.0.0.0:{port}"))
+        let server = Server::http(build_server_bind_addr(port))
             .map_err(|e| format!("Port {port} is in use or unavailable: {e}"))?;
 
         let handle = thread::spawn(move || {
@@ -556,6 +593,80 @@ mod tests {
         assert_eq!(loaded[0].replica_id, "r1");
     }
 
+    // ── Source-of-truth gate ───────────────────────────────────────────
+
+    #[test]
+    fn source_of_truth_diagnostic_marks_supported_kinds_as_json_shadow() {
+        for kind in ["annotation", "quote", "dictionary-entry"] {
+            let diagnostic = source_of_truth_diagnostic(kind);
+
+            assert_eq!(diagnostic.kind, kind);
+            assert_eq!(diagnostic.repository, ReplicaRepositoryMode::JsonShadow);
+            assert!(!diagnostic.visible_repository_ready);
+            assert_eq!(diagnostic.gate, SourceOfTruthGate::Blocked);
+            assert!(
+                diagnostic.detail.contains("local-sync/replicas"),
+                "diagnostic must name the isolated JSON path for {kind}: {}",
+                diagnostic.detail
+            );
+        }
+    }
+
+    #[test]
+    fn server_replicas_path_resolves_to_isolated_json_file_not_visible_db() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("local-sync").join("replicas");
+
+        let annotation_path = replicas_file_path(&replicas_dir, "annotation");
+        let quote_path = replicas_file_path(&replicas_dir, "quote");
+        let dictionary_path = replicas_file_path(&replicas_dir, "dictionary-entry");
+
+        assert_eq!(
+            annotation_path,
+            replicas_dir.join("annotation.json"),
+            "annotation GET/PUT currently targets JSON shadow, not annotations.db"
+        );
+        assert_eq!(
+            quote_path,
+            replicas_dir.join("quote.json"),
+            "quote GET/PUT currently targets JSON shadow, not citas.db"
+        );
+        assert_eq!(
+            dictionary_path,
+            replicas_dir.join("dictionary-entry.json"),
+            "dictionary GET/PUT currently targets JSON shadow, not dictionary.db"
+        );
+    }
+
+    #[test]
+    fn merge_writes_json_shadow_and_leaves_visible_database_files_absent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let app_data_dir = dir.path();
+        let replicas_dir = app_data_dir.join("local-sync").join("replicas");
+        fs::create_dir_all(&replicas_dir).unwrap();
+        let annotation_json = replicas_file_path(&replicas_dir, "annotation");
+
+        merge_and_save(&annotation_json, vec![make_row("annotation:visible-gate", "annotation", "T9")])
+            .unwrap();
+
+        assert!(
+            annotation_json.exists(),
+            "server PUT persists to JSON shadow under local-sync/replicas"
+        );
+        assert!(
+            !app_data_dir.join("annotations.db").exists(),
+            "server PUT does not touch the visible AnotacionesService database"
+        );
+        assert!(
+            !app_data_dir.join("citas.db").exists(),
+            "server PUT does not touch the visible CitasService database"
+        );
+        assert!(
+            !app_data_dir.join("dictionary.db").exists(),
+            "server PUT does not touch the visible DictionaryService database"
+        );
+    }
+
     // ── Merge logic ────────────────────────────────────────────────────
 
     #[test]
@@ -771,6 +882,14 @@ mod tests {
         let status: u16 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
 
         (status, response)
+    }
+
+    #[test]
+    fn server_bind_address_is_loopback_for_usb_forward_only() {
+        let addr = build_server_bind_addr(7878);
+
+        assert_eq!(addr, "127.0.0.1:7878");
+        assert!(!addr.starts_with("0.0.0.0:"));
     }
 
     #[test]

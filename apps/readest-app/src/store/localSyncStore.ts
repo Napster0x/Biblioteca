@@ -1,25 +1,25 @@
 import { create } from 'zustand';
 import { stubTranslation as _ } from '@/utils/misc';
 import type { PeerInfo } from '@/types/settings';
+import type { SyncResult } from '@/types/replica';
 
-/**
- * i18n keys registered for scanner extraction. These labels are consumed
- * by the LocalSyncPanel React component (Phase 6); the stubTranslation
- * calls here ensure the extraction tool discovers them during
- * `pnpm i18n:extract`.
- */
 _('Local Sync');
 _('Not connected');
 _('Connected');
 _('Syncing…');
 _('Sync Now');
-_('Connect via USB or make sure both devices are on the same WiFi network');
-_('Discover and sync with nearby devices on the same WiFi network.');
-_('Discovered Devices');
-_('Unknown');
-_('Last synced:');
+_('Connect your Android device with USB and enable ADB debugging.');
+_('USB device ready');
+_('ADB is not installed or not available in PATH.');
+_('No Android device detected over USB.');
+_('USB debugging is not authorized yet.');
+_('Android sync server is not reachable.');
+_('USB CRDT transfer completed');
+_('Visible-data convergence is still blocked by the server repository gate.');
+_('Transferencia CRDT completada');
+_('Convergencia visible pendiente: el servidor Android todavía usa JSON shadow.');
 
-/** Peer key format: `host:port` (e.g. `192.168.1.5:7878`). */
+/** Peer key format: `host:port` (e.g. `localhost:7878`). */
 export type PeerKey = string;
 
 /** Build a PeerKey from host and port. */
@@ -27,60 +27,47 @@ export function peerKey(host: string, port: number): PeerKey {
   return `${host}:${port}`;
 }
 
-interface LocalSyncState {
-  /** mDNS-discovered peers. Upserted keyed on host+port. */
-  peers: PeerInfo[];
-  /** Whether mDNS discovery is currently browsing. */
-  isDiscovering: boolean;
-  /**
-   * Reachability state per peer, keyed by `host:port`.
-   * Absent key means health has NOT been checked yet.
-   */
-  peerHealth: Record<PeerKey, { reachable: boolean }>;
+export type UsbSyncState =
+  | 'off'
+  | 'checking-adb'
+  | 'adb-missing'
+  | 'no-device'
+  | 'unauthorized'
+  | 'configuring-tunnel'
+  | 'server-unreachable'
+  | 'ready'
+  | 'syncing'
+  | 'success'
+  | 'error';
 
-  /** Add or update a peer (upsert by host:port). */
-  addPeer: (peer: PeerInfo) => void;
-  /** Remove a peer by host. */
-  removePeer: (host: string) => void;
-  /** Clear all discovered peers. */
-  clearPeers: () => void;
-  /** Set the reachability of a peer. */
-  setPeerReachable: (key: PeerKey, reachable: boolean) => void;
-  /** Signal that discovery has started. */
-  startDiscovery: () => void;
-  /** Signal that discovery has stopped. */
-  stopDiscovery: () => void;
+interface LocalSyncState {
+  usbState: UsbSyncState;
+  usbPeer: PeerInfo | null;
+  syncPort: number;
+  lastResult: SyncResult | null;
+  errorMessage: string;
+
+  setUsbState: (usbState: UsbSyncState, errorMessage?: string) => void;
+  setUsbPeer: (peer: PeerInfo | null) => void;
+  setSyncPort: (syncPort: number) => void;
+  setLastResult: (lastResult: SyncResult | null) => void;
+  resetUsbSync: () => void;
 }
 
+const initialUsbState = {
+  usbState: 'off' as UsbSyncState,
+  usbPeer: null,
+  syncPort: 7878,
+  lastResult: null,
+  errorMessage: '',
+};
+
 export const useLocalSyncStore = create<LocalSyncState>((set) => ({
-  peers: [],
-  isDiscovering: false,
-  peerHealth: {},
+  ...initialUsbState,
 
-  addPeer: (peer) =>
-    set((state) => {
-      const idx = state.peers.findIndex((p) => p.host === peer.host && p.port === peer.port);
-      if (idx >= 0) {
-        const peers = [...state.peers];
-        peers[idx] = peer;
-        return { peers };
-      }
-      return { peers: [...state.peers, peer] };
-    }),
-
-  removePeer: (host) =>
-    set((state) => ({
-      peers: state.peers.filter((p) => p.host !== host),
-    })),
-
-  clearPeers: () => set({ peers: [], peerHealth: {} }),
-
-  setPeerReachable: (key, reachable) =>
-    set((state) => ({
-      peerHealth: { ...state.peerHealth, [key]: { reachable } },
-    })),
-
-  startDiscovery: () => set({ isDiscovering: true }),
-
-  stopDiscovery: () => set({ isDiscovering: false }),
+  setUsbState: (usbState, errorMessage = '') => set({ usbState, errorMessage }),
+  setUsbPeer: (usbPeer) => set({ usbPeer }),
+  setSyncPort: (syncPort) => set({ syncPort }),
+  setLastResult: (lastResult) => set({ lastResult }),
+  resetUsbSync: () => set({ ...initialUsbState }),
 }));
