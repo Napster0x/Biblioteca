@@ -357,9 +357,14 @@ describe('CitasService', () => {
 
     await service.deleteQuotes([a.id, c.id]);
 
-    const remaining = await service.listQuotes();
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0]?.id).toBe(b.id);
+    const all = await service.listAllQuotes();
+    expect(all).toHaveLength(3);
+    const deletedA = all.find((x) => x.id === a.id);
+    expect(deletedA?.deletedAt).toBe(1700000000000);
+    const deletedC = all.find((x) => x.id === c.id);
+    expect(deletedC?.deletedAt).toBe(1700000000000);
+    const kept = all.find((x) => x.id === b.id);
+    expect(kept?.deletedAt).toBeUndefined();
   });
 
   it('deleteQuotes is a no-op when the list is empty', async () => {
@@ -419,9 +424,14 @@ describe('CitasService', () => {
     const deletedIds = await service.deleteQuotesByBook('book-1');
 
     expect(deletedIds).toEqual([a.id, c.id]);
-    const remaining = await service.listQuotes();
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0]?.id).toBe(b.id);
+    const all = await service.listAllQuotes();
+    expect(all).toHaveLength(3);
+    const deletedA = all.find((x) => x.id === a.id);
+    expect(deletedA?.deletedAt).toBe(1700000000000);
+    const deletedC = all.find((x) => x.id === c.id);
+    expect(deletedC?.deletedAt).toBe(1700000000000);
+    const kept = all.find((x) => x.id === b.id);
+    expect(kept?.deletedAt).toBeUndefined();
   });
 
   it('deleteQuotesByBook returns empty array and keeps all quotes when bookHash has no matches', async () => {
@@ -450,7 +460,7 @@ describe('CitasService', () => {
     expect(deletedIds).toEqual([]);
   });
 
-  it('deleteQuotes soft-deletes: listQuotes excludes deleted rows', async () => {
+  it('deleteQuotes soft-deletes: listQuotes includes deleted rows for tombstone sync', async () => {
     const a = await service.createQuote({
       bookHash: 'book-1',
       bookTitle: null,
@@ -465,8 +475,11 @@ describe('CitasService', () => {
 
     await service.deleteQuotes([a.id]);
 
-    const visible = await service.listQuotes();
-    expect(visible).toHaveLength(0);
+    // D4: listQuotes includes soft-deleted rows for tombstone consistency
+    const all = await service.listQuotes();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.id).toBe(a.id);
+    expect(all[0]?.deletedAt).toBe(1700000000000);
 
     const rows = await db.select<{ id: string; deleted_at: number | null }>(
       'SELECT id, deleted_at FROM quotes',
@@ -563,6 +576,190 @@ describe('CitasService', () => {
     expect(all[0]?.text).toBe('bulk inserted');
   });
 
+  it('bulkUpsertQuotes persists and reloads per-field replica timestamps', async () => {
+    const timestamps = {
+      text: '1700000001000-0001-device-a',
+      contextBefore: '1700000001000-0002-device-a',
+    };
+
+    await service.bulkUpsertQuotes([
+      {
+        id: 'bulk-replica-1',
+        bookHash: 'book-1',
+        bookTitle: null,
+        bookAuthor: null,
+        cfi: null,
+        sectionHref: null,
+        page: null,
+        text: 'with timestamps',
+        contextBefore: null,
+        contextAfter: null,
+        contentHash: 'hash-replica-1',
+        createdAt: 100,
+        updatedAt: null,
+        _replicaTimestamps: timestamps,
+      },
+    ]);
+
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      'SELECT replica_timestamps FROM quotes WHERE id = ?',
+      ['bulk-replica-1'],
+    );
+    expect(rows).toEqual([{ replica_timestamps: JSON.stringify(timestamps) }]);
+
+    const reloaded = await service.getQuote('bulk-replica-1');
+    expect(reloaded?._replicaTimestamps).toEqual(timestamps);
+  });
+
+  it('createQuote persists replica_timestamps through to SQLite', async () => {
+    const timestamps = {
+      text: '1700000001000-0001-device-a',
+      contextBefore: '1700000001000-0002-device-a',
+    };
+
+    await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'with timestamps',
+      contextBefore: 'before text',
+      contextAfter: null,
+      _replicaTimestamps: timestamps,
+    });
+
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      'SELECT replica_timestamps FROM quotes WHERE id = ?',
+      ['cite-1'],
+    );
+    expect(rows).toEqual([{ replica_timestamps: JSON.stringify(timestamps) }]);
+
+    const reloaded = await service.getQuote('cite-1');
+    expect(reloaded?._replicaTimestamps).toEqual(timestamps);
+  });
+
+  it('createQuote stores null replica_timestamps when none provided', async () => {
+    await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'no timestamps',
+      contextBefore: null,
+      contextAfter: null,
+    });
+
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      'SELECT replica_timestamps FROM quotes WHERE id = ?',
+      ['cite-1'],
+    );
+    expect(rows).toEqual([{ replica_timestamps: null }]);
+
+    const reloaded = await service.getQuote('cite-1');
+    expect(reloaded?._replicaTimestamps).toEqual({});
+  });
+
+  it('updateQuote persists replica_timestamps through to SQLite', async () => {
+    const created = await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'original',
+      contextBefore: null,
+      contextAfter: null,
+    });
+
+    const timestamps = {
+      text: '1700000002000-0001-device-a',
+      contextBefore: '1700000002000-0002-device-a',
+    };
+
+    await service.updateQuote({
+      id: created.id,
+      text: 'updated text',
+      _replicaTimestamps: timestamps,
+    });
+
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      'SELECT replica_timestamps FROM quotes WHERE id = ?',
+      [created.id],
+    );
+    expect(rows).toEqual([{ replica_timestamps: JSON.stringify(timestamps) }]);
+
+    const reloaded = await service.getQuote(created.id);
+    expect(reloaded?._replicaTimestamps).toEqual(timestamps);
+  });
+
+  it('maps NULL and invalid quote replica_timestamps to an empty object', async () => {
+    await db.execute(
+      `INSERT INTO quotes
+       (id, book_hash, text, content_hash, created_at, replica_timestamps)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ['cite-null-replica', 'book-1', 'null timestamps', 'hash-null-replica', 1, null],
+    );
+    await db.execute(
+      `INSERT INTO quotes
+       (id, book_hash, text, content_hash, created_at, replica_timestamps)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        'cite-invalid-replica',
+        'book-1',
+        'invalid timestamps',
+        'hash-invalid-replica',
+        2,
+        '{not-json',
+      ],
+    );
+
+    await expect(service.getQuote('cite-invalid-replica')).resolves.toMatchObject({
+      id: 'cite-invalid-replica',
+      _replicaTimestamps: {},
+    });
+    await expect(service.getQuote('cite-null-replica')).resolves.toMatchObject({
+      id: 'cite-null-replica',
+      _replicaTimestamps: {},
+    });
+  });
+
+  it('maps missing quote replica_timestamps to an empty object', async () => {
+    const dbWithoutColumn: DatabaseService = {
+      select: async <T extends Record<string, unknown>>(): Promise<T[]> => [
+        {
+          id: 'cite-missing-replica',
+          book_hash: 'book-1',
+          book_title: null,
+          book_author: null,
+          cfi: null,
+          section_href: null,
+          page: null,
+          text: 'missing timestamp column',
+          context_before: null,
+          context_after: null,
+          content_hash: 'hash-missing-replica',
+          created_at: 1,
+          updated_at: null,
+          deleted_at: null,
+        } as unknown as T,
+      ],
+      execute: async () => ({ rowsAffected: 0, lastInsertId: 0 }),
+      batch: async () => undefined,
+      close: async () => undefined,
+    };
+
+    const [quote] = await new CitasService(dbWithoutColumn, {
+      sha256: createDeterministicSha256(),
+    }).listAllQuotes();
+
+    expect(quote?._replicaTimestamps).toEqual({});
+  });
+
   it('bulkUpsertQuotes updates existing quotes including deletedAt', async () => {
     const created = await service.createQuote({
       bookHash: 'book-1',
@@ -584,15 +781,185 @@ describe('CitasService', () => {
       },
     ]);
 
-    const visible = await service.listQuotes();
-    expect(visible).toHaveLength(0);
-
-    const all = await service.listAllQuotes();
+    // D4: listQuotes includes deleted rows for tombstone sync
+    const all = await service.listQuotes();
     expect(all).toHaveLength(1);
     expect(all[0]?.text).toBe('updated via upsert');
     expect(all[0]?.deletedAt).toBe(200);
+
+    const allRows = await service.listAllQuotes();
+    expect(allRows).toHaveLength(1);
+    expect(allRows[0]?.text).toBe('updated via upsert');
+    expect(allRows[0]?.deletedAt).toBe(200);
+  });
+
+  it('serializes concurrent public calls that touch the database', async () => {
+    const events: string[] = [];
+    const gate = createGate();
+    const guardedDb = createOverlapRejectingDb(events, gate.promise);
+    const guardedService = new CitasService(guardedDb, { sha256: createDeterministicSha256() });
+
+    const listPromise = guardedService.listQuotes();
+    await Promise.resolve();
+    const upsertPromise = guardedService.bulkUpsertQuotes([
+      {
+        id: 'quote-serial',
+        bookHash: 'book-1',
+        bookTitle: null,
+        bookAuthor: null,
+        cfi: null,
+        sectionHref: null,
+        page: null,
+        text: 'serialized',
+        contextBefore: null,
+        contextAfter: null,
+        contentHash: 'hash-1',
+        createdAt: 1,
+        updatedAt: null,
+      },
+    ]);
+
+    await Promise.resolve();
+    expect(events).toEqual(['select:start']);
+
+    gate.resolve();
+    await expect(Promise.all([listPromise, upsertPromise])).resolves.toEqual([[], undefined]);
+    expect(events).toEqual(['select:start', 'select:end', 'execute:start', 'execute:end']);
+  });
+
+  it('releases the database lock after an error so later calls can proceed', async () => {
+    const events: string[] = [];
+    const recoveringDb: DatabaseService = {
+      select: async () => {
+        events.push('select:fail');
+        throw new Error('read failed');
+      },
+      execute: async () => {
+        events.push('execute:success');
+        return { rowsAffected: 1, lastInsertId: 0 };
+      },
+      batch: async () => undefined,
+      close: async () => undefined,
+    };
+    const recoveringService = new CitasService(recoveringDb, {
+      sha256: createDeterministicSha256(),
+    });
+
+    await expect(recoveringService.listQuotes()).rejects.toThrow('read failed');
+    await expect(recoveringService.deleteQuotes(['quote-1'])).resolves.toBeUndefined();
+
+    expect(events).toEqual(['select:fail', 'execute:success']);
+  });
+
+  // ---------------------------------------------------------------------------
+  // D4: Tombstone consistency — listQuotes includes soft-deleted rows
+  // ---------------------------------------------------------------------------
+
+  it('listQuotes includes soft-deleted quotes for tombstone consistency', async () => {
+    const a = await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'active quote',
+      contextBefore: null,
+      contextAfter: null,
+    });
+    const b = await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'to be deleted',
+      contextBefore: null,
+      contextAfter: null,
+    });
+
+    await service.deleteQuotes([b.id]);
+
+    // listQuotes MUST include soft-deleted rows for tombstone sync
+    const all = await service.listQuotes();
+    expect(all).toHaveLength(2);
+    const deleted = all.find((x) => x.id === b.id);
+    expect(deleted).toBeDefined();
+    expect(deleted?.deletedAt).toBe(1700000000000);
+    const kept = all.find((x) => x.id === a.id);
+    expect(kept).toBeDefined();
+    expect(kept?.deletedAt).toBeUndefined();
+  });
+
+  it('searchQuotes excludes soft-deleted quotes', async () => {
+    await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'visible quote',
+      contextBefore: null,
+      contextAfter: null,
+    });
+    const b = await service.createQuote({
+      bookHash: 'book-1',
+      bookTitle: null,
+      bookAuthor: null,
+      cfi: null,
+      sectionHref: null,
+      page: null,
+      text: 'deleted quote',
+      contextBefore: null,
+      contextAfter: null,
+    });
+    await service.deleteQuotes([b.id]);
+
+    const results = await service.searchQuotes('quote');
+    expect(results).toHaveLength(1);
+    expect(results[0]?.text).toBe('visible quote');
   });
 });
+
+function createGate(): { promise: Promise<void>; resolve: () => void } {
+  let resolveGate: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => {
+    resolveGate = resolve;
+  });
+
+  return {
+    promise,
+    resolve: () => {
+      if (!resolveGate) throw new Error('Gate resolver not initialized');
+      resolveGate();
+    },
+  };
+}
+
+function createOverlapRejectingDb(events: string[], firstDelay: Promise<void>): DatabaseService {
+  let inUse = false;
+  let operationCount = 0;
+
+  async function runGuarded<T>(name: string, result: T): Promise<T> {
+    if (inUse) throw new Error('concurrent use forbidden');
+    inUse = true;
+    operationCount += 1;
+    events.push(`${name}:start`);
+    if (operationCount === 1) await firstDelay;
+    events.push(`${name}:end`);
+    inUse = false;
+    return result;
+  }
+
+  return {
+    select: async <T extends Record<string, unknown>>(): Promise<T[]> => runGuarded('select', []),
+    execute: async () => runGuarded('execute', { rowsAffected: 1, lastInsertId: 0 }),
+    batch: async () => undefined,
+    close: async () => undefined,
+  };
+}
 
 /**
  * Returns a deterministic SHA-256 implementation for testing. The

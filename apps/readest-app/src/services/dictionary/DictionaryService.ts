@@ -1,5 +1,10 @@
 import type { DatabaseService } from '@/types/database';
 import type { AppService } from '@/types/system';
+import { SerialExecutor } from '@/services/database/SerialExecutor';
+import {
+  parseReplicaTimestamps,
+  serializeReplicaTimestamps,
+} from '@/services/database/replicaTimestamps';
 import type { DictionaryEntry, DictionaryOccurrence, EnrichmentStatus } from '@/types/dictionary';
 import { normalizeDictionaryTerm } from '@/utils/dictionaryText';
 
@@ -18,6 +23,7 @@ type DictionaryEntryRow = {
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
+  replica_timestamps?: string | null;
 };
 
 type DictionaryOccurrenceRow = {
@@ -35,6 +41,7 @@ type DictionaryOccurrenceRow = {
   highlight_note_id: string | null;
   created_at: number;
   deleted_at: number | null;
+  replica_timestamps?: string | null;
 };
 
 /** Columns for SELECT queries on dictionary_entries — shared to stay DRY. */
@@ -50,6 +57,25 @@ const ENTRY_COLUMNS = [
   'created_at',
   'updated_at',
   'deleted_at',
+  'replica_timestamps',
+].join(', ');
+
+const OCCURRENCE_COLUMNS = [
+  'id',
+  'entry_id',
+  'book_hash',
+  'book_title',
+  'book_author',
+  'cfi',
+  'section_href',
+  'page',
+  'selected_text',
+  'context_before',
+  'context_after',
+  'highlight_note_id',
+  'created_at',
+  'deleted_at',
+  'replica_timestamps',
 ].join(', ');
 
 export interface DictionaryServiceOptions {
@@ -63,6 +89,7 @@ export interface UpsertDictionaryEntryInput {
   language?: string;
   definition?: string;
   enrichmentStatus?: EnrichmentStatus;
+  _replicaTimestamps?: Record<string, string>;
 }
 
 export interface CreateDictionaryOccurrenceInput {
@@ -77,6 +104,7 @@ export interface CreateDictionaryOccurrenceInput {
   contextBefore?: string;
   contextAfter?: string;
   highlightNoteId?: string;
+  _replicaTimestamps?: Record<string, string>;
 }
 
 export interface UpdateEntryInput {
@@ -84,9 +112,11 @@ export interface UpdateEntryInput {
   definition?: string;
   curiosity?: string;
   imagePath?: string;
+  _replicaTimestamps?: Record<string, string>;
 }
 
 export class DictionaryService {
+  private readonly dbExecutor = new SerialExecutor();
   private readonly now: () => number;
   private readonly createId: (prefix: 'entry' | 'occurrence') => string;
 
@@ -104,10 +134,16 @@ export class DictionaryService {
   }
 
   async close(): Promise<void> {
-    await this.db.close();
+    await this.withDbLock(async () => {
+      await this.db.close();
+    });
   }
 
   async upsertEntry(input: UpsertDictionaryEntryInput): Promise<DictionaryEntry> {
+    return this.withDbLock(() => this.upsertEntryUnlocked(input));
+  }
+
+  private async upsertEntryUnlocked(input: UpsertDictionaryEntryInput): Promise<DictionaryEntry> {
     const term = normalizeDictionaryTerm(input.term);
     const language = input.language ?? null;
     const existing = await this.findEntry(term, language);
@@ -130,8 +166,8 @@ export class DictionaryService {
 
     await this.db.execute(
       `INSERT INTO dictionary_entries
-       (id, term, display_term, language, definition, enrichment_status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, term, display_term, language, definition, enrichment_status, created_at, updated_at, replica_timestamps)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.term,
@@ -141,6 +177,7 @@ export class DictionaryService {
         row.enrichment_status,
         row.created_at,
         row.updated_at,
+        serializeReplicaTimestamps(input._replicaTimestamps),
       ],
     );
 
@@ -148,6 +185,12 @@ export class DictionaryService {
   }
 
   async createOccurrence(input: CreateDictionaryOccurrenceInput): Promise<DictionaryOccurrence> {
+    return this.withDbLock(() => this.createOccurrenceUnlocked(input));
+  }
+
+  private async createOccurrenceUnlocked(
+    input: CreateDictionaryOccurrenceInput,
+  ): Promise<DictionaryOccurrence> {
     const row: DictionaryOccurrenceRow = {
       id: this.createId('occurrence'),
       entry_id: input.entryId,
@@ -167,8 +210,8 @@ export class DictionaryService {
 
     await this.db.execute(
       `INSERT INTO dictionary_occurrences
-       (id, entry_id, book_hash, book_title, book_author, cfi, section_href, page, selected_text, context_before, context_after, highlight_note_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, entry_id, book_hash, book_title, book_author, cfi, section_href, page, selected_text, context_before, context_after, highlight_note_id, created_at, replica_timestamps)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.entry_id,
@@ -183,6 +226,7 @@ export class DictionaryService {
         row.context_after,
         row.highlight_note_id,
         row.created_at,
+        serializeReplicaTimestamps(input._replicaTimestamps),
       ],
     );
 
@@ -190,16 +234,23 @@ export class DictionaryService {
   }
 
   async listEntries(): Promise<DictionaryEntry[]> {
+    return this.withDbLock(() => this.listEntriesUnlocked());
+  }
+
+  private async listEntriesUnlocked(): Promise<DictionaryEntry[]> {
     const rows = await this.db.select<DictionaryEntryRow>(
       `SELECT ${ENTRY_COLUMNS}
        FROM dictionary_entries
-       WHERE deleted_at IS NULL
        ORDER BY updated_at DESC, display_term ASC`,
     );
     return rows.map(entryFromRow);
   }
 
   async listAllEntries(): Promise<DictionaryEntry[]> {
+    return this.withDbLock(() => this.listAllEntriesUnlocked());
+  }
+
+  private async listAllEntriesUnlocked(): Promise<DictionaryEntry[]> {
     const rows = await this.db.select<DictionaryEntryRow>(
       `SELECT ${ENTRY_COLUMNS}
        FROM dictionary_entries
@@ -209,6 +260,10 @@ export class DictionaryService {
   }
 
   async searchEntries(query: string): Promise<DictionaryEntry[]> {
+    return this.withDbLock(() => this.searchEntriesUnlocked(query));
+  }
+
+  private async searchEntriesUnlocked(query: string): Promise<DictionaryEntry[]> {
     const pattern = `%${query}%`;
     const rows = await this.db.select<DictionaryEntryRow>(
       `SELECT ${ENTRY_COLUMNS}
@@ -235,11 +290,14 @@ export class DictionaryService {
   }
 
   async listOccurrences(entryId: string): Promise<DictionaryOccurrence[]> {
+    return this.withDbLock(() => this.listOccurrencesUnlocked(entryId));
+  }
+
+  private async listOccurrencesUnlocked(entryId: string): Promise<DictionaryOccurrence[]> {
     const rows = await this.db.select<DictionaryOccurrenceRow>(
-      `SELECT id, entry_id, book_hash, book_title, book_author, cfi, section_href, page, selected_text,
-              context_before, context_after, highlight_note_id, created_at, deleted_at
+      `SELECT ${OCCURRENCE_COLUMNS}
        FROM dictionary_occurrences
-       WHERE entry_id = ? AND deleted_at IS NULL
+       WHERE entry_id = ?
        ORDER BY created_at DESC`,
       [entryId],
     );
@@ -247,9 +305,12 @@ export class DictionaryService {
   }
 
   async listAllOccurrences(): Promise<DictionaryOccurrence[]> {
+    return this.withDbLock(() => this.listAllOccurrencesUnlocked());
+  }
+
+  private async listAllOccurrencesUnlocked(): Promise<DictionaryOccurrence[]> {
     const rows = await this.db.select<DictionaryOccurrenceRow>(
-      `SELECT id, entry_id, book_hash, book_title, book_author, cfi, section_href, page, selected_text,
-              context_before, context_after, highlight_note_id, created_at, deleted_at
+      `SELECT ${OCCURRENCE_COLUMNS}
        FROM dictionary_occurrences
        ORDER BY created_at DESC`,
     );
@@ -257,6 +318,10 @@ export class DictionaryService {
   }
 
   async getEntry(id: string): Promise<DictionaryEntry | null> {
+    return this.withDbLock(() => this.getEntryUnlocked(id));
+  }
+
+  private async getEntryUnlocked(id: string): Promise<DictionaryEntry | null> {
     const rows = await this.db.select<DictionaryEntryRow>(
       `SELECT ${ENTRY_COLUMNS}
        FROM dictionary_entries
@@ -268,6 +333,10 @@ export class DictionaryService {
   }
 
   async updateEntry(input: UpdateEntryInput): Promise<DictionaryEntry> {
+    return this.withDbLock(() => this.updateEntryUnlocked(input));
+  }
+
+  private async updateEntryUnlocked(input: UpdateEntryInput): Promise<DictionaryEntry> {
     const timestamp = this.now();
     const sets: string[] = [];
     const params: unknown[] = [];
@@ -283,6 +352,10 @@ export class DictionaryService {
     if (input.imagePath !== undefined) {
       sets.push('image_path = ?');
       params.push(input.imagePath);
+    }
+    if (input._replicaTimestamps !== undefined) {
+      sets.push('replica_timestamps = ?');
+      params.push(serializeReplicaTimestamps(input._replicaTimestamps));
     }
 
     sets.push('updated_at = ?');
@@ -303,6 +376,10 @@ export class DictionaryService {
   }
 
   async deleteEntries(ids: readonly string[]): Promise<void> {
+    return this.withDbLock(() => this.deleteEntriesUnlocked(ids));
+  }
+
+  private async deleteEntriesUnlocked(ids: readonly string[]): Promise<void> {
     if (ids.length === 0) return;
 
     const now = this.now();
@@ -319,9 +396,13 @@ export class DictionaryService {
   }
 
   async bulkUpsertEntries(entries: DictionaryEntry[]): Promise<void> {
+    return this.withDbLock(() => this.bulkUpsertEntriesUnlocked(entries));
+  }
+
+  private async bulkUpsertEntriesUnlocked(entries: DictionaryEntry[]): Promise<void> {
     if (entries.length === 0) return;
 
-    const placeholders = entries.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+    const placeholders = entries.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
     const params: unknown[] = [];
 
     for (const e of entries) {
@@ -337,22 +418,27 @@ export class DictionaryService {
         e.createdAt,
         e.updatedAt,
         e.deletedAt ?? null,
+        serializeReplicaTimestamps(e._replicaTimestamps),
       );
     }
 
     await this.db.execute(
       `INSERT OR REPLACE INTO dictionary_entries
-       (id, term, display_term, language, definition, enrichment_status, image_path, curiosity, created_at, updated_at, deleted_at)
-       VALUES ${placeholders}`,
+        (id, term, display_term, language, definition, enrichment_status, image_path, curiosity, created_at, updated_at, deleted_at, replica_timestamps)
+        VALUES ${placeholders}`,
       params,
     );
   }
 
   async bulkUpsertOccurrences(occurrences: DictionaryOccurrence[]): Promise<void> {
+    return this.withDbLock(() => this.bulkUpsertOccurrencesUnlocked(occurrences));
+  }
+
+  private async bulkUpsertOccurrencesUnlocked(occurrences: DictionaryOccurrence[]): Promise<void> {
     if (occurrences.length === 0) return;
 
     const placeholders = occurrences
-      .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .join(', ');
     const params: unknown[] = [];
 
@@ -372,13 +458,14 @@ export class DictionaryService {
         o.highlightNoteId ?? null,
         o.createdAt,
         o.deletedAt ?? null,
+        serializeReplicaTimestamps(o._replicaTimestamps),
       );
     }
 
     await this.db.execute(
       `INSERT OR REPLACE INTO dictionary_occurrences
-       (id, entry_id, book_hash, book_title, book_author, cfi, section_href, page, selected_text, context_before, context_after, highlight_note_id, created_at, deleted_at)
-       VALUES ${placeholders}`,
+        (id, entry_id, book_hash, book_title, book_author, cfi, section_href, page, selected_text, context_before, context_after, highlight_note_id, created_at, deleted_at, replica_timestamps)
+        VALUES ${placeholders}`,
       params,
     );
   }
@@ -392,6 +479,10 @@ export class DictionaryService {
     );
     const row = rows[0];
     return row ? entryFromRow(row) : null;
+  }
+
+  private withDbLock<T>(operation: () => Promise<T>): Promise<T> {
+    return this.dbExecutor.run(operation);
   }
 }
 
@@ -408,6 +499,7 @@ function entryFromRow(row: DictionaryEntryRow): DictionaryEntry {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at ?? undefined,
+    _replicaTimestamps: parseReplicaTimestamps(row.replica_timestamps),
   };
 }
 
@@ -427,6 +519,7 @@ function occurrenceFromRow(row: DictionaryOccurrenceRow): DictionaryOccurrence {
     highlightNoteId: row.highlight_note_id ?? undefined,
     createdAt: row.created_at,
     deletedAt: row.deleted_at ?? undefined,
+    _replicaTimestamps: parseReplicaTimestamps(row.replica_timestamps),
   };
 }
 

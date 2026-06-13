@@ -1,5 +1,10 @@
 import type { DatabaseService } from '@/types/database';
 import type { AppService } from '@/types/system';
+import { SerialExecutor } from '@/services/database/SerialExecutor';
+import {
+  parseReplicaTimestamps,
+  serializeReplicaTimestamps,
+} from '@/services/database/replicaTimestamps';
 import { createCitasId, type Cite, type CiteInput, type CiteUpdate } from '@/types/citas';
 
 const DB_SCHEMA = 'citas';
@@ -27,6 +32,7 @@ type QuoteRow = {
   created_at: number;
   updated_at: number | null;
   deleted_at: number | null;
+  replica_timestamps?: string | null;
 };
 
 /** Columns for SELECT queries on `quotes` — shared to stay DRY. */
@@ -45,6 +51,7 @@ const QUOTE_COLUMNS = [
   'created_at',
   'updated_at',
   'deleted_at',
+  'replica_timestamps',
 ].join(', ');
 
 export interface CitasServiceOptions {
@@ -61,6 +68,7 @@ export interface CitasServiceOptions {
 }
 
 export class CitasService {
+  private readonly dbExecutor = new SerialExecutor();
   private now: () => number;
   private createId: () => string;
   private sha256: Sha256;
@@ -85,7 +93,9 @@ export class CitasService {
   }
 
   async close(): Promise<void> {
-    await this.db.close();
+    await this.withDbLock(async () => {
+      await this.db.close();
+    });
   }
 
   /**
@@ -98,13 +108,21 @@ export class CitasService {
   }
 
   async listQuotes(): Promise<Cite[]> {
+    return this.withDbLock(() => this.listQuotesUnlocked());
+  }
+
+  private async listQuotesUnlocked(): Promise<Cite[]> {
     const rows = await this.db.select<QuoteRow>(
-      `SELECT ${QUOTE_COLUMNS} FROM quotes WHERE deleted_at IS NULL ORDER BY created_at DESC`,
+      `SELECT ${QUOTE_COLUMNS} FROM quotes ORDER BY created_at DESC`,
     );
     return rows.map(quoteFromRow);
   }
 
   async listAllQuotes(): Promise<Cite[]> {
+    return this.withDbLock(() => this.listAllQuotesUnlocked());
+  }
+
+  private async listAllQuotesUnlocked(): Promise<Cite[]> {
     const rows = await this.db.select<QuoteRow>(
       `SELECT ${QUOTE_COLUMNS} FROM quotes ORDER BY created_at DESC`,
     );
@@ -112,6 +130,10 @@ export class CitasService {
   }
 
   async listQuotesByBook(bookHash: string): Promise<Cite[]> {
+    return this.withDbLock(() => this.listQuotesByBookUnlocked(bookHash));
+  }
+
+  private async listQuotesByBookUnlocked(bookHash: string): Promise<Cite[]> {
     const rows = await this.db.select<QuoteRow>(
       `SELECT ${QUOTE_COLUMNS} FROM quotes WHERE book_hash = ? AND deleted_at IS NULL ORDER BY created_at DESC`,
       [bookHash],
@@ -120,6 +142,10 @@ export class CitasService {
   }
 
   async getQuote(id: string): Promise<Cite | null> {
+    return this.withDbLock(() => this.getQuoteUnlocked(id));
+  }
+
+  private async getQuoteUnlocked(id: string): Promise<Cite | null> {
     const rows = await this.db.select<QuoteRow>(
       `SELECT ${QUOTE_COLUMNS} FROM quotes WHERE id = ?`,
       [id],
@@ -129,6 +155,10 @@ export class CitasService {
   }
 
   async createQuote(input: CiteInput): Promise<Cite> {
+    return this.withDbLock(() => this.createQuoteUnlocked(input));
+  }
+
+  private async createQuoteUnlocked(input: CiteInput): Promise<Cite> {
     const id = this.createId();
     const createdAt = this.now();
     const contentHash = await computeContentHash(this.sha256, input);
@@ -136,8 +166,8 @@ export class CitasService {
     await this.db.execute(
       `INSERT INTO quotes
        (id, book_hash, book_title, book_author, cfi, section_href, page,
-        text, context_before, context_after, content_hash, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        text, context_before, context_after, content_hash, created_at, updated_at, replica_timestamps)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       [
         id,
         input.bookHash,
@@ -151,6 +181,7 @@ export class CitasService {
         input.contextAfter,
         contentHash,
         createdAt,
+        serializeReplicaTimestamps(input._replicaTimestamps),
       ],
     );
 
@@ -172,7 +203,11 @@ export class CitasService {
   }
 
   async updateQuote(input: CiteUpdate): Promise<Cite> {
-    const current = await this.getQuote(input.id);
+    return this.withDbLock(() => this.updateQuoteUnlocked(input));
+  }
+
+  private async updateQuoteUnlocked(input: CiteUpdate): Promise<Cite> {
+    const current = await this.getQuoteUnlocked(input.id);
     if (!current) {
       throw new Error(`Quote not found: ${input.id}`);
     }
@@ -209,7 +244,8 @@ export class CitasService {
          context_before = ?,
          context_after  = ?,
          content_hash  = ?,
-         updated_at    = ?
+         updated_at    = ?,
+         replica_timestamps = ?
        WHERE id = ?`,
       [
         input.bookTitle !== undefined ? input.bookTitle : current.bookTitle,
@@ -222,11 +258,12 @@ export class CitasService {
         nextContextAfter,
         contentHash,
         updatedAt,
+        serializeReplicaTimestamps(input._replicaTimestamps),
         input.id,
       ],
     );
 
-    const refreshed = await this.getQuote(input.id);
+    const refreshed = await this.getQuoteUnlocked(input.id);
     if (!refreshed) {
       // Race: the row was deleted between our read and write. Surface it
       // loudly rather than returning a fabricated value.
@@ -236,6 +273,10 @@ export class CitasService {
   }
 
   async searchQuotes(query: string): Promise<Cite[]> {
+    return this.withDbLock(() => this.searchQuotesUnlocked(query));
+  }
+
+  private async searchQuotesUnlocked(query: string): Promise<Cite[]> {
     // SQLite's default LIKE is case-insensitive for ASCII, so passing
     // the raw pattern covers the "BORGES" → "Borges" case the spec
     // requires without an extra LOWER() call.
@@ -252,6 +293,10 @@ export class CitasService {
   }
 
   async deleteQuotes(ids: readonly string[]): Promise<void> {
+    return this.withDbLock(() => this.deleteQuotesUnlocked(ids));
+  }
+
+  private async deleteQuotesUnlocked(ids: readonly string[]): Promise<void> {
     if (ids.length === 0) return;
     const now = this.now();
     const placeholders = ids.map(() => '?').join(', ');
@@ -262,6 +307,10 @@ export class CitasService {
   }
 
   async deleteQuotesByBook(bookHash: string): Promise<string[]> {
+    return this.withDbLock(() => this.deleteQuotesByBookUnlocked(bookHash));
+  }
+
+  private async deleteQuotesByBookUnlocked(bookHash: string): Promise<string[]> {
     const now = this.now();
     const rows = await this.db.select<{ id: string }>(
       'SELECT id FROM quotes WHERE book_hash = ? AND deleted_at IS NULL',
@@ -277,9 +326,15 @@ export class CitasService {
   }
 
   async bulkUpsertQuotes(quotes: Cite[]): Promise<void> {
+    return this.withDbLock(() => this.bulkUpsertQuotesUnlocked(quotes));
+  }
+
+  private async bulkUpsertQuotesUnlocked(quotes: Cite[]): Promise<void> {
     if (quotes.length === 0) return;
 
-    const placeholders = quotes.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+    const placeholders = quotes
+      .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .join(', ');
     const params: unknown[] = [];
 
     for (const q of quotes) {
@@ -298,16 +353,21 @@ export class CitasService {
         q.createdAt,
         q.updatedAt ?? null,
         q.deletedAt ?? null,
+        serializeReplicaTimestamps(q._replicaTimestamps),
       );
     }
 
     await this.db.execute(
       `INSERT OR REPLACE INTO quotes
-       (id, book_hash, book_title, book_author, cfi, section_href, page,
-        text, context_before, context_after, content_hash, created_at, updated_at, deleted_at)
+        (id, book_hash, book_title, book_author, cfi, section_href, page,
+         text, context_before, context_after, content_hash, created_at, updated_at, deleted_at, replica_timestamps)
        VALUES ${placeholders}`,
       params,
     );
+  }
+
+  private withDbLock<T>(operation: () => Promise<T>): Promise<T> {
+    return this.dbExecutor.run(operation);
   }
 }
 
@@ -327,6 +387,7 @@ function quoteFromRow(row: QuoteRow): Cite {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at ?? undefined,
+    _replicaTimestamps: parseReplicaTimestamps(row.replica_timestamps),
   };
 }
 

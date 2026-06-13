@@ -154,10 +154,15 @@ describe('DictionaryService', () => {
 
     await service.deleteEntries([removeOne.id, removeTwo.id]);
 
-    // listEntries filters out soft-deleted entries
-    const visible = await service.listEntries();
-    expect(visible).toHaveLength(1);
-    expect(visible[0]?.id).toBe(keep.id);
+    // D4: listEntries includes soft-deleted entries for tombstone sync
+    const all = await service.listEntries();
+    expect(all).toHaveLength(3);
+    const deletedOne = all.find((x) => x.id === removeOne.id);
+    expect(deletedOne?.deletedAt).toBe(1700000000000);
+    const deletedTwo = all.find((x) => x.id === removeTwo.id);
+    expect(deletedTwo?.deletedAt).toBe(1700000000000);
+    const kept = all.find((x) => x.id === keep.id);
+    expect(kept?.deletedAt).toBeUndefined();
 
     // Entries still exist in the table with deleted_at set
     const entryRows = await db.select<{ id: string; term: string; deleted_at: number | null }>(
@@ -246,15 +251,19 @@ describe('DictionaryService', () => {
     expect(result).toBeNull();
   });
 
-  it('deleteEntries soft-deletes: listEntries excludes deleted rows', async () => {
+  it('deleteEntries soft-deletes: listEntries includes deleted rows for tombstone sync', async () => {
     const a = await service.upsertEntry({ term: 'alpha', language: 'en' });
     const b = await service.upsertEntry({ term: 'beta', language: 'en' });
 
     await service.deleteEntries([a.id]);
 
-    const visible = await service.listEntries();
-    expect(visible).toHaveLength(1);
-    expect(visible[0]?.id).toBe(b.id);
+    // D4: listEntries includes soft-deleted rows for tombstone consistency
+    const all = await service.listEntries();
+    expect(all).toHaveLength(2);
+    const deleted = all.find((x) => x.id === a.id);
+    expect(deleted?.deletedAt).toBe(1700000000000);
+    const kept = all.find((x) => x.id === b.id);
+    expect(kept?.deletedAt).toBeUndefined();
 
     const rows = await db.select<{ id: string; deleted_at: number | null }>(
       'SELECT id, deleted_at FROM dictionary_entries ORDER BY id',
@@ -264,7 +273,7 @@ describe('DictionaryService', () => {
     expect(rows[1]?.deleted_at).toBeNull();
   });
 
-  it('deleteEntries does NOT cascade-delete occurrences (they stay but are filtered)', async () => {
+  it('deleteEntries does NOT cascade-delete occurrences (they stay but are soft-deleted)', async () => {
     const entry = await service.upsertEntry({ term: 'gamma', language: 'en' });
     await service.createOccurrence({
       entryId: entry.id,
@@ -275,9 +284,10 @@ describe('DictionaryService', () => {
 
     await service.deleteEntries([entry.id]);
 
-    // Entries no longer visible
+    // D4: entries with deletedAt still visible via listEntries
     const entries = await service.listEntries();
-    expect(entries).toHaveLength(0);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.deletedAt).toBe(1700000000000);
 
     // Occurrences are still in the database
     const occRows = await db.select<{ id: string; deleted_at: number | null }>(
@@ -341,6 +351,215 @@ describe('DictionaryService', () => {
     expect(all[0]?.term).toBe('eta');
   });
 
+  it('upsertEntry persists replica_timestamps through to SQLite', async () => {
+    const timestamps = {
+      term: '1700000001000-0001-device-a',
+      definition: '1700000001000-0002-device-a',
+    };
+
+    const entry = await service.upsertEntry({
+      term: 'replica-persist',
+      displayTerm: 'Replica Persist',
+      language: 'en',
+      definition: 'a definition',
+      _replicaTimestamps: timestamps,
+    });
+
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      'SELECT replica_timestamps FROM dictionary_entries WHERE id = ?',
+      [entry.id],
+    );
+    expect(rows).toEqual([{ replica_timestamps: JSON.stringify(timestamps) }]);
+
+    const reloaded = await service.getEntry(entry.id);
+    expect(reloaded?._replicaTimestamps).toEqual(timestamps);
+  });
+
+  it('upsertEntry stores null replica_timestamps when none provided', async () => {
+    const entry = await service.upsertEntry({
+      term: 'no-replica-ts',
+      language: 'en',
+    });
+
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      'SELECT replica_timestamps FROM dictionary_entries WHERE id = ?',
+      [entry.id],
+    );
+    expect(rows).toEqual([{ replica_timestamps: null }]);
+
+    const reloaded = await service.getEntry(entry.id);
+    expect(reloaded?._replicaTimestamps).toEqual({});
+  });
+
+  it('createOccurrence persists replica_timestamps through to SQLite', async () => {
+    const entry = await service.upsertEntry({ term: 'occ-replica', language: 'en' });
+    const timestamps = {
+      selectedText: '1700000001000-0001-device-a',
+      bookTitle: '1700000001000-0002-device-a',
+    };
+
+    const occ = await service.createOccurrence({
+      entryId: entry.id,
+      bookHash: 'book-1',
+      bookTitle: 'Test Book',
+      cfi: '/6/2',
+      selectedText: 'test word',
+      _replicaTimestamps: timestamps,
+    });
+
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      'SELECT replica_timestamps FROM dictionary_occurrences WHERE id = ?',
+      [occ.id],
+    );
+    expect(rows).toEqual([{ replica_timestamps: JSON.stringify(timestamps) }]);
+
+    const [reloaded] = await service.listAllOccurrences();
+    expect(reloaded?._replicaTimestamps).toEqual(timestamps);
+  });
+
+  it('createOccurrence stores null replica_timestamps when none provided', async () => {
+    const entry = await service.upsertEntry({ term: 'occ-no-ts', language: 'en' });
+
+    const occ = await service.createOccurrence({
+      entryId: entry.id,
+      bookHash: 'book-1',
+      cfi: '/6/2',
+      selectedText: 'no timestamps',
+    });
+
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      'SELECT replica_timestamps FROM dictionary_occurrences WHERE id = ?',
+      [occ.id],
+    );
+    expect(rows).toEqual([{ replica_timestamps: null }]);
+
+    const [reloaded] = await service.listAllOccurrences();
+    expect(reloaded?._replicaTimestamps).toEqual({});
+  });
+
+  it('updateEntry persists replica_timestamps through to SQLite', async () => {
+    const entry = await service.upsertEntry({ term: 'update-replica', language: 'en' });
+
+    const timestamps = {
+      definition: '1700000002000-0001-device-a',
+      curiosity: '1700000002000-0002-device-a',
+    };
+
+    await service.updateEntry({
+      id: entry.id,
+      definition: 'updated definition',
+      _replicaTimestamps: timestamps,
+    });
+
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      'SELECT replica_timestamps FROM dictionary_entries WHERE id = ?',
+      [entry.id],
+    );
+    expect(rows).toEqual([{ replica_timestamps: JSON.stringify(timestamps) }]);
+
+    const reloaded = await service.getEntry(entry.id);
+    expect(reloaded?._replicaTimestamps).toEqual(timestamps);
+  });
+
+  it('updateEntry stores null replica_timestamps when none provided', async () => {
+    const entry = await service.upsertEntry({ term: 'update-no-ts', language: 'en' });
+
+    await service.updateEntry({
+      id: entry.id,
+      definition: 'updated',
+    });
+
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      'SELECT replica_timestamps FROM dictionary_entries WHERE id = ?',
+      [entry.id],
+    );
+    expect(rows).toEqual([{ replica_timestamps: null }]);
+
+    const reloaded = await service.getEntry(entry.id);
+    expect(reloaded?._replicaTimestamps).toEqual({});
+  });
+
+  it('bulkUpsertEntries persists and reloads per-field replica timestamps', async () => {
+    const timestamps = {
+      definition: '1700000001000-0001-device-a',
+      enrichmentStatus: '1700000001000-0002-device-a',
+    };
+
+    await service.bulkUpsertEntries([
+      {
+        id: 'entry-replica-1',
+        term: 'lambda',
+        displayTerm: 'lambda',
+        language: 'en',
+        enrichmentStatus: 'ready',
+        definition: 'with metadata',
+        createdAt: 100,
+        updatedAt: 100,
+        _replicaTimestamps: timestamps,
+      },
+    ]);
+
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      'SELECT replica_timestamps FROM dictionary_entries WHERE id = ?',
+      ['entry-replica-1'],
+    );
+    expect(rows).toEqual([{ replica_timestamps: JSON.stringify(timestamps) }]);
+
+    const reloaded = await service.getEntry('entry-replica-1');
+    expect(reloaded?._replicaTimestamps).toEqual(timestamps);
+  });
+
+  it('maps NULL and invalid dictionary entry replica_timestamps to an empty object', async () => {
+    await db.execute(
+      `INSERT INTO dictionary_entries
+       (id, term, display_term, enrichment_status, created_at, updated_at, replica_timestamps)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ['entry-null-replica', 'null-entry', 'null-entry', 'none', 1, 1, null],
+    );
+    await db.execute(
+      `INSERT INTO dictionary_entries
+       (id, term, display_term, enrichment_status, created_at, updated_at, replica_timestamps)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ['entry-invalid-replica', 'invalid-entry', 'invalid-entry', 'none', 2, 2, '{not-json'],
+    );
+
+    await expect(service.getEntry('entry-invalid-replica')).resolves.toMatchObject({
+      id: 'entry-invalid-replica',
+      _replicaTimestamps: {},
+    });
+    await expect(service.getEntry('entry-null-replica')).resolves.toMatchObject({
+      id: 'entry-null-replica',
+      _replicaTimestamps: {},
+    });
+  });
+
+  it('maps missing dictionary entry replica_timestamps to an empty object', async () => {
+    const dbWithoutColumn: DatabaseService = {
+      select: async <T extends Record<string, unknown>>(): Promise<T[]> => [
+        {
+          id: 'entry-missing-replica',
+          term: 'missing-entry',
+          display_term: 'missing-entry',
+          language: null,
+          definition: null,
+          enrichment_status: 'none',
+          image_path: null,
+          curiosity: null,
+          created_at: 1,
+          updated_at: 1,
+          deleted_at: null,
+        } as unknown as T,
+      ],
+      execute: async () => ({ rowsAffected: 0, lastInsertId: 0 }),
+      batch: async () => undefined,
+      close: async () => undefined,
+    };
+
+    const [entry] = await new DictionaryService(dbWithoutColumn).listAllEntries();
+
+    expect(entry?._replicaTimestamps).toEqual({});
+  });
+
   it('bulkUpsertEntries updates existing entries including deletedAt', async () => {
     const entry = await service.upsertEntry({ term: 'theta', language: 'en' });
 
@@ -352,13 +571,16 @@ describe('DictionaryService', () => {
       },
     ]);
 
-    const visible = await service.listEntries();
-    expect(visible).toHaveLength(0);
-
-    const all = await service.listAllEntries();
+    // D4: listEntries includes deleted rows for tombstone sync
+    const all = await service.listEntries();
     expect(all).toHaveLength(1);
     expect(all[0]?.definition).toBe('updated');
     expect(all[0]?.deletedAt).toBe(200);
+
+    const allRows = await service.listAllEntries();
+    expect(allRows).toHaveLength(1);
+    expect(allRows[0]?.definition).toBe('updated');
+    expect(allRows[0]?.deletedAt).toBe(200);
   });
 
   it('bulkUpsertOccurrences inserts new occurrences', async () => {
@@ -382,6 +604,89 @@ describe('DictionaryService', () => {
     expect(all[0]?.id).toBe('occ-bulk-1');
   });
 
+  it('bulkUpsertOccurrences persists and reloads per-field replica timestamps', async () => {
+    const entry = await service.upsertEntry({ term: 'mu', language: 'en' });
+    const timestamps = {
+      selectedText: '1700000001000-0001-device-a',
+      highlightNoteId: '1700000001000-0002-device-a',
+    };
+
+    await service.bulkUpsertOccurrences([
+      {
+        id: 'occ-replica-1',
+        entryId: entry.id,
+        bookHash: 'book-1',
+        cfi: '/6/2',
+        selectedText: 'mu',
+        createdAt: 100,
+        _replicaTimestamps: timestamps,
+      },
+    ]);
+
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      'SELECT replica_timestamps FROM dictionary_occurrences WHERE id = ?',
+      ['occ-replica-1'],
+    );
+    expect(rows).toEqual([{ replica_timestamps: JSON.stringify(timestamps) }]);
+
+    const [reloaded] = await service.listAllOccurrences();
+    expect(reloaded?._replicaTimestamps).toEqual(timestamps);
+  });
+
+  it('maps NULL and invalid dictionary occurrence replica_timestamps to an empty object', async () => {
+    const entry = await service.upsertEntry({ term: 'nu', language: 'en' });
+    await db.execute(
+      `INSERT INTO dictionary_occurrences
+       (id, entry_id, book_hash, cfi, selected_text, created_at, replica_timestamps)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ['occ-null-replica', entry.id, 'book-1', '/6/2', 'null occurrence', 1, null],
+    );
+    await db.execute(
+      `INSERT INTO dictionary_occurrences
+       (id, entry_id, book_hash, cfi, selected_text, created_at, replica_timestamps)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ['occ-invalid-replica', entry.id, 'book-1', '/6/4', 'invalid occurrence', 2, '{not-json'],
+    );
+
+    const occurrences = await service.listAllOccurrences();
+    expect(occurrences.find((occ) => occ.id === 'occ-invalid-replica')?._replicaTimestamps).toEqual(
+      {},
+    );
+    expect(occurrences.find((occ) => occ.id === 'occ-null-replica')?._replicaTimestamps).toEqual(
+      {},
+    );
+  });
+
+  it('maps missing dictionary occurrence replica_timestamps to an empty object', async () => {
+    const dbWithoutColumn: DatabaseService = {
+      select: async <T extends Record<string, unknown>>(): Promise<T[]> => [
+        {
+          id: 'occ-missing-replica',
+          entry_id: 'entry-1',
+          book_hash: 'book-1',
+          book_title: null,
+          book_author: null,
+          cfi: '/6/2',
+          section_href: null,
+          page: null,
+          selected_text: 'missing occurrence timestamp column',
+          context_before: null,
+          context_after: null,
+          highlight_note_id: null,
+          created_at: 1,
+          deleted_at: null,
+        } as unknown as T,
+      ],
+      execute: async () => ({ rowsAffected: 0, lastInsertId: 0 }),
+      batch: async () => undefined,
+      close: async () => undefined,
+    };
+
+    const [occurrence] = await new DictionaryService(dbWithoutColumn).listAllOccurrences();
+
+    expect(occurrence?._replicaTimestamps).toEqual({});
+  });
+
   it('bulkUpsertOccurrences updates existing occurrences including deletedAt', async () => {
     const entry = await service.upsertEntry({ term: 'kappa', language: 'en' });
     const occ = await service.createOccurrence({
@@ -399,12 +704,162 @@ describe('DictionaryService', () => {
       },
     ]);
 
-    const visible = await service.listOccurrences(entry.id);
-    expect(visible).toHaveLength(0);
-
-    const all = await service.listAllOccurrences();
+    // D4: listOccurrences includes deleted rows for tombstone sync
+    const all = await service.listOccurrences(entry.id);
     expect(all).toHaveLength(1);
     expect(all[0]?.selectedText).toBe('updated kappa');
     expect(all[0]?.deletedAt).toBe(300);
+
+    const allRows = await service.listAllOccurrences();
+    expect(allRows).toHaveLength(1);
+    expect(allRows[0]?.selectedText).toBe('updated kappa');
+    expect(allRows[0]?.deletedAt).toBe(300);
+  });
+
+  it('serializes concurrent public calls that touch the database', async () => {
+    const events: string[] = [];
+    const gate = createGate();
+    const guardedDb = createOverlapRejectingDb(events, gate.promise);
+    const guardedService = new DictionaryService(guardedDb);
+
+    const listPromise = guardedService.listEntries();
+    await Promise.resolve();
+    const upsertPromise = guardedService.bulkUpsertEntries([
+      {
+        id: 'entry-serial',
+        term: 'serial',
+        displayTerm: 'serial',
+        language: 'en',
+        enrichmentStatus: 'none',
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ]);
+
+    await Promise.resolve();
+    expect(events).toEqual(['select:start']);
+
+    gate.resolve();
+    await expect(Promise.all([listPromise, upsertPromise])).resolves.toEqual([[], undefined]);
+    expect(events).toEqual(['select:start', 'select:end', 'execute:start', 'execute:end']);
+  });
+
+  it('releases the database lock after an error so later calls can proceed', async () => {
+    const events: string[] = [];
+    const recoveringDb: DatabaseService = {
+      select: async () => {
+        events.push('select:fail');
+        throw new Error('read failed');
+      },
+      execute: async () => {
+        events.push('execute:success');
+        return { rowsAffected: 1, lastInsertId: 0 };
+      },
+      batch: async () => undefined,
+      close: async () => undefined,
+    };
+    const recoveringService = new DictionaryService(recoveringDb);
+
+    await expect(recoveringService.listEntries()).rejects.toThrow('read failed');
+    await expect(recoveringService.deleteEntries(['entry-1'])).resolves.toBeUndefined();
+
+    expect(events).toEqual(['select:fail', 'execute:success', 'execute:success']);
+  });
+
+  // ---------------------------------------------------------------------------
+  // D4: Tombstone consistency — listEntries/listOccurrences include soft-deleted rows
+  // ---------------------------------------------------------------------------
+
+  it('listEntries includes soft-deleted entries for tombstone consistency', async () => {
+    const a = await service.upsertEntry({ term: 'alpha', language: 'en' });
+    const b = await service.upsertEntry({ term: 'beta', language: 'en' });
+
+    await service.deleteEntries([b.id]);
+
+    // listEntries MUST include soft-deleted rows for tombstone sync
+    const all = await service.listEntries();
+    expect(all).toHaveLength(2);
+    const deleted = all.find((x) => x.id === b.id);
+    expect(deleted).toBeDefined();
+    expect(deleted?.deletedAt).toBe(1700000000000);
+    const kept = all.find((x) => x.id === a.id);
+    expect(kept).toBeDefined();
+    expect(kept?.deletedAt).toBeUndefined();
+  });
+
+  it('listOccurrences includes soft-deleted occurrences for tombstone consistency', async () => {
+    const entry = await service.upsertEntry({ term: 'lighthouse', language: 'en' });
+    const occ1 = await service.createOccurrence({
+      entryId: entry.id,
+      bookHash: 'book-1',
+      cfi: '/6/2',
+      selectedText: 'first occurrence',
+    });
+    const occ2 = await service.createOccurrence({
+      entryId: entry.id,
+      bookHash: 'book-1',
+      cfi: '/6/3',
+      selectedText: 'second occurrence',
+    });
+
+    // Soft-delete occ2 by upserting with deletedAt via bulkUpsert
+    await service.bulkUpsertOccurrences([{ ...occ2, deletedAt: 1700000000000 }]);
+
+    // listOccurrences MUST include soft-deleted rows for tombstone sync
+    const all = await service.listOccurrences(entry.id);
+    expect(all).toHaveLength(2);
+    const deleted = all.find((x) => x.id === occ2.id);
+    expect(deleted).toBeDefined();
+    expect(deleted?.deletedAt).toBe(1700000000000);
+    const kept = all.find((x) => x.id === occ1.id);
+    expect(kept).toBeDefined();
+    expect(kept?.deletedAt).toBeUndefined();
+  });
+
+  it('searchEntries excludes soft-deleted entries', async () => {
+    await service.upsertEntry({ term: 'visible', language: 'en' });
+    const b = await service.upsertEntry({ term: 'deleted', language: 'en' });
+    await service.deleteEntries([b.id]);
+
+    const results = await service.searchEntries('deleted');
+    expect(results).toHaveLength(0);
   });
 });
+
+function createGate(): { promise: Promise<void>; resolve: () => void } {
+  let resolveGate: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => {
+    resolveGate = resolve;
+  });
+
+  return {
+    promise,
+    resolve: () => {
+      if (!resolveGate) throw new Error('Gate resolver not initialized');
+      resolveGate();
+    },
+  };
+}
+
+function createOverlapRejectingDb(events: string[], firstDelay: Promise<void>): DatabaseService {
+  let inUse = false;
+  let operationCount = 0;
+
+  async function runGuarded<T>(name: string, result: T): Promise<T> {
+    if (inUse) throw new Error('concurrent use forbidden');
+    inUse = true;
+    operationCount += 1;
+    events.push(`${name}:start`);
+    if (operationCount === 1) await firstDelay;
+    events.push(`${name}:end`);
+    inUse = false;
+    return result;
+  }
+
+  return {
+    select: async <T extends Record<string, unknown>>(): Promise<T[]> => runGuarded('select', []),
+    execute: async () => runGuarded('execute', { rowsAffected: 1, lastInsertId: 0 }),
+    batch: async () => undefined,
+    close: async () => undefined,
+  };
+}
