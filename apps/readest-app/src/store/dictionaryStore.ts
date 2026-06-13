@@ -2,9 +2,12 @@ import { create } from 'zustand';
 import type { DictionaryEntry, DictionaryOccurrence } from '@/types/dictionary';
 import type { DictionaryService } from '@/services/dictionary/DictionaryService';
 import type { ReplicaRow, Hlc, FieldEnvelope } from '@/types/replica';
-import { createReplicaRow } from '@/libs/replica/factory';
+import { createReplicaRow, timestampsFromReplicaRow } from '@/libs/replica/factory';
+import { compareHLC } from '@/libs/replica/hlc';
 import { useSettingsStore } from './settingsStore';
 import type { SyncCategory } from '@/types/settings';
+import { getDictionaryService } from '@/services/dictionary/dictionaryServiceCache';
+import environmentConfig from '@/services/environment';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -44,6 +47,30 @@ function parseReplicaItemId(row: ReplicaRow): string | null {
   const parts = row.replica_id.split(':');
   if (parts.length < 2) return null;
   return parts.slice(1).join(':');
+}
+
+// ---------------------------------------------------------------------------
+// Fire-and-forget persistence helpers
+// ---------------------------------------------------------------------------
+
+function persistEntries(entries: DictionaryEntry[]): void {
+  environmentConfig
+    .getAppService()
+    .then((appService) => getDictionaryService(appService))
+    .then((service) => service.bulkUpsertEntries(entries))
+    .catch((err) => {
+      console.error('[dictionaryStore] persistEntries failed:', err);
+    });
+}
+
+function persistOccurrences(occurrences: DictionaryOccurrence[]): void {
+  environmentConfig
+    .getAppService()
+    .then((appService) => getDictionaryService(appService))
+    .then((service) => service.bulkUpsertOccurrences(occurrences))
+    .catch((err) => {
+      console.error('[dictionaryStore] persistOccurrences failed:', err);
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +115,16 @@ export interface DictionaryStoreState {
   updateEntry: (input: UpdateEntryInput, service: DictionaryService) => Promise<void>;
   applyRemoteDictionaryEntry(row: ReplicaRow): void;
   applyRemoteDictionaryOccurrence(row: ReplicaRow): void;
+  /**
+   * Return dictionary entries that are NOT soft-deleted. Used by UI
+   * display selectors to hide tombstones from visible lists.
+   */
+  getVisibleDictionaryEntries(): DictionaryEntry[];
+  /**
+   * Return occurrences for an entry that are NOT soft-deleted. Used by
+   * UI display selectors to hide tombstones from visible lists.
+   */
+  getVisibleOccurrences(entryId: string): DictionaryOccurrence[];
   /**
    * Build ReplicaRows for ALL local dictionary entries AND occurrences
    * (not just the outbox). Used during seed sync (first sync with a
@@ -149,7 +186,8 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
     try {
       const entries = await service.listEntries();
       set({ entries, isLoading: false });
-    } catch {
+    } catch (err) {
+      console.error('[dictionaryStore] loadEntries failed:', err);
       set({ isLoading: false });
     }
   },
@@ -161,7 +199,8 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
         ? await service.searchEntries(query)
         : await service.listEntries();
       set({ entries, isLoading: false });
-    } catch {
+    } catch (err) {
+      console.error('[dictionaryStore] searchEntries failed:', err);
       set({ isLoading: false });
     }
   },
@@ -171,7 +210,8 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
     try {
       const entry = await service.getEntry(id);
       set({ entry, isLoading: false });
-    } catch {
+    } catch (err) {
+      console.error('[dictionaryStore] loadEntry failed:', err);
       set({ isLoading: false });
     }
   },
@@ -187,7 +227,8 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
         },
         isLoading: false,
       }));
-    } catch {
+    } catch (err) {
+      console.error('[dictionaryStore] loadOccurrences failed:', err);
       set({ isLoading: false });
     }
   },
@@ -211,13 +252,18 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
           deviceId,
           lastHLC,
         });
+        const updatedWithTimestamps = {
+          ...updated,
+          _replicaTimestamps: timestampsFromReplicaRow(row),
+        };
         return {
-          entry: updated,
+          entry: updatedWithTimestamps,
           isLoading: false,
           replicaOutbox: [...state.replicaOutbox, row],
         };
       });
-    } catch {
+    } catch (err) {
+      console.error('[dictionaryStore] updateEntry failed:', err);
       set({ isLoading: false });
     }
   },
@@ -252,14 +298,19 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
           deviceId,
           lastHLC,
         });
+        const savedEntryWithTimestamps = {
+          ...savedEntry,
+          _replicaTimestamps: timestampsFromReplicaRow(row),
+        };
         return {
-          entries: upsertEntryInList(state.entries, savedEntry),
-          entry: savedEntry,
+          entries: upsertEntryInList(state.entries, savedEntryWithTimestamps),
+          entry: savedEntryWithTimestamps,
           isLoading: false,
           replicaOutbox: [...state.replicaOutbox, row],
         };
       });
-    } catch {
+    } catch (err) {
+      console.error('[dictionaryStore] addEntry failed:', err);
       set({ isLoading: false });
     }
   },
@@ -297,7 +348,8 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
         isLoading: false,
         replicaOutbox: [...state.replicaOutbox, ...tombstoneRows],
       }));
-    } catch {
+    } catch (err) {
+      console.error('[dictionaryStore] deleteSelectedEntries failed:', err);
       set({ isLoading: false });
     }
   },
@@ -307,15 +359,16 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
     if (!itemId) return;
 
     if (row.deleted_at_ts) {
+      let deletedEntry: DictionaryEntry | undefined;
       set((state) => {
         const existing = state.entries.find((e) => e.id === itemId);
         if (!existing) return state;
+        deletedEntry = { ...existing, deletedAt: Date.now() };
         return {
-          entries: state.entries.map((e) =>
-            e.id === itemId ? { ...e, deletedAt: Date.now() } : e,
-          ),
+          entries: state.entries.map((e) => (e.id === itemId ? deletedEntry! : e)),
         };
       });
+      if (deletedEntry) persistEntries([deletedEntry]);
       return;
     }
 
@@ -324,6 +377,7 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
       remoteTimestamps[key] = (env as FieldEnvelope).t as string;
     }
 
+    let mergedEntry: DictionaryEntry | undefined;
     set((state) => {
       const existingIdx = state.entries.findIndex((e) => e.id === itemId);
 
@@ -332,6 +386,8 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
         for (const [key, env] of Object.entries(row.fields_jsonb)) {
           remoteVals[key] = (env as FieldEnvelope).v;
         }
+        // Guard: rows without a 'term' are occurrence rows — no-op
+        if (!('term' in remoteVals)) return state;
         const newEntry: DictionaryEntry = {
           id: itemId,
           term: (remoteVals['term'] as string) || '',
@@ -347,6 +403,7 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
           updatedAt: Date.now(),
           _replicaTimestamps: remoteTimestamps,
         };
+        mergedEntry = newEntry;
         return { entries: [...state.entries, newEntry] };
       }
 
@@ -360,7 +417,7 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
         const remoteHlc = fe.t as string;
         const localHlc = mergedTimestamps[key];
 
-        if (!localHlc || remoteHlc > localHlc) {
+        if (!localHlc || compareHLC(remoteHlc as Hlc, localHlc as Hlc) > 0) {
           merged[key] = fe.v;
           mergedTimestamps[key] = remoteHlc;
           changed = true;
@@ -371,6 +428,7 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
 
       merged['_replicaTimestamps'] = mergedTimestamps;
       merged['updatedAt'] = Date.now();
+      mergedEntry = merged as unknown as DictionaryEntry;
 
       return {
         entries: state.entries.map((e, i) =>
@@ -378,6 +436,8 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
         ),
       };
     });
+
+    if (mergedEntry) persistEntries([mergedEntry]);
   },
 
   applyRemoteDictionaryOccurrence(row: ReplicaRow) {
@@ -390,16 +450,21 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
     if (!entryId) return;
 
     if (row.deleted_at_ts) {
-      // Remove the occurrence from the entry's list
+      let deletedOcc: DictionaryOccurrence | undefined;
+      // Soft-delete: set deletedAt instead of removing from array
       set((state) => {
         const current = state.occurrencesByEntryId[entryId] ?? [];
+        const existingIdx = current.findIndex((o) => o.id === itemId);
+        if (existingIdx < 0) return state;
+        deletedOcc = { ...current[existingIdx]!, deletedAt: Date.now() };
         return {
           occurrencesByEntryId: {
             ...state.occurrencesByEntryId,
-            [entryId]: current.filter((o) => o.id !== itemId),
+            [entryId]: current.map((o, i) => (i === existingIdx ? deletedOcc! : o)),
           },
         };
       });
+      if (deletedOcc) persistOccurrences([deletedOcc]);
       return;
     }
 
@@ -408,6 +473,7 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
       remoteTimestamps[key] = (env as FieldEnvelope).t as string;
     }
 
+    let mergedOcc: DictionaryOccurrence | undefined;
     set((state) => {
       const current = state.occurrencesByEntryId[entryId] ?? [];
       const existingIdx = current.findIndex((o) => o.id === itemId);
@@ -429,9 +495,11 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
           selectedText: (remoteVals['selectedText'] as string) || '',
           contextBefore: remoteVals['contextBefore'] as string | undefined,
           contextAfter: remoteVals['contextAfter'] as string | undefined,
+          highlightNoteId: (remoteVals['highlightNoteId'] as string) || undefined,
           createdAt: Date.now(),
           _replicaTimestamps: remoteTimestamps,
         };
+        mergedOcc = newOcc;
         return {
           occurrencesByEntryId: {
             ...state.occurrencesByEntryId,
@@ -450,7 +518,7 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
         const remoteHlc = fe.t as string;
         const localHlc = mergedTimestamps[key];
 
-        if (!localHlc || remoteHlc > localHlc) {
+        if (!localHlc || compareHLC(remoteHlc as Hlc, localHlc as Hlc) > 0) {
           merged[key] = fe.v;
           mergedTimestamps[key] = remoteHlc;
           changed = true;
@@ -460,6 +528,7 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
       if (!changed) return state;
 
       merged['_replicaTimestamps'] = mergedTimestamps;
+      mergedOcc = merged as unknown as DictionaryOccurrence;
 
       return {
         occurrencesByEntryId: {
@@ -470,6 +539,17 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
         },
       };
     });
+
+    if (mergedOcc) persistOccurrences([mergedOcc]);
+  },
+
+  getVisibleDictionaryEntries() {
+    return get().entries.filter((e) => !e.deletedAt);
+  },
+
+  getVisibleOccurrences(entryId: string) {
+    const occs = get().occurrencesByEntryId[entryId] ?? [];
+    return occs.filter((o) => !o.deletedAt);
   },
 
   getAllReplicas(deviceId: string): ReplicaRow[] {
@@ -500,7 +580,7 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
     for (const [, occurrences] of Object.entries(state.occurrencesByEntryId)) {
       for (const occ of occurrences) {
         const row = createReplicaRow({
-          kind: 'dictionary-entry',
+          kind: 'dictionary-occurrence',
           item: {
             id: occ.id,
             fields: pickReplicaFields(occ as unknown as Record<string, unknown>, [

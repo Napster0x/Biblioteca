@@ -16,7 +16,7 @@ describe('citas migrations', () => {
     await db.close();
   });
 
-  it('creates the quotes table with all 14 expected columns', async () => {
+  it('creates the quotes table with all 15 expected columns', async () => {
     const columns = await db.select<{ name: string; type: string }>(`PRAGMA table_info(quotes)`);
     const columnNames = columns.map((c) => c.name);
 
@@ -35,7 +35,32 @@ describe('citas migrations', () => {
       'created_at',
       'updated_at',
       'deleted_at',
+      'replica_timestamps',
     ]);
+  });
+
+  it('adds nullable replica_timestamps column for CRDT metadata without backfilling rows', async () => {
+    const columns = await db.select<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>(`PRAGMA table_info(quotes)`);
+    const column = columns.find((c) => c.name === 'replica_timestamps');
+
+    expect(column).toMatchObject({ type: 'TEXT', notnull: 0, dflt_value: 'NULL' });
+
+    await db.execute(
+      `INSERT INTO quotes
+       (id, book_hash, text, content_hash, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      ['cite-replica-null', 'book-1', 'legacy quote', 'h-replica', 1],
+    );
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      `SELECT replica_timestamps FROM quotes WHERE id = ?`,
+      ['cite-replica-null'],
+    );
+    expect(rows).toEqual([{ replica_timestamps: null }]);
   });
 
   it('creates the 3 supporting indexes on quotes', async () => {
@@ -102,6 +127,6 @@ describe('citas migrations', () => {
     expect(rows).toEqual([{ id: 'cite-1' }]);
 
     const version = await db.select<{ user_version: number }>('PRAGMA user_version');
-    expect(version[0]?.user_version).toBe(2);
+    expect(version[0]?.user_version).toBe(3);
   });
 });

@@ -16,7 +16,7 @@ describe('annotaciones migrations', () => {
     await db.close();
   });
 
-  it('creates the annotations table with all 14 expected columns', async () => {
+  it('creates the annotations table with all 15 expected columns', async () => {
     const columns = await db.select<{ name: string; type: string }>(
       `PRAGMA table_info(annotations)`,
     );
@@ -37,7 +37,32 @@ describe('annotaciones migrations', () => {
       'created_at',
       'updated_at',
       'deleted_at',
+      'replica_timestamps',
     ]);
+  });
+
+  it('adds nullable replica_timestamps column for CRDT metadata without backfilling rows', async () => {
+    const columns = await db.select<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>(`PRAGMA table_info(annotations)`);
+    const column = columns.find((c) => c.name === 'replica_timestamps');
+
+    expect(column).toMatchObject({ type: 'TEXT', notnull: 0, dflt_value: 'NULL' });
+
+    await db.execute(
+      `INSERT INTO annotations
+       (id, book_hash, text, created_at)
+       VALUES (?, ?, ?, ?)`,
+      ['annot-replica-null', 'book-1', 'legacy row', 1],
+    );
+    const rows = await db.select<{ replica_timestamps: string | null }>(
+      `SELECT replica_timestamps FROM annotations WHERE id = ?`,
+      ['annot-replica-null'],
+    );
+    expect(rows).toEqual([{ replica_timestamps: null }]);
   });
 
   it('creates the 2 supporting indexes on annotations', async () => {
@@ -81,6 +106,6 @@ describe('annotaciones migrations', () => {
     expect(rows).toEqual([{ id: 'annot-1' }]);
 
     const version = await db.select<{ user_version: number }>('PRAGMA user_version');
-    expect(version[0]?.user_version).toBe(2);
+    expect(version[0]?.user_version).toBe(3);
   });
 });

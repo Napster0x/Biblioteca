@@ -5,6 +5,24 @@ import type { ReplicaRow, FieldEnvelope, Hlc } from '@/types/replica';
 import type { CitasService } from '@/services/citas/CitasService';
 
 // ---------------------------------------------------------------------------
+// Mocks for fire-and-forget persistence
+// ---------------------------------------------------------------------------
+
+const mockBulkUpsertQuotes = vi.fn().mockResolvedValue(undefined);
+const mockGetCitasService = vi.fn().mockResolvedValue({
+  bulkUpsertQuotes: mockBulkUpsertQuotes,
+});
+
+vi.mock('@/services/citas/citasServiceCache', () => ({
+  getCitasService: (...args: unknown[]) => mockGetCitasService(...args),
+}));
+
+const mockGetAppService = vi.fn().mockResolvedValue('mock-app-service');
+vi.mock('@/services/environment', () => ({
+  default: { getAppService: (...args: unknown[]) => mockGetAppService(...args) },
+}));
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
@@ -198,6 +216,140 @@ describe('citasStore — replica applyRemoteQuote', () => {
     expect(q.page).toBe(42); // NEWER → updated
   });
 
+  // ---------------------------------------------------------------------------
+  // D2: persist-after-apply wiring
+  // ---------------------------------------------------------------------------
+
+  it('applyRemoteQuote persists NEW quote to SQLite via bulkUpsertQuotes', async () => {
+    mockBulkUpsertQuotes.mockClear();
+    mockGetAppService.mockClear();
+    mockGetCitasService.mockClear();
+
+    const row = makeQuoteRow({
+      id: 'cite-persist-1',
+      hlc: NEW_HLC,
+      fields: {
+        bookHash: 'hash-q1',
+        bookTitle: 'Persist Book',
+        bookAuthor: 'Persist Author',
+        cfi: '/6/4',
+        page: 10,
+        text: 'A beautiful passage',
+        contextBefore: 'Once upon a time,',
+        contextAfter: 'and they lived happily.',
+        contentHash: 'abc123',
+      },
+    });
+
+    useCitasStore.getState().applyRemoteQuote(row);
+
+    await vi.waitFor(() => expect(mockBulkUpsertQuotes).toHaveBeenCalledTimes(1));
+
+    expect(mockGetAppService).toHaveBeenCalledTimes(1);
+    expect(mockGetCitasService).toHaveBeenCalledWith('mock-app-service');
+
+    const persistedQuotes = mockBulkUpsertQuotes.mock.calls[0]![0];
+    expect(persistedQuotes).toHaveLength(1);
+    expect(persistedQuotes[0].id).toBe('cite-persist-1');
+    expect(persistedQuotes[0].text).toBe('A beautiful passage');
+  });
+
+  it('applyRemoteQuote persists MERGED quote to SQLite', async () => {
+    mockBulkUpsertQuotes.mockClear();
+
+    const localRow = makeQuoteRow({
+      id: 'cite-merge-persist',
+      hlc: OLD_HLC,
+      fields: { text: 'old text', bookHash: 'hash-a', contextBefore: null },
+    });
+    useCitasStore.getState().applyRemoteQuote(localRow);
+    // Wait for seed's fire-and-forget to complete, then clear
+    await vi.waitFor(() => expect(mockBulkUpsertQuotes).toHaveBeenCalledTimes(1));
+    mockBulkUpsertQuotes.mockClear();
+
+    const remoteRow = makeQuoteRow({
+      id: 'cite-merge-persist',
+      hlc: NEW_HLC,
+      fields: { text: 'old text', bookHash: 'hash-a', contextBefore: 'Now with context' },
+    });
+    useCitasStore.getState().applyRemoteQuote(remoteRow);
+
+    await vi.waitFor(() => expect(mockBulkUpsertQuotes).toHaveBeenCalledTimes(1));
+
+    const persistedQuotes = mockBulkUpsertQuotes.mock.calls[0]![0];
+    expect(persistedQuotes).toHaveLength(1);
+    expect(persistedQuotes[0].id).toBe('cite-merge-persist');
+    expect(persistedQuotes[0].contextBefore).toBe('Now with context');
+  });
+
+  it('applyRemoteQuote persists SOFT-DELETED quote to SQLite', async () => {
+    mockBulkUpsertQuotes.mockClear();
+
+    const localRow = makeQuoteRow({
+      id: 'cite-del-persist',
+      hlc: OLD_HLC,
+      fields: { text: 'will be deleted', bookHash: 'hash-d' },
+    });
+    useCitasStore.getState().applyRemoteQuote(localRow);
+    // Wait for seed's fire-and-forget to complete, then clear
+    await vi.waitFor(() => expect(mockBulkUpsertQuotes).toHaveBeenCalledTimes(1));
+    mockBulkUpsertQuotes.mockClear();
+
+    const tombstoneRow = makeQuoteRow({
+      id: 'cite-del-persist',
+      hlc: NEW_HLC,
+      fields: {},
+      deleted: true,
+    });
+    useCitasStore.getState().applyRemoteQuote(tombstoneRow);
+
+    await vi.waitFor(() => expect(mockBulkUpsertQuotes).toHaveBeenCalledTimes(1));
+
+    const persistedQuotes = mockBulkUpsertQuotes.mock.calls[0]![0];
+    expect(persistedQuotes).toHaveLength(1);
+    expect(persistedQuotes[0].id).toBe('cite-del-persist');
+    expect(persistedQuotes[0].deletedAt).toBeDefined();
+  });
+
+  it('applyRemoteQuote does NOT persist when no change (older HLC)', async () => {
+    mockBulkUpsertQuotes.mockClear();
+
+    const localRow = makeQuoteRow({
+      id: 'cite-nochange',
+      hlc: NEW_HLC,
+      fields: { text: 'newer text', bookHash: 'hash-a' },
+    });
+    useCitasStore.getState().applyRemoteQuote(localRow);
+    // Wait for seed's fire-and-forget to complete, then clear
+    await vi.waitFor(() => expect(mockBulkUpsertQuotes).toHaveBeenCalledTimes(1));
+    mockBulkUpsertQuotes.mockClear();
+
+    const remoteRow = makeQuoteRow({
+      id: 'cite-nochange',
+      hlc: OLD_HLC,
+      fields: { text: 'STALE text', bookHash: 'hash-a' },
+    });
+    useCitasStore.getState().applyRemoteQuote(remoteRow);
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mockBulkUpsertQuotes).not.toHaveBeenCalled();
+  });
+
+  it('applyRemoteQuote does NOT persist tombstone for non-existent id', async () => {
+    mockBulkUpsertQuotes.mockClear();
+
+    const tombstoneRow = makeQuoteRow({
+      id: 'cite-ghost-persist',
+      hlc: NEW_HLC,
+      fields: {},
+      deleted: true,
+    });
+    useCitasStore.getState().applyRemoteQuote(tombstoneRow);
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mockBulkUpsertQuotes).not.toHaveBeenCalled();
+  });
+
   // ---- replicaOutbox ----
 
   it('replicaOutbox starts empty', () => {
@@ -242,6 +394,56 @@ describe('citasStore — replica applyRemoteQuote', () => {
     expect(outbox[0]!.kind).toBe('quote');
     expect(outbox[0]!.replica_id).toBe('quote:cite-outbox-1');
     expect(outbox[0]!.deleted_at_ts).toBeNull();
+
+    const stored = useCitasStore.getState().quotes[0]!;
+    expect(stored._replicaTimestamps).toEqual({
+      bookHash: outbox[0]!.fields_jsonb['bookHash']!.t,
+      bookTitle: outbox[0]!.fields_jsonb['bookTitle']!.t,
+      bookAuthor: outbox[0]!.fields_jsonb['bookAuthor']!.t,
+      cfi: outbox[0]!.fields_jsonb['cfi']!.t,
+      sectionHref: outbox[0]!.fields_jsonb['sectionHref']!.t,
+      page: outbox[0]!.fields_jsonb['page']!.t,
+      text: outbox[0]!.fields_jsonb['text']!.t,
+      contextBefore: outbox[0]!.fields_jsonb['contextBefore']!.t,
+      contextAfter: outbox[0]!.fields_jsonb['contextAfter']!.t,
+      contentHash: outbox[0]!.fields_jsonb['contentHash']!.t,
+    });
+  });
+
+  it('updateQuote stores per-field replica timestamps from the minted ReplicaRow', async () => {
+    useCitasStore.getState().setQuotes([
+      {
+        id: 'cite-update-1',
+        bookHash: 'hash-1',
+        bookTitle: 'Test',
+        bookAuthor: null,
+        cfi: null,
+        sectionHref: null,
+        page: null,
+        text: 'before',
+        contextBefore: null,
+        contextAfter: null,
+        contentHash: 'hash-before',
+        createdAt: 100,
+        updatedAt: null,
+      },
+    ]);
+    const updated = {
+      ...useCitasStore.getState().quotes[0]!,
+      text: 'after',
+      contentHash: 'hash-after',
+      updatedAt: 200,
+    };
+    const service = { updateQuote: vi.fn().mockResolvedValue(updated) };
+
+    await useCitasStore
+      .getState()
+      .updateQuote({ id: 'cite-update-1', text: 'after' }, asCitasService(service));
+
+    const outbox = useCitasStore.getState().replicaOutbox;
+    const stored = useCitasStore.getState().quotes[0]!;
+    expect(stored._replicaTimestamps?.text).toBe(outbox[0]!.fields_jsonb['text']!.t);
+    expect(stored._replicaTimestamps?.contentHash).toBe(outbox[0]!.fields_jsonb['contentHash']!.t);
   });
 
   it('deleteQuotes pushes a tombstone ReplicaRow to the outbox', async () => {
@@ -398,5 +600,141 @@ describe('citasStore — replica applyRemoteQuote', () => {
     const hlc1 = outbox[0]!.updated_at_ts as string;
     const hlc2 = outbox[1]!.updated_at_ts as string;
     expect(hlc1 < hlc2).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // D4: Tombstone consistency — state includes deleted, visible hides them
+  // ---------------------------------------------------------------------------
+
+  it('loadQuotes includes soft-deleted quotes in state', async () => {
+    const mockService = {
+      listQuotes: vi.fn().mockResolvedValue([
+        {
+          id: 'quote-active',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'active quote',
+          contextBefore: null,
+          contextAfter: null,
+          contentHash: 'hash-a',
+          createdAt: 100,
+          updatedAt: null,
+        },
+        {
+          id: 'quote-deleted',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'deleted quote',
+          contextBefore: null,
+          contextAfter: null,
+          contentHash: 'hash-b',
+          createdAt: 200,
+          updatedAt: null,
+          deletedAt: 300,
+        },
+      ]),
+    };
+
+    await useCitasStore.getState().loadQuotes(asCitasService(mockService));
+
+    const state = useCitasStore.getState();
+    expect(state.quotes).toHaveLength(2);
+    const deleted = state.quotes.find((q) => q.id === 'quote-deleted');
+    expect(deleted).toBeDefined();
+    expect(deleted?.deletedAt).toBe(300);
+  });
+
+  it('getAllReplicas includes tombstone quotes', () => {
+    useCitasStore.setState({
+      quotes: [
+        {
+          id: 'quote-active',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'active',
+          contextBefore: null,
+          contextAfter: null,
+          contentHash: 'hash-a',
+          createdAt: 100,
+          updatedAt: null,
+        },
+        {
+          id: 'quote-deleted',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'deleted',
+          contextBefore: null,
+          contextAfter: null,
+          contentHash: 'hash-b',
+          createdAt: 200,
+          updatedAt: null,
+          deletedAt: 300,
+        },
+      ],
+    });
+
+    const replicas = useCitasStore.getState().getAllReplicas(DEVICE_ID);
+    expect(replicas).toHaveLength(2);
+    const tombstone = replicas.find((r) => r.replica_id === 'quote:quote-deleted');
+    expect(tombstone).toBeDefined();
+    expect(tombstone?.deleted_at_ts).not.toBeNull();
+  });
+
+  it('getVisibleQuotes excludes soft-deleted quotes', () => {
+    useCitasStore.setState({
+      quotes: [
+        {
+          id: 'quote-active',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'active',
+          contextBefore: null,
+          contextAfter: null,
+          contentHash: 'hash-a',
+          createdAt: 100,
+          updatedAt: null,
+        },
+        {
+          id: 'quote-deleted',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'deleted',
+          contextBefore: null,
+          contextAfter: null,
+          contentHash: 'hash-b',
+          createdAt: 200,
+          updatedAt: null,
+          deletedAt: 300,
+        },
+      ],
+    });
+
+    const visible = useCitasStore.getState().getVisibleQuotes();
+    expect(visible).toHaveLength(1);
+    expect(visible[0]?.id).toBe('quote-active');
   });
 });

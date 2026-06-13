@@ -2,9 +2,12 @@ import { create } from 'zustand';
 import type { CitasService } from '@/services/citas/CitasService';
 import type { Cite, CiteInput, CiteUpdate } from '@/types/citas';
 import type { ReplicaRow, Hlc, FieldEnvelope } from '@/types/replica';
-import { createReplicaRow } from '@/libs/replica/factory';
+import { createReplicaRow, timestampsFromReplicaRow } from '@/libs/replica/factory';
+import { compareHLC } from '@/libs/replica/hlc';
 import { useSettingsStore } from './settingsStore';
 import type { SyncCategory } from '@/types/settings';
+import { getCitasService } from '@/services/citas/citasServiceCache';
+import environmentConfig from '@/services/environment';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -47,6 +50,20 @@ function parseReplicaItemId(row: ReplicaRow): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Fire-and-forget persistence helper
+// ---------------------------------------------------------------------------
+
+function persistQuotes(quotes: Cite[]): void {
+  environmentConfig
+    .getAppService()
+    .then((appService) => getCitasService(appService))
+    .then((service) => service.bulkUpsertQuotes(quotes))
+    .catch((err) => {
+      console.error('[citasStore] persistQuotes failed:', err);
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
@@ -76,6 +93,11 @@ export interface CitasActions {
   deleteQuotes(ids: readonly string[], service: CitasService): Promise<void>;
   deleteSelectedQuotes(service: CitasService): Promise<void>;
   removeQuotesFromState(ids: readonly string[]): void;
+  /**
+   * Return quotes that are NOT soft-deleted. Used by UI display
+   * selectors to hide tombstones from visible lists.
+   */
+  getVisibleQuotes(): Cite[];
   applyRemoteQuote(row: ReplicaRow): void;
   /**
    * Build ReplicaRows for ALL local quotes (not just the outbox).
@@ -135,7 +157,8 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
     try {
       const quotes = await service.listQuotes();
       set({ quotes, isLoading: false });
-    } catch {
+    } catch (err) {
+      console.error('[citasStore] loadQuotes failed:', err);
       set({ isLoading: false });
     }
   },
@@ -145,7 +168,8 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
     try {
       const quotes = await service.searchQuotes(query);
       set({ quotes, searchQuery: query, isLoading: false });
-    } catch {
+    } catch (err) {
+      console.error('[citasStore] searchQuotes failed:', err);
       set({ isLoading: false });
     }
   },
@@ -163,15 +187,20 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
           deviceId,
           lastHLC,
         });
+        const quoteWithTimestamps = {
+          ...quote,
+          _replicaTimestamps: timestampsFromReplicaRow(row),
+        };
         return {
-          quotes: [quote, ...state.quotes],
-          quote,
+          quotes: [quoteWithTimestamps, ...state.quotes],
+          quote: quoteWithTimestamps,
           isLoading: false,
           replicaOutbox: [...state.replicaOutbox, row],
         };
       });
       return quote;
     } catch (err) {
+      console.error('[citasStore] createQuote failed:', err);
       set({ isLoading: false });
       throw err;
     }
@@ -190,15 +219,22 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
           deviceId,
           lastHLC,
         });
+        const quoteWithTimestamps = {
+          ...quote,
+          _replicaTimestamps: timestampsFromReplicaRow(row),
+        };
         return {
-          quotes: state.quotes.map((candidate) => (candidate.id === quote.id ? quote : candidate)),
-          quote: state.quote && state.quote.id === quote.id ? quote : state.quote,
+          quotes: state.quotes.map((candidate) =>
+            candidate.id === quote.id ? quoteWithTimestamps : candidate,
+          ),
+          quote: state.quote && state.quote.id === quote.id ? quoteWithTimestamps : state.quote,
           isLoading: false,
           replicaOutbox: [...state.replicaOutbox, row],
         };
       });
       return quote;
     } catch (err) {
+      console.error('[citasStore] updateQuote failed:', err);
       set({ isLoading: false });
       throw err;
     }
@@ -231,7 +267,8 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
         isLoading: false,
         replicaOutbox: [...state.replicaOutbox, ...tombstoneRows],
       }));
-    } catch {
+    } catch (err) {
+      console.error('[citasStore] deleteQuotes failed:', err);
       set({ isLoading: false });
     }
   },
@@ -243,7 +280,8 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
       if (ids.length > 0) {
         set({ selectedQuoteIds: [], isSelectMode: false });
       }
-    } catch {
+    } catch (err) {
+      console.error('[citasStore] deleteSelectedQuotes failed:', err);
       // Preserve the historical selected-delete contract: failures only clear loading.
     }
   },
@@ -258,18 +296,25 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
     }));
   },
 
+  getVisibleQuotes() {
+    return get().quotes.filter((q) => !q.deletedAt);
+  },
+
   applyRemoteQuote(row: ReplicaRow) {
     const itemId = parseReplicaItemId(row);
     if (!itemId) return;
 
     if (row.deleted_at_ts) {
+      let deletedQuote: Cite | undefined;
       set((state) => {
         const existing = state.quotes.find((q) => q.id === itemId);
         if (!existing) return state;
+        deletedQuote = { ...existing, deletedAt: Date.now() };
         return {
-          quotes: state.quotes.map((q) => (q.id === itemId ? { ...q, deletedAt: Date.now() } : q)),
+          quotes: state.quotes.map((q) => (q.id === itemId ? deletedQuote! : q)),
         };
       });
+      if (deletedQuote) persistQuotes([deletedQuote]);
       return;
     }
 
@@ -278,6 +323,7 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
       remoteTimestamps[key] = (env as FieldEnvelope).t as string;
     }
 
+    let mergedQuote: Cite | undefined;
     set((state) => {
       const existingIdx = state.quotes.findIndex((q) => q.id === itemId);
 
@@ -302,6 +348,7 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
           updatedAt: null,
           _replicaTimestamps: remoteTimestamps,
         };
+        mergedQuote = newQuote;
         return { quotes: [...state.quotes, newQuote] };
       }
 
@@ -315,7 +362,7 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
         const remoteHlc = fe.t as string;
         const localHlc = mergedTimestamps[key];
 
-        if (!localHlc || remoteHlc > localHlc) {
+        if (!localHlc || compareHLC(remoteHlc as Hlc, localHlc as Hlc) > 0) {
           merged[key] = fe.v;
           mergedTimestamps[key] = remoteHlc;
           changed = true;
@@ -326,11 +373,14 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
 
       merged['_replicaTimestamps'] = mergedTimestamps;
       merged['updatedAt'] = Date.now();
+      mergedQuote = merged as unknown as Cite;
 
       return {
         quotes: state.quotes.map((q, i) => (i === existingIdx ? (merged as unknown as Cite) : q)),
       };
     });
+
+    if (mergedQuote) persistQuotes([mergedQuote]);
   },
 
   getAllReplicas(deviceId: string): ReplicaRow[] {

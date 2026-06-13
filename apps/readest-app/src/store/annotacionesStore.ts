@@ -1,10 +1,13 @@
 import { create } from 'zustand';
 import type { AnotacionesService } from '@/services/annotations/AnotacionesService';
-import type { Annotacion, AnnotacionInput } from '@/types/annotaciones';
+import type { Anotacion, AnnotacionInput } from '@/types/annotaciones';
 import type { ReplicaRow, Hlc, FieldEnvelope } from '@/types/replica';
-import { createReplicaRow } from '@/libs/replica/factory';
+import { createReplicaRow, timestampsFromReplicaRow } from '@/libs/replica/factory';
+import { compareHLC } from '@/libs/replica/hlc';
 import { useSettingsStore } from './settingsStore';
 import type { SyncCategory } from '@/types/settings';
+import { getAnotacionesService } from '@/services/annotations/annotacionesServiceCache';
+import environmentConfig from '@/services/environment';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -52,6 +55,20 @@ function parseReplicaItemId(row: ReplicaRow): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Fire-and-forget persistence helper
+// ---------------------------------------------------------------------------
+
+function persistAnnotations(annotations: Annotacion[]): void {
+  environmentConfig
+    .getAppService()
+    .then((appService) => getAnotacionesService(appService))
+    .then((service) => service.bulkUpsertAnnotations(annotations))
+    .catch((err) => {
+      console.error('[annotacionesStore] persistAnnotations failed:', err);
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
@@ -77,6 +94,11 @@ export interface AnotacionesActions {
   selectAll(): void;
   enterSelectMode(): void;
   exitSelectMode(): void;
+  /**
+   * Return annotations that are NOT soft-deleted. Used by UI display
+   * selectors to hide tombstones from visible lists.
+   */
+  getVisibleAnnotations(): Annotacion[];
   /**
    * Apply a remote ReplicaRow to the local annotation state. Merges fields
    * per-field by HLC comparison — newer HLC wins. Soft-deletes the local
@@ -108,7 +130,8 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
     try {
       const annotations = await service.listAnnotations();
       set({ annotations, isLoading: false });
-    } catch {
+    } catch (err) {
+      console.error('[annotacionesStore] loadAnnotations failed:', err);
       set({ isLoading: false });
     }
   },
@@ -118,7 +141,8 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
     try {
       const annotations = await service.searchAnnotations(query);
       set({ annotations, searchQuery: query, isLoading: false });
-    } catch {
+    } catch (err) {
+      console.error('[annotacionesStore] searchAnnotations failed:', err);
       set({ isLoading: false });
     }
   },
@@ -138,14 +162,19 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
           deviceId,
           lastHLC,
         });
+        const annotationWithTimestamps = {
+          ...annotation,
+          _replicaTimestamps: timestampsFromReplicaRow(row),
+        };
         return {
-          annotations: [annotation, ...state.annotations],
+          annotations: [annotationWithTimestamps, ...state.annotations],
           isLoading: false,
           replicaOutbox: [...state.replicaOutbox, row],
         };
       });
       return annotation;
     } catch (err) {
+      console.error('[annotacionesStore] createAnnotation failed:', err);
       set({ isLoading: false });
       throw err;
     }
@@ -165,14 +194,21 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
           deviceId,
           lastHLC,
         });
+        const annotationWithTimestamps = {
+          ...annotation,
+          _replicaTimestamps: timestampsFromReplicaRow(row),
+        };
         return {
-          annotations: state.annotations.map((item) => (item.id === id ? annotation : item)),
+          annotations: state.annotations.map((item) =>
+            item.id === id ? annotationWithTimestamps : item,
+          ),
           isLoading: false,
           replicaOutbox: [...state.replicaOutbox, row],
         };
       });
       return annotation;
     } catch (err) {
+      console.error('[annotacionesStore] updateAnnotation failed:', err);
       set({ isLoading: false });
       throw err;
     }
@@ -209,7 +245,8 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
         isLoading: false,
         replicaOutbox: [...state.replicaOutbox, ...tombstoneRows],
       }));
-    } catch {
+    } catch (err) {
+      console.error('[annotacionesStore] deleteAnnotations failed:', err);
       set({ isLoading: false });
     }
   },
@@ -229,15 +266,16 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
 
     // Deletion tombstone
     if (row.deleted_at_ts) {
+      let deletedAnn: Annotacion | undefined;
       set((state) => {
         const existing = state.annotations.find((a) => a.id === itemId);
         if (!existing) return state; // no local match → no-op
+        deletedAnn = { ...existing, deletedAt: Date.now() };
         return {
-          annotations: state.annotations.map((a) =>
-            a.id === itemId ? { ...a, deletedAt: Date.now() } : a,
-          ),
+          annotations: state.annotations.map((a) => (a.id === itemId ? deletedAnn! : a)),
         };
       });
+      if (deletedAnn) persistAnnotations([deletedAnn]);
       return;
     }
 
@@ -247,6 +285,7 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
       remoteTimestamps[key] = (env as FieldEnvelope).t as string;
     }
 
+    let mergedAnnotation: Annotacion | undefined;
     set((state) => {
       const existingIdx = state.annotations.findIndex((a) => a.id === itemId);
 
@@ -272,6 +311,7 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
           updatedAt: null,
           _replicaTimestamps: remoteTimestamps,
         };
+        mergedAnnotation = newAnn;
         return {
           annotations: [...state.annotations, newAnn],
         };
@@ -288,7 +328,7 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
         const remoteHlc = fe.t as string;
         const localHlc = mergedTimestamps[key];
 
-        if (!localHlc || remoteHlc > localHlc) {
+        if (!localHlc || compareHLC(remoteHlc as Hlc, localHlc as Hlc) > 0) {
           merged[key] = fe.v;
           mergedTimestamps[key] = remoteHlc;
           changed = true;
@@ -299,6 +339,7 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
 
       merged['_replicaTimestamps'] = mergedTimestamps;
       merged['updatedAt'] = Date.now();
+      mergedAnnotation = merged as unknown as Annotacion;
 
       return {
         annotations: state.annotations.map((a, i) =>
@@ -306,6 +347,8 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
         ),
       };
     });
+
+    if (mergedAnnotation) persistAnnotations([mergedAnnotation]);
   },
 
   setSearchQuery(query) {
@@ -322,8 +365,12 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
 
   selectAll() {
     set((state) => ({
-      selectedAnnotationIds: state.annotations.map((a) => a.id),
+      selectedAnnotationIds: state.annotations.filter((a) => !a.deletedAt).map((a) => a.id),
     }));
+  },
+
+  getVisibleAnnotations() {
+    return get().annotations.filter((a) => !a.deletedAt);
   },
 
   enterSelectMode() {

@@ -76,6 +76,13 @@ const migrations: Record<SchemaType, MigrationEntry[]> = {
         ALTER TABLE dictionary_occurrences ADD COLUMN deleted_at INTEGER;
       `,
     },
+    {
+      name: '2026061301_dictionary_replica_timestamps',
+      sql: `
+        ALTER TABLE dictionary_entries ADD COLUMN replica_timestamps TEXT DEFAULT NULL;
+        ALTER TABLE dictionary_occurrences ADD COLUMN replica_timestamps TEXT DEFAULT NULL;
+      `,
+    },
   ],
   'hardcover-sync': [
     {
@@ -129,6 +136,12 @@ const migrations: Record<SchemaType, MigrationEntry[]> = {
         ALTER TABLE annotations ADD COLUMN deleted_at INTEGER;
       `,
     },
+    {
+      name: '2026061301_annotaciones_replica_timestamps',
+      sql: `
+        ALTER TABLE annotations ADD COLUMN replica_timestamps TEXT DEFAULT NULL;
+      `,
+    },
   ],
   // Citas — saved quotes from the reader (Fase 1: shell + data model only;
   // capture from the reader and per-cite detail view are deferred to Fase 2/3).
@@ -172,6 +185,12 @@ const migrations: Record<SchemaType, MigrationEntry[]> = {
       name: '2026060802_citas_soft_delete',
       sql: `
         ALTER TABLE quotes ADD COLUMN deleted_at INTEGER;
+      `,
+    },
+    {
+      name: '2026061301_citas_replica_timestamps',
+      sql: `
+        ALTER TABLE quotes ADD COLUMN replica_timestamps TEXT DEFAULT NULL;
       `,
     },
   ],

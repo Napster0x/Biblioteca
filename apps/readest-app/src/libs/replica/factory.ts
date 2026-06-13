@@ -66,3 +66,11 @@ export function createReplicaRow(input: CreateReplicaRowInput): ReplicaRow {
     schema_version: 1,
   };
 }
+
+export function timestampsFromReplicaRow(row: ReplicaRow): Record<string, string> {
+  const timestamps: Record<string, string> = {};
+  for (const [key, envelope] of Object.entries(row.fields_jsonb)) {
+    timestamps[key] = envelope.t;
+  }
+  return timestamps;
+}

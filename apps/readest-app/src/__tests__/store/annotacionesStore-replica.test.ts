@@ -5,6 +5,24 @@ import type { ReplicaRow, FieldEnvelope, Hlc } from '@/types/replica';
 import type { AnotacionesService } from '@/services/annotations/AnotacionesService';
 
 // ---------------------------------------------------------------------------
+// Mocks for fire-and-forget persistence
+// ---------------------------------------------------------------------------
+
+const mockBulkUpsertAnnotations = vi.fn().mockResolvedValue(undefined);
+const mockGetAnotacionesService = vi.fn().mockResolvedValue({
+  bulkUpsertAnnotations: mockBulkUpsertAnnotations,
+});
+
+vi.mock('@/services/annotations/annotacionesServiceCache', () => ({
+  getAnotacionesService: (...args: unknown[]) => mockGetAnotacionesService(...args),
+}));
+
+const mockGetAppService = vi.fn().mockResolvedValue('mock-app-service');
+vi.mock('@/services/environment', () => ({
+  default: { getAppService: (...args: unknown[]) => mockGetAppService(...args) },
+}));
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
@@ -277,6 +295,20 @@ describe('annotacionesStore — replica applyRemoteAnnotation', () => {
     expect(outbox[0]!.replica_id).toBe('annotation:annot-outbox-1');
     expect(outbox[0]!.deleted_at_ts).toBeNull();
     expect(outbox[0]!.schema_version).toBe(1);
+
+    const stored = useAnotacionesStore.getState().annotations[0]!;
+    expect(stored._replicaTimestamps).toEqual({
+      bookHash: outbox[0]!.fields_jsonb['bookHash']!.t,
+      bookTitle: outbox[0]!.fields_jsonb['bookTitle']!.t,
+      bookAuthor: outbox[0]!.fields_jsonb['bookAuthor']!.t,
+      cfi: outbox[0]!.fields_jsonb['cfi']!.t,
+      sectionHref: outbox[0]!.fields_jsonb['sectionHref']!.t,
+      page: outbox[0]!.fields_jsonb['page']!.t,
+      text: outbox[0]!.fields_jsonb['text']!.t,
+      note: outbox[0]!.fields_jsonb['note']!.t,
+      style: outbox[0]!.fields_jsonb['style']!.t,
+      color: outbox[0]!.fields_jsonb['color']!.t,
+    });
   });
 
   it('updateAnnotation pushes a ReplicaRow to the outbox', async () => {
@@ -331,6 +363,10 @@ describe('annotacionesStore — replica applyRemoteAnnotation', () => {
     expect(outbox[0]!.kind).toBe('annotation');
     expect(outbox[0]!.replica_id).toBe('annotation:annot-update-1');
     expect(outbox[0]!.deleted_at_ts).toBeNull();
+
+    const stored = useAnotacionesStore.getState().annotations[0]!;
+    expect(stored._replicaTimestamps?.note).toBe(outbox[0]!.fields_jsonb['note']!.t);
+    expect(stored._replicaTimestamps?.text).toBe(outbox[0]!.fields_jsonb['text']!.t);
   });
 
   it('deleteAnnotations pushes a tombstone ReplicaRow to the outbox', async () => {
@@ -429,6 +465,149 @@ describe('annotacionesStore — replica applyRemoteAnnotation', () => {
     expect(ann.color).toBe('green');
   });
 
+  // ---------------------------------------------------------------------------
+  // D2: persist-after-apply wiring
+  // ---------------------------------------------------------------------------
+
+  it('applyRemoteAnnotation persists NEW annotation to SQLite via bulkUpsertAnnotations', async () => {
+    mockBulkUpsertAnnotations.mockClear();
+    mockGetAppService.mockClear();
+    mockGetAnotacionesService.mockClear();
+
+    const row = makeAnnotationRow({
+      id: 'annot-persist-1',
+      hlc: NEW_HLC,
+      fields: {
+        bookHash: 'hash-persist',
+        bookTitle: 'Persist Book',
+        bookAuthor: 'Persist Author',
+        cfi: '/6/4',
+        page: 42,
+        text: 'Persist text',
+        note: 'Persist note',
+        style: 'underline',
+        color: 'red',
+      },
+    });
+
+    useAnotacionesStore.getState().applyRemoteAnnotation(row);
+
+    // Wait for microtasks (fire-and-forget promise chain)
+    await vi.waitFor(() => expect(mockBulkUpsertAnnotations).toHaveBeenCalledTimes(1));
+
+    expect(mockGetAppService).toHaveBeenCalledTimes(1);
+    expect(mockGetAnotacionesService).toHaveBeenCalledWith('mock-app-service');
+
+    const persistedAnnotations = mockBulkUpsertAnnotations.mock.calls[0]![0];
+    expect(persistedAnnotations).toHaveLength(1);
+    expect(persistedAnnotations[0].id).toBe('annot-persist-1');
+    expect(persistedAnnotations[0].text).toBe('Persist text');
+    expect(persistedAnnotations[0].note).toBe('Persist note');
+  });
+
+  it('applyRemoteAnnotation persists MERGED annotation to SQLite', async () => {
+    mockBulkUpsertAnnotations.mockClear();
+
+    // Seed local annotation with old HLC
+    const localRow = makeAnnotationRow({
+      id: 'annot-merge-persist',
+      hlc: OLD_HLC,
+      fields: { text: 'old text', note: 'old note', bookHash: 'hash-a' },
+    });
+    useAnotacionesStore.getState().applyRemoteAnnotation(localRow);
+    // Wait for seed's fire-and-forget to complete, then clear
+    await vi.waitFor(() => expect(mockBulkUpsertAnnotations).toHaveBeenCalledTimes(1));
+    mockBulkUpsertAnnotations.mockClear();
+
+    // Remote has newer HLC — triggers merge + persist
+    const remoteRow = makeAnnotationRow({
+      id: 'annot-merge-persist',
+      hlc: NEW_HLC,
+      fields: { text: 'old text', note: 'NEW note', bookHash: 'hash-a' },
+    });
+    useAnotacionesStore.getState().applyRemoteAnnotation(remoteRow);
+
+    await vi.waitFor(() => expect(mockBulkUpsertAnnotations).toHaveBeenCalledTimes(1));
+
+    const persistedAnnotations = mockBulkUpsertAnnotations.mock.calls[0]![0];
+    expect(persistedAnnotations).toHaveLength(1);
+    expect(persistedAnnotations[0].id).toBe('annot-merge-persist');
+    expect(persistedAnnotations[0].note).toBe('NEW note');
+  });
+
+  it('applyRemoteAnnotation persists SOFT-DELETED annotation to SQLite', async () => {
+    mockBulkUpsertAnnotations.mockClear();
+
+    // Seed local annotation
+    const localRow = makeAnnotationRow({
+      id: 'annot-del-persist',
+      hlc: OLD_HLC,
+      fields: { text: 'will be deleted', bookHash: 'hash-d' },
+    });
+    useAnotacionesStore.getState().applyRemoteAnnotation(localRow);
+    // Wait for seed's fire-and-forget to complete, then clear
+    await vi.waitFor(() => expect(mockBulkUpsertAnnotations).toHaveBeenCalledTimes(1));
+    mockBulkUpsertAnnotations.mockClear();
+
+    // Tombstone
+    const tombstoneRow = makeAnnotationRow({
+      id: 'annot-del-persist',
+      hlc: NEW_HLC,
+      fields: {},
+      deleted: true,
+    });
+    useAnotacionesStore.getState().applyRemoteAnnotation(tombstoneRow);
+
+    await vi.waitFor(() => expect(mockBulkUpsertAnnotations).toHaveBeenCalledTimes(1));
+
+    const persistedAnnotations = mockBulkUpsertAnnotations.mock.calls[0]![0];
+    expect(persistedAnnotations).toHaveLength(1);
+    expect(persistedAnnotations[0].id).toBe('annot-del-persist');
+    expect(persistedAnnotations[0].deletedAt).toBeDefined();
+  });
+
+  it('applyRemoteAnnotation does NOT persist when no change (older HLC)', async () => {
+    mockBulkUpsertAnnotations.mockClear();
+
+    // Seed local with NEWER HLC
+    const localRow = makeAnnotationRow({
+      id: 'annot-nochange',
+      hlc: NEW_HLC,
+      fields: { text: 'newer text', note: 'newer note' },
+    });
+    useAnotacionesStore.getState().applyRemoteAnnotation(localRow);
+    // Wait for seed's fire-and-forget to complete, then clear
+    await vi.waitFor(() => expect(mockBulkUpsertAnnotations).toHaveBeenCalledTimes(1));
+    mockBulkUpsertAnnotations.mockClear();
+
+    // Remote with OLDER HLC — no change, no persist
+    const remoteRow = makeAnnotationRow({
+      id: 'annot-nochange',
+      hlc: OLD_HLC,
+      fields: { text: 'STALE text', note: 'STALE note' },
+    });
+    useAnotacionesStore.getState().applyRemoteAnnotation(remoteRow);
+
+    // Give fire-and-forget time to NOT fire
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mockBulkUpsertAnnotations).not.toHaveBeenCalled();
+  });
+
+  it('applyRemoteAnnotation does NOT persist tombstone for non-existent id', async () => {
+    mockBulkUpsertAnnotations.mockClear();
+
+    const tombstoneRow = makeAnnotationRow({
+      id: 'annot-ghost-persist',
+      hlc: NEW_HLC,
+      fields: {},
+      deleted: true,
+    });
+    useAnotacionesStore.getState().applyRemoteAnnotation(tombstoneRow);
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mockBulkUpsertAnnotations).not.toHaveBeenCalled();
+  });
+
   it('outbox entries have monotonic HLCs across multiple mutations', async () => {
     const service = {
       createAnnotation: vi.fn().mockImplementation(async (input: Record<string, unknown>) => ({
@@ -520,5 +699,189 @@ describe('annotacionesStore — replica applyRemoteAnnotation', () => {
     const hlc3 = outbox[2]!.updated_at_ts as string;
     expect(hlc1 < hlc2).toBe(true);
     expect(hlc2 < hlc3).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // D4: Tombstone consistency — state includes deleted, visible hides them
+  // ---------------------------------------------------------------------------
+
+  it('loadAnnotations includes soft-deleted annotations in state', async () => {
+    const mockService = {
+      listAnnotations: vi.fn().mockResolvedValue([
+        {
+          id: 'annot-active',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'active',
+          note: '',
+          style: 'highlight',
+          color: 'yellow',
+          createdAt: 100,
+          updatedAt: null,
+        },
+        {
+          id: 'annot-deleted',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'deleted',
+          note: '',
+          style: 'highlight',
+          color: 'yellow',
+          createdAt: 200,
+          updatedAt: null,
+          deletedAt: 300,
+        },
+      ]),
+    };
+
+    await useAnotacionesStore.getState().loadAnnotations(asAnotacionesService(mockService));
+
+    const state = useAnotacionesStore.getState();
+    // Both active and deleted annotations are in state
+    expect(state.annotations).toHaveLength(2);
+    const deleted = state.annotations.find((a) => a.id === 'annot-deleted');
+    expect(deleted).toBeDefined();
+    expect(deleted?.deletedAt).toBe(300);
+  });
+
+  it('getAllReplicas includes tombstone annotations', () => {
+    useAnotacionesStore.setState({
+      annotations: [
+        {
+          id: 'annot-active',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'active',
+          note: '',
+          style: 'highlight',
+          color: 'yellow',
+          createdAt: 100,
+          updatedAt: null,
+        },
+        {
+          id: 'annot-deleted',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'deleted',
+          note: '',
+          style: 'highlight',
+          color: 'yellow',
+          createdAt: 200,
+          updatedAt: null,
+          deletedAt: 300,
+        },
+      ],
+    });
+
+    const replicas = useAnotacionesStore.getState().getAllReplicas(DEVICE_ID);
+    // Both active and deleted produce replica rows
+    expect(replicas).toHaveLength(2);
+    const tombstone = replicas.find((r) => r.replica_id === 'annotation:annot-deleted');
+    expect(tombstone).toBeDefined();
+    expect(tombstone?.deleted_at_ts).not.toBeNull();
+  });
+
+  it('getVisibleAnnotations excludes soft-deleted annotations', () => {
+    useAnotacionesStore.setState({
+      annotations: [
+        {
+          id: 'annot-active',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'active',
+          note: '',
+          style: 'highlight',
+          color: 'yellow',
+          createdAt: 100,
+          updatedAt: null,
+        },
+        {
+          id: 'annot-deleted',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'deleted',
+          note: '',
+          style: 'highlight',
+          color: 'yellow',
+          createdAt: 200,
+          updatedAt: null,
+          deletedAt: 300,
+        },
+      ],
+    });
+
+    // getVisibleAnnotations is a selector that will be implemented in GREEN phase
+    const visible = useAnotacionesStore.getState().getVisibleAnnotations();
+    expect(visible).toHaveLength(1);
+    expect(visible[0]?.id).toBe('annot-active');
+  });
+
+  it('selectAll only selects visible (non-deleted) annotations', () => {
+    useAnotacionesStore.setState({
+      annotations: [
+        {
+          id: 'annot-active',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'active',
+          note: '',
+          style: 'highlight',
+          color: 'yellow',
+          createdAt: 100,
+          updatedAt: null,
+        },
+        {
+          id: 'annot-deleted',
+          bookHash: 'hash-1',
+          bookTitle: null,
+          bookAuthor: null,
+          cfi: null,
+          sectionHref: null,
+          page: null,
+          text: 'deleted',
+          note: '',
+          style: 'highlight',
+          color: 'yellow',
+          createdAt: 200,
+          updatedAt: null,
+          deletedAt: 300,
+        },
+      ],
+      isSelectMode: true,
+    });
+
+    useAnotacionesStore.getState().selectAll();
+
+    const state = useAnotacionesStore.getState();
+    // selectAll should only include visible (non-deleted) annotation ids
+    expect(state.selectedAnnotationIds).toEqual(['annot-active']);
   });
 });
