@@ -12,6 +12,8 @@ pnpm test -- src/__tests__/utils/misc.test.ts   # Run a single file
 pnpm test -- --watch                            # Watch mode
 ```
 
+> **Reliable focused invocation**: the `pnpm test -- <files>` form may not always limit execution to the specified files due to the `dotenv` wrapper in the package script. For guaranteed single-file or focused runs use `pnpm exec vitest run <file>` directly (e.g., `pnpm exec vitest run src/__tests__/utils/misc.test.ts`). This bypasses the wrapper and passes files straight to vitest.
+
 - **Config:** `vitest.config.mts`
 - **Pattern:** `src/**/*.test.ts` (excludes `*.browser.test.ts` and `*.tauri.test.ts`)
 - **Environment:** jsdom

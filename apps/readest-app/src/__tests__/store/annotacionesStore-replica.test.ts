@@ -29,6 +29,7 @@ vi.mock('@/services/environment', () => ({
 const DEVICE_ID = 'test-device-aaaa';
 const OLD_HLC = '0000000000001-00000001-test-device-aaaa' as Hlc;
 const NEW_HLC = '0000000000002-00000001-test-device-aaaa' as Hlc;
+const NEWER_HLC = '0000000000003-00000001-test-device-aaaa' as Hlc;
 
 /**
  * Build a synthetic ReplicaRow for testing applyRemoteAnnotation.
@@ -186,7 +187,7 @@ describe('annotacionesStore — replica applyRemoteAnnotation', () => {
     expect(typeof ann.deletedAt).toBe('number');
   });
 
-  it('applyRemoteAnnotation with deleted_at_ts on a NON-EXISTENT id does not crash', () => {
+  it('applyRemoteAnnotation with deleted_at_ts on a NON-EXISTENT id retains a tombstone', () => {
     const tombstoneRow = makeAnnotationRow({
       id: 'annot-never-existed',
       hlc: NEW_HLC,
@@ -194,11 +195,87 @@ describe('annotacionesStore — replica applyRemoteAnnotation', () => {
       deleted: true,
     });
 
-    // Should not throw
     expect(() => useAnotacionesStore.getState().applyRemoteAnnotation(tombstoneRow)).not.toThrow();
 
-    // Nothing was added
-    expect(useAnotacionesStore.getState().annotations).toHaveLength(0);
+    const annotations = useAnotacionesStore.getState().annotations;
+    expect(annotations).toHaveLength(1);
+    expect(annotations[0]?.id).toBe('annot-never-existed');
+    expect(annotations[0]?.deletedAt).toBeDefined();
+    expect(annotations[0]?._replicaTimestamps?.['__deleted']).toBe(NEW_HLC);
+  });
+
+  it('applyRemoteAnnotation keeps a newer tombstone when a stale live row arrives', () => {
+    const tombstoneRow = makeAnnotationRow({
+      id: 'annot-delete-wins',
+      hlc: NEW_HLC,
+      fields: {},
+      deleted: true,
+    });
+    useAnotacionesStore.getState().applyRemoteAnnotation(tombstoneRow);
+
+    const staleLiveRow = makeAnnotationRow({
+      id: 'annot-delete-wins',
+      hlc: OLD_HLC,
+      fields: { text: 'stale live text', note: 'stale note', color: 'red', style: 'underline' },
+    });
+    useAnotacionesStore.getState().applyRemoteAnnotation(staleLiveRow);
+
+    const ann = useAnotacionesStore.getState().annotations[0]!;
+    expect(ann.deletedAt).toBeDefined();
+    expect(ann.text).toBe('');
+    expect(ann.note).toBe('');
+    expect(ann.color).toBe('yellow');
+    expect(ann.style).toBe('highlight');
+  });
+
+  it('applyRemoteAnnotation ignores an older tombstone when newer live fields exist', () => {
+    const liveRow = makeAnnotationRow({
+      id: 'annot-live-wins',
+      hlc: NEWER_HLC,
+      fields: { text: 'newer live text', note: 'newer note', color: 'blue', style: 'underline' },
+    });
+    useAnotacionesStore.getState().applyRemoteAnnotation(liveRow);
+
+    const olderTombstone = makeAnnotationRow({
+      id: 'annot-live-wins',
+      hlc: NEW_HLC,
+      fields: {},
+      deleted: true,
+    });
+    useAnotacionesStore.getState().applyRemoteAnnotation(olderTombstone);
+
+    const ann = useAnotacionesStore.getState().annotations[0]!;
+    expect(ann.deletedAt).toBeUndefined();
+    expect(ann.text).toBe('newer live text');
+    expect(ann.color).toBe('blue');
+    expect(ann.style).toBe('underline');
+  });
+
+  it('applyRemoteAnnotation restores deleted highlight style and color only when live HLC wins', () => {
+    useAnotacionesStore
+      .getState()
+      .applyRemoteAnnotation(
+        makeAnnotationRow({
+          id: 'annot-highlight-parity',
+          hlc: NEW_HLC,
+          fields: {},
+          deleted: true,
+        }),
+      );
+
+    useAnotacionesStore.getState().applyRemoteAnnotation(
+      makeAnnotationRow({
+        id: 'annot-highlight-parity',
+        hlc: NEWER_HLC,
+        fields: { text: 'fresh highlight', style: 'squiggly', color: 'purple' },
+      }),
+    );
+
+    const ann = useAnotacionesStore.getState().annotations[0]!;
+    expect(ann.deletedAt).toBeUndefined();
+    expect(ann.text).toBe('fresh highlight');
+    expect(ann.style).toBe('squiggly');
+    expect(ann.color).toBe('purple');
   });
 
   // ---------------------------------------------------------------------------
@@ -365,8 +442,8 @@ describe('annotacionesStore — replica applyRemoteAnnotation', () => {
     expect(outbox[0]!.deleted_at_ts).toBeNull();
 
     const stored = useAnotacionesStore.getState().annotations[0]!;
-    expect(stored._replicaTimestamps?.note).toBe(outbox[0]!.fields_jsonb['note']!.t);
-    expect(stored._replicaTimestamps?.text).toBe(outbox[0]!.fields_jsonb['text']!.t);
+    expect(stored._replicaTimestamps?.['note']).toBe(outbox[0]!.fields_jsonb['note']!.t);
+    expect(stored._replicaTimestamps?.['text']).toBe(outbox[0]!.fields_jsonb['text']!.t);
   });
 
   it('deleteAnnotations pushes a tombstone ReplicaRow to the outbox', async () => {
@@ -593,7 +670,7 @@ describe('annotacionesStore — replica applyRemoteAnnotation', () => {
     expect(mockBulkUpsertAnnotations).not.toHaveBeenCalled();
   });
 
-  it('applyRemoteAnnotation does NOT persist tombstone for non-existent id', async () => {
+  it('applyRemoteAnnotation persists tombstone for non-existent id', async () => {
     mockBulkUpsertAnnotations.mockClear();
 
     const tombstoneRow = makeAnnotationRow({
@@ -604,8 +681,11 @@ describe('annotacionesStore — replica applyRemoteAnnotation', () => {
     });
     useAnotacionesStore.getState().applyRemoteAnnotation(tombstoneRow);
 
-    await new Promise((r) => setTimeout(r, 50));
-    expect(mockBulkUpsertAnnotations).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mockBulkUpsertAnnotations).toHaveBeenCalledTimes(1));
+    const persistedAnnotations = mockBulkUpsertAnnotations.mock.calls[0]![0];
+    expect(persistedAnnotations).toHaveLength(1);
+    expect(persistedAnnotations[0].id).toBe('annot-ghost-persist');
+    expect(persistedAnnotations[0].deletedAt).toBeDefined();
   });
 
   it('outbox entries have monotonic HLCs across multiple mutations', async () => {

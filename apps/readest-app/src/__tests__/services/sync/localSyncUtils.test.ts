@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
 import { peerKey } from '@/store/localSyncStore';
 import type { PeerInfo } from '@/types/settings';
-import type { ReplicaRow, Hlc, SyncResult, SyncError, SyncStep } from '@/types/replica';
+import type { ReplicaRow, Hlc, SyncError, SyncStep } from '@/types/replica';
 import type { SyncTransport } from '@/services/sync/SyncTransport';
 import type { SyncCategory } from '@/types/settings';
 import type { VisibleSeedProvider } from '@/services/sync/visibleSeedRepository';
@@ -404,6 +404,53 @@ describe('localSyncUtils', () => {
     const SYNC_KINDS: SyncCategory[] = ['annotation', 'quote', 'dictionary-entry'];
     const PEER_ID = '192.168.1.41:7878';
 
+    it('pushes local USB outbox rows before pulling full remote rows', async () => {
+      const order: string[] = [];
+      const localDelete = {
+        ...makeAnnotationRow('deleted-before-pull', HLC_C),
+        deleted_at_ts: HLC_C,
+      };
+      const staleRemoteLive = makeAnnotationRow('deleted-before-pull', HLC_A);
+      mockAnotacionesStore.replicaOutbox = [localDelete];
+      const transport = createMockTransport({
+        kind: 'usb',
+        push: vi.fn(async (_kind: SyncCategory, rows: ReplicaRow[]) => {
+          order.push(`push:${rows[0]!.deleted_at_ts ?? 'live'}`);
+        }),
+        pull: vi.fn(async () => {
+          order.push('pull');
+          return [staleRemoteLive];
+        }),
+      });
+
+      await mod.runSyncCycle(transport, ['annotation'], PEER_ID);
+
+      expect(order).toEqual([`push:${HLC_C}`, 'pull']);
+      expect(mockAnotacionesStore.applyRemoteAnnotation).toHaveBeenCalledWith(staleRemoteLive);
+      expect(mockAnotacionesStore.replicaOutbox).toEqual([]);
+    });
+
+    it('does not push the same outbox row again when retrying after a USB pull failure', async () => {
+      const outboxRow = makeAnnotationRow('push-survives-pull-failure', HLC_B);
+      mockAnotacionesStore.replicaOutbox = [outboxRow];
+      const firstTransport = createMockTransport({
+        kind: 'usb',
+        pull: vi.fn().mockRejectedValueOnce(new Error('Pull failed after local push')),
+      });
+
+      const firstResult = await mod.runSyncCycle(firstTransport, ['annotation'], PEER_ID);
+
+      expect(firstTransport.push).toHaveBeenCalledTimes(1);
+      expect(firstTransport.push).toHaveBeenCalledWith('annotation', [outboxRow]);
+      expect(firstResult.errors[0]!.message).toContain('Pull failed after local push');
+      expect(mockAnotacionesStore.replicaOutbox).toEqual([]);
+
+      const retryTransport = createMockTransport({ kind: 'usb' });
+      await mod.runSyncCycle(retryTransport, ['annotation'], PEER_ID);
+
+      expect(retryTransport.push).not.toHaveBeenCalled();
+    });
+
     it('calls transport.pull for each configured kind', async () => {
       const transport = createMockTransport();
 
@@ -500,6 +547,83 @@ describe('localSyncUtils', () => {
       expect(transport.push).not.toHaveBeenCalled();
     });
 
+    // ── PR3: dictionary-occurrence outbox routing ───────────────────────
+
+    it('drainOutboxRows for dictionary-entry filters out occurrence rows (PR3)', async () => {
+      const entryRow: ReplicaRow = {
+        ...makeAnnotationRow('not-used', HLC_A),
+        kind: 'dictionary-entry',
+        replica_id: 'dictionary-entry:entry-1',
+        fields_jsonb: { term: { v: 'hello', t: HLC_A, s: 'dev' } },
+      };
+      const occurrenceRow: ReplicaRow = {
+        ...makeAnnotationRow('not-used', HLC_B),
+        kind: 'dictionary-occurrence',
+        replica_id: 'dictionary-occurrence:occ-1',
+        fields_jsonb: { entryId: { v: 'entry-1', t: HLC_B, s: 'dev' } },
+      };
+      // Both rows in the dictionary outbox
+      mockDictionaryStore.replicaOutbox = [entryRow, occurrenceRow];
+
+      const transport = createMockTransport({ kind: 'usb' });
+
+      await mod.runSyncCycle(transport, ['dictionary-entry', 'dictionary-occurrence'], PEER_ID);
+
+      // dictionary-entry push should contain only the entry row
+      expect(transport.push).toHaveBeenCalledWith('dictionary-entry', [entryRow]);
+      // dictionary-occurrence push should contain only the occurrence row
+      expect(transport.push).toHaveBeenCalledWith('dictionary-occurrence', [occurrenceRow]);
+      // Total pushes: 2 (one per kind)
+      expect(transport.push).toHaveBeenCalledTimes(2);
+    });
+
+    it('drainOutboxRows for dictionary-entry re-queues occurrence rows in outbox (PR3)', async () => {
+      const entryRow: ReplicaRow = {
+        ...makeAnnotationRow('not-used', HLC_A),
+        kind: 'dictionary-entry',
+        replica_id: 'dictionary-entry:entry-1',
+        fields_jsonb: { term: { v: 'hello', t: HLC_A, s: 'dev' } },
+      };
+      const occurrenceRow: ReplicaRow = {
+        ...makeAnnotationRow('not-used', HLC_B),
+        kind: 'dictionary-occurrence',
+        replica_id: 'dictionary-occurrence:occ-1',
+        fields_jsonb: { entryId: { v: 'entry-1', t: HLC_B, s: 'dev' } },
+      };
+      // Only run dictionary-entry sync — occurrence rows should remain
+      mockDictionaryStore.replicaOutbox = [entryRow, occurrenceRow];
+
+      const transport = createMockTransport({ kind: 'usb' });
+      await mod.runSyncCycle(transport, ['dictionary-entry'], PEER_ID);
+
+      // Entry was pushed
+      expect(transport.push).toHaveBeenCalledWith('dictionary-entry', [entryRow]);
+      // Occurrence was NOT pushed (not in kinds) and stayed in outbox
+      expect(mockDictionaryStore.replicaOutbox).toContainEqual(occurrenceRow);
+      expect(mockDictionaryStore.replicaOutbox).not.toContainEqual(entryRow);
+    });
+
+    it('applies pulled dictionary-occurrence rows via applyRemoteDictionaryOccurrence only (PR3)', async () => {
+      const transport = createMockTransport();
+      const occRow: ReplicaRow = {
+        ...makeAnnotationRow('not-used', HLC_C),
+        kind: 'dictionary-occurrence',
+        replica_id: 'dictionary-occurrence:occ-pulled',
+        fields_jsonb: {
+          entryId: { v: 'entry-pulled', t: HLC_C, s: 'dev' },
+          selectedText: { v: 'pulled text', t: HLC_C, s: 'dev' },
+        },
+      };
+      (transport.pull as ReturnType<typeof vi.fn>).mockResolvedValue([occRow]);
+
+      await mod.runSyncCycle(transport, ['dictionary-occurrence'], PEER_ID);
+
+      expect(mockDictionaryStore.applyRemoteDictionaryOccurrence).toHaveBeenCalledTimes(1);
+      expect(mockDictionaryStore.applyRemoteDictionaryOccurrence).toHaveBeenCalledWith(occRow);
+      // applyRemoteDictionaryEntry should NOT be called for occurrence rows
+      expect(mockDictionaryStore.applyRemoteDictionaryEntry).not.toHaveBeenCalled();
+    });
+
     it('continues to next kind even when pull fails for one kind (errors in SyncResult)', async () => {
       const transport = createMockTransport();
       (transport.pull as ReturnType<typeof vi.fn>)
@@ -559,6 +683,47 @@ describe('localSyncUtils', () => {
       expect(transport.pull).toHaveBeenCalledWith('dictionary-entry', undefined);
       expect(transport.pull).not.toHaveBeenCalledWith('annotation', expect.anything());
     });
+
+    it('mid-batch interruption: retry does not re-push already-successful outbox rows', async () => {
+      const annRow = makeAnnotationRow('ann-midbatch', HLC_B);
+      const quoteRow = makeQuoteRow('quote-midbatch', HLC_B);
+      mockAnotacionesStore.replicaOutbox = [annRow];
+      mockCitasStore.replicaOutbox = [quoteRow];
+
+      // First cycle: annotation push succeeds, quote push fails (connection drop mid-batch)
+      const firstTransport = createMockTransport({
+        kind: 'usb',
+        push: vi.fn(async (kind: SyncCategory) => {
+          if (kind === 'quote') {
+            throw new Error('Connection dropped mid-batch');
+          }
+        }),
+      });
+
+      const firstResult = await mod.runSyncCycle(firstTransport, ['annotation', 'quote'], PEER_ID);
+
+      // Annotation was drained and pushed successfully
+      expect(mockAnotacionesStore.replicaOutbox).toEqual([]);
+      expect(firstTransport.push).toHaveBeenCalledWith('annotation', [annRow]);
+
+      // Quote was drained, push failed, rows restored for retry
+      expect(mockCitasStore.replicaOutbox).toContainEqual(quoteRow);
+      expect(firstTransport.push).toHaveBeenCalledWith('quote', [quoteRow]);
+
+      // Error from the quote push is captured in the result
+      expect(firstResult.errors.length).toBeGreaterThan(0);
+      expect(firstResult.errors.some((e) => e.message.includes('mid-batch'))).toBe(true);
+
+      // ── Retry ──────────────────────────────────────────────
+      const retryTransport = createMockTransport({ kind: 'usb' });
+      await mod.runSyncCycle(retryTransport, ['annotation', 'quote'], PEER_ID);
+
+      // Annotation outbox was already drained — must NOT be re-pushed
+      expect(retryTransport.push).not.toHaveBeenCalledWith('annotation', expect.anything());
+
+      // Quote rows were restored and should be pushed on retry
+      expect(retryTransport.push).toHaveBeenCalledWith('quote', [quoteRow]);
+    });
   });
 
   // ── runSyncCycle — SyncResult structure ────────────────────────────────
@@ -577,6 +742,8 @@ describe('localSyncUtils', () => {
       expect(result.kinds['annotation']!.kind).toBe('annotation');
       expect(typeof result.kinds['annotation']!.pulled).toBe('number');
       expect(typeof result.kinds['annotation']!.pushed).toBe('number');
+      expect(typeof result.kinds['annotation']!.conflicts).toBe('number');
+      expect(result.kinds['annotation']!.conflicts).toBe(0);
       expect(Array.isArray(result.errors)).toBe(true);
       expect(typeof result.startedAt).toBe('number');
       expect(typeof result.finishedAt).toBe('number');
@@ -611,6 +778,23 @@ describe('localSyncUtils', () => {
       expect(err.kind).toBe('annotation');
       expect(err.message).toContain('Connection refused');
       expect(typeof err.timestamp).toBe('number');
+    });
+
+    it('preserves message from object-shaped SyncError instead of rendering [object Object]', async () => {
+      const transport = createMockTransport();
+      (transport.push as ReturnType<typeof vi.fn>).mockRejectedValueOnce({
+        peerId: PEER_ID,
+        kind: 'quote',
+        timestamp: Date.now(),
+        message: 'HTTP 500: visible repo insert failed',
+      } satisfies SyncError);
+      mockCitasStore.replicaOutbox = [makeQuoteRow('object-error', HLC_B)];
+
+      const result = await mod.runSyncCycle(transport, ['quote'], PEER_ID);
+
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]!.message).toBe('HTTP 500: visible repo insert failed');
+      expect(result.errors[0]!.message).not.toBe('[object Object]');
     });
 
     it('continues syncing other kinds after a pull error on one kind', async () => {
@@ -743,6 +927,32 @@ describe('localSyncUtils', () => {
       expect(transport.pushedRows).toEqual([outboxRow]);
     });
 
+    it('still seeds kinds that do not have a cursor when another kind already has one', async () => {
+      mockSettingsState.settings.localSyncCursors[SEED_PEER] = {
+        annotation: HLC_A,
+      };
+      const transport = createMockTransport();
+      const quoteSeed = makeQuoteRow('quote-visible-seed', HLC_B);
+      const seedProvider = vi.fn<VisibleSeedProvider>().mockImplementation(async (kind) => {
+        if (kind === 'quote') return [quoteSeed];
+        return [];
+      });
+
+      const result = await mod.runSyncCycle(
+        transport,
+        ['annotation', 'quote'],
+        SEED_PEER,
+        undefined,
+        seedProvider,
+      );
+
+      expect(seedProvider).not.toHaveBeenCalledWith('annotation', expect.any(String));
+      expect(seedProvider).toHaveBeenCalledWith('quote', 'test-dev');
+      expect(transport.push).toHaveBeenCalledTimes(1);
+      expect(transport.pushedRows).toEqual([quoteSeed]);
+      expect(result.kinds['quote']!.pushed).toBe(1);
+    });
+
     it('pull uses cursor since= for incremental sync when cursor exists', async () => {
       // Pre-set a cursor
       mockSettingsState.settings.localSyncCursors[SEED_PEER] = {
@@ -778,6 +988,18 @@ describe('localSyncUtils', () => {
       await mod.runSyncCycle(transport2, ['annotation'], SEED_PEER);
 
       expect(transport2.pull).toHaveBeenCalledWith('annotation', HLC_B);
+    });
+
+    it('stores cursor from successfully pushed seed rows even when remote is empty', async () => {
+      const transport = createMockTransport();
+      const seedRow = makeAnnotationRow('seed-only-cursor', HLC_C);
+      const seedProvider = vi.fn<VisibleSeedProvider>().mockResolvedValue([seedRow]);
+
+      await mod.runSyncCycle(transport, ['annotation'], SEED_PEER, undefined, seedProvider);
+
+      const cursors = mockSettingsState.settings.localSyncCursors[SEED_PEER];
+      expect(cursors).toBeDefined();
+      expect(cursors!['annotation']).toBe(HLC_C);
     });
   });
 
@@ -831,6 +1053,78 @@ describe('localSyncUtils', () => {
 
       // Should not throw — onStep is optional
       await expect(mod.runSyncCycle(transport, ['annotation'], PEER_ID)).resolves.toBeDefined();
+    });
+  });
+
+  // ── Dictionary image manifest validation ─────────────────────────────
+
+  describe('dictionary-image manifest validation', () => {
+    const PEER_ID = '192.168.1.50:7878';
+
+    it('surfaces error when pulled image bytes do not match expected byteSize from manifest', async () => {
+      const transport = createMockTransport();
+      const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13]).buffer;
+      (transport.pull as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+      (transport.pullDictionaryImage as ReturnType<typeof vi.fn>).mockResolvedValue(pngBytes);
+
+      const row: ReplicaRow = {
+        user_id: '',
+        kind: 'dictionary-entry',
+        replica_id: 'dictionary-entry:entry-1',
+        fields_jsonb: {
+          imagePath: { v: 'entry-1/image.png', t: HLC_C, s: 'dev' },
+        },
+        manifest_jsonb: {
+          files: [{ filename: 'image.png', byteSize: 999999, partialMd5: 'abc' }],
+          schemaVersion: 1,
+        },
+        deleted_at_ts: null,
+        reincarnation: null,
+        updated_at_ts: HLC_C,
+        schema_version: 1,
+      };
+      // Single kind → single pull call
+      (transport.pull as ReturnType<typeof vi.fn>).mockResolvedValue([row]);
+
+      const result = await mod.runSyncCycle(transport, ['dictionary-entry'], PEER_ID);
+
+      // Size mismatch should produce an error (not silent)
+      const hasSizeError = result.errors.some(
+        (e) => e.kind === 'dictionary-entry' && e.message.toLowerCase().includes('size'),
+      );
+      expect(hasSizeError).toBe(true);
+    });
+
+    it('surfaces retryable error when image pull returns null for a row with imagePath', async () => {
+      const transport = createMockTransport();
+      // pullDictionaryImage returns null (image missing on remote)
+      (transport.pullDictionaryImage as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+
+      const row: ReplicaRow = {
+        user_id: '',
+        kind: 'dictionary-entry',
+        replica_id: 'dictionary-entry:entry-missing-img',
+        fields_jsonb: {
+          imagePath: { v: 'entry-missing-img/image.png', t: HLC_C, s: 'dev' },
+        },
+        manifest_jsonb: null,
+        deleted_at_ts: null,
+        reincarnation: null,
+        updated_at_ts: HLC_C,
+        schema_version: 1,
+      };
+      // No local file exists
+      const appService = await (await import('@/services/environment')).default.getAppService();
+      (appService.readFile as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('not found'));
+      (transport.pull as ReturnType<typeof vi.fn>).mockResolvedValue([row]);
+
+      const result = await mod.runSyncCycle(transport, ['dictionary-entry'], PEER_ID);
+
+      // Missing image should be captured as an error
+      const hasMissingImageError = result.errors.some(
+        (e) => e.kind === 'dictionary-entry' && e.message.toLowerCase().includes('image'),
+      );
+      expect(hasMissingImageError).toBe(true);
     });
   });
 });

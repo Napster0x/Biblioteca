@@ -2,13 +2,16 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as React from 'react';
 
+import { createLibraryBookDeleteHandler } from '@/app/library/bookDelete';
 import Bookshelf from '@/app/library/components/Bookshelf';
 import { DEFAULT_SYSTEM_SETTINGS } from '@/services/constants';
+import { useAnotacionesStore } from '@/store/annotacionesStore';
+import { useCitasStore } from '@/store/citasStore';
+import { useDictionaryStore } from '@/store/dictionaryStore';
 import type { Book } from '@/types/book';
-
-interface MockBookDeleteService {
-  deleteBook: (book: Book) => Promise<void>;
-}
+import type { Annotacion } from '@/types/annotaciones';
+import type { Cite } from '@/types/citas';
+import type { DictionaryEntry, DictionaryOccurrence } from '@/types/dictionary';
 
 const {
   pushMock,
@@ -180,6 +183,70 @@ const makeBook = (overrides: Partial<Book>): Book => ({
   deletedAt: overrides.deletedAt,
 });
 
+const makeQuote = (overrides: Partial<Cite>): Cite => ({
+  id: overrides.id ?? 'quote-1',
+  bookHash: overrides.bookHash ?? 'book-abc',
+  bookTitle: 'Book title',
+  bookAuthor: 'Author',
+  cfi: 'epubcfi(/6/2)',
+  sectionHref: 'chapter.xhtml',
+  page: 7,
+  text: 'quoted text',
+  contextBefore: 'before',
+  contextAfter: 'after',
+  contentHash: 'hash',
+  createdAt: 1,
+  updatedAt: null,
+  ...overrides,
+});
+
+const makeAnnotation = (overrides: Partial<Annotacion>): Annotacion => ({
+  id: overrides.id ?? 'annotation-1',
+  bookHash: overrides.bookHash ?? 'book-abc',
+  bookTitle: 'Book title',
+  bookAuthor: 'Author',
+  cfi: 'epubcfi(/6/4)',
+  sectionHref: 'chapter.xhtml',
+  page: 8,
+  text: 'annotated text',
+  note: 'reader note',
+  style: 'highlight',
+  color: 'yellow',
+  createdAt: 1,
+  updatedAt: null,
+  ...overrides,
+});
+
+const makeDictionaryEntry = (overrides: Partial<DictionaryEntry>): DictionaryEntry => ({
+  id: overrides.id ?? 'dictionary-entry-1',
+  term: 'palabra',
+  displayTerm: 'Palabra',
+  language: 'es',
+  definition: 'definition',
+  enrichmentStatus: 'none',
+  createdAt: 1,
+  updatedAt: 1,
+  ...overrides,
+});
+
+const makeDictionaryOccurrence = (
+  overrides: Partial<DictionaryOccurrence>,
+): DictionaryOccurrence => ({
+  id: overrides.id ?? 'dictionary-occurrence-1',
+  entryId: overrides.entryId ?? 'dictionary-entry-1',
+  bookHash: overrides.bookHash ?? 'book-abc',
+  bookTitle: 'Book title',
+  bookAuthor: 'Author',
+  cfi: 'epubcfi(/6/8)',
+  sectionHref: 'chapter.xhtml',
+  page: 9,
+  selectedText: 'palabra',
+  contextBefore: 'before',
+  contextAfter: 'after',
+  createdAt: 1,
+  ...overrides,
+});
+
 const renderBookshelf = (books: Book[], isSelectMode = false) =>
   render(
     <Bookshelf
@@ -290,7 +357,29 @@ describe('Bookshelf Citas entry', () => {
   });
 });
 
-describe('Cascade delete of quotes on book deletion', () => {
+describe('Book deletion preserves collected Citas data', () => {
+  const envConfig = { getAppService: vi.fn() };
+
+  const createDeleteHandler = (deleteBook = vi.fn().mockResolvedValue(undefined)) => {
+    const updateBook = vi.fn<(_envConfig: typeof envConfig, book: Book) => Promise<void>>();
+    const clearBookData = vi.fn<(bookHash: string) => void>();
+    const dispatchToast =
+      vi.fn<(payload: { type: string; message: string; timeout?: number }) => void>();
+
+    const handler = createLibraryBookDeleteHandler({
+      appService: { deleteBook },
+      envConfig,
+      updateBook,
+      clearBookData,
+      dispatchToast,
+      translate: (key: string, values?: Record<string, string>) =>
+        values?.title ? `${key}:${values.title}` : key,
+      now: () => 12345,
+    });
+
+    return { handler, deleteBook, updateBook, clearBookData, dispatchToast };
+  };
+
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(consoleWarnMock);
     getCitasServiceMock.mockReset();
@@ -301,106 +390,77 @@ describe('Cascade delete of quotes on book deletion', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    useCitasStore.getState().reset();
+    useAnotacionesStore.getState().reset();
+    useDictionaryStore.getState().reset();
   });
 
-  it('calls deleteQuotesByBook with bookHash on successful book deletion', async () => {
-    const mockAppService: MockBookDeleteService = {
-      deleteBook: vi.fn().mockResolvedValue(undefined),
-    };
-
-    getCitasServiceMock.mockResolvedValue({
-      deleteQuotesByBook: deleteQuotesByBookMock,
-    });
-    deleteQuotesByBookMock.mockResolvedValue(['id1', 'id2']);
-
-    const handleDelete = () => {
-      return async (book: Book) => {
-        try {
-          await mockAppService.deleteBook(book);
-          if (mockAppService) {
-            const cs = await getCitasServiceMock(mockAppService);
-            const deletedIds = await cs.deleteQuotesByBook(book.hash);
-            removeQuotesFromStateMock(deletedIds);
-          }
-          return true;
-        } catch {
-          return false;
-        }
-      };
-    };
-
+  it('marks the source book deleted without deleting preserved quotes', async () => {
+    const { handler, deleteBook, updateBook, clearBookData, dispatchToast } = createDeleteHandler();
     const book = makeBook({ hash: 'book-abc' });
-    const result = await handleDelete()(book);
+    const result = await handler(book);
 
     expect(result).toBe(true);
-    expect(deleteQuotesByBookMock).toHaveBeenCalledWith('book-abc');
-    expect(removeQuotesFromStateMock).toHaveBeenCalledWith(['id1', 'id2']);
+    expect(deleteBook).toHaveBeenCalledWith(book);
+    expect(updateBook).toHaveBeenCalledWith(envConfig, {
+      ...book,
+      deletedAt: 12345,
+      downloadedAt: null,
+      coverDownloadedAt: null,
+    });
+    expect(clearBookData).toHaveBeenCalledWith('book-abc');
+    expect(dispatchToast).toHaveBeenCalledWith({
+      type: 'info',
+      timeout: 1000,
+      message: 'Book deleted: {{title}}:Book title',
+    });
+    expect(getCitasServiceMock).not.toHaveBeenCalled();
+    expect(deleteQuotesByBookMock).not.toHaveBeenCalled();
+    expect(removeQuotesFromStateMock).not.toHaveBeenCalled();
   });
 
-  it('does NOT call deleteQuotesByBook when book deletion fails', async () => {
-    const mockAppService: MockBookDeleteService = {
-      deleteBook: vi.fn().mockRejectedValue(new Error('delete failed')),
-    };
+  it('marks the source book deleted while quotes, annotations, and dictionary occurrences stay visible', async () => {
+    const { handler } = createDeleteHandler();
+    const quote = makeQuote({ bookHash: 'book-preserved' });
+    const annotation = makeAnnotation({ bookHash: 'book-preserved' });
+    const dictionaryEntry = makeDictionaryEntry({ id: 'entry-preserved' });
+    const dictionaryOccurrence = makeDictionaryOccurrence({
+      entryId: 'entry-preserved',
+      bookHash: 'book-preserved',
+    });
+    useCitasStore.getState().setQuotes([quote]);
+    useAnotacionesStore.setState({ annotations: [annotation] });
+    useDictionaryStore.getState().setEntries([dictionaryEntry]);
+    useDictionaryStore.getState().setOccurrences('entry-preserved', [dictionaryOccurrence]);
 
+    const result = await handler(makeBook({ hash: 'book-preserved' }));
+
+    expect(result).toBe(true);
+    expect(useCitasStore.getState().getVisibleQuotes()).toEqual([quote]);
+    expect(useAnotacionesStore.getState().getVisibleAnnotations()).toEqual([annotation]);
+    expect(useDictionaryStore.getState().getVisibleDictionaryEntries()).toEqual([dictionaryEntry]);
+    expect(useDictionaryStore.getState().getVisibleOccurrences('entry-preserved')).toEqual([
+      dictionaryOccurrence,
+    ]);
+  });
+
+  it('does NOT call collected-data deleters when book deletion fails', async () => {
+    const { handler, updateBook, clearBookData, dispatchToast } = createDeleteHandler(
+      vi.fn().mockRejectedValue(new Error('delete failed')),
+    );
     getCitasServiceMock.mockResolvedValue({
       deleteQuotesByBook: deleteQuotesByBookMock,
     });
 
-    const handleDelete = () => {
-      return async (book: Book) => {
-        try {
-          await mockAppService.deleteBook(book);
-          return true;
-        } catch {
-          return false;
-        }
-      };
-    };
-
-    const result = await handleDelete()(makeBook({ hash: 'book-fail' }));
+    const result = await handler(makeBook({ hash: 'book-fail' }));
 
     expect(result).toBe(false);
-    expect(deleteQuotesByBookMock).not.toHaveBeenCalled();
-  });
-
-  it('logs a warning when cascade delete fails but still returns success', async () => {
-    const mockAppService: MockBookDeleteService = {
-      deleteBook: vi.fn().mockResolvedValue(undefined),
-    };
-
-    getCitasServiceMock.mockResolvedValue({
-      deleteQuotesByBook: deleteQuotesByBookMock,
+    expect(updateBook).not.toHaveBeenCalled();
+    expect(clearBookData).not.toHaveBeenCalled();
+    expect(dispatchToast).toHaveBeenCalledWith({
+      message: 'Failed to delete book: {{title}}:Book title',
+      type: 'error',
     });
-    deleteQuotesByBookMock.mockRejectedValue(new Error('db locked'));
-
-    const handleDelete = () => {
-      return async (book: Book) => {
-        try {
-          await mockAppService.deleteBook(book);
-          if (mockAppService) {
-            try {
-              const cs = await getCitasServiceMock(mockAppService);
-              const deletedIds = await cs.deleteQuotesByBook(book.hash);
-              removeQuotesFromStateMock(deletedIds);
-            } catch (e) {
-              consoleWarnMock('Cascade delete of Citas quotes failed', e);
-            }
-          }
-          return true;
-        } catch {
-          return false;
-        }
-      };
-    };
-
-    const result = await handleDelete()(makeBook({ hash: 'book-cascade-fail' }));
-
-    expect(result).toBe(true);
-    expect(deleteQuotesByBookMock).toHaveBeenCalledWith('book-cascade-fail');
-    expect(consoleWarnMock).toHaveBeenCalledWith(
-      'Cascade delete of Citas quotes failed',
-      expect.any(Error),
-    );
-    expect(removeQuotesFromStateMock).not.toHaveBeenCalled();
+    expect(deleteQuotesByBookMock).not.toHaveBeenCalled();
   });
 });

@@ -43,20 +43,18 @@ const nextConfig = {
     config.resolve.alias = {
       ...config.resolve.alias,
       nunjucks: 'nunjucks/browser/nunjucks.js',
-      // `js-mdict` is consumed as TS source via tsconfig paths from
-      // `packages/js-mdict/src/`; its sources `import 'fflate'` directly.
-      // Without an alias, webpack walks up from that source location and
-      // can't find fflate (only installed in this app's node_modules).
       fflate: path.resolve(__dirname, 'node_modules/fflate'),
       ...(appPlatform !== 'web' ? { '@tursodatabase/database-wasm': false } : {}),
+    };
+    config.resolve.fallback = {
+      ...config.resolve.fallback,
+      child_process: false,
     };
     return config;
   },
   turbopack: {
     resolveAlias: {
       nunjucks: 'nunjucks/browser/nunjucks.js',
-      // Turbopack rejects absolute paths in resolveAlias ("server relative
-      // imports not implemented") — use a project-relative path.
       fflate: './node_modules/fflate',
       ...(appPlatform !== 'web' ? { '@tursodatabase/database-wasm': './src/utils/stub.ts' } : {}),
     },

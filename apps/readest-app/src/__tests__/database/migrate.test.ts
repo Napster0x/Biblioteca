@@ -194,4 +194,59 @@ describe('getMigrations()', () => {
     expect(Array.isArray(result)).toBe(true);
     expect(result).toHaveLength(0);
   });
+
+  it('annotaciones migrations include _replicas table creation', async () => {
+    const { getMigrations } = await import('@/services/database/migrations');
+    const annotacionesMigrations = getMigrations('annotaciones');
+
+    const replicasMigration = annotacionesMigrations.find((m) =>
+      m.sql.includes('CREATE TABLE IF NOT EXISTS _replicas'),
+    );
+    expect(
+      replicasMigration,
+      'annotaciones schema must include _replicas CREATE TABLE migration',
+    ).toBeDefined();
+    expect(replicasMigration!.name).toBeTruthy();
+
+    // Verify the migration actually "creates" the table when run
+    const db = createMockDb();
+    await migrate(db, [replicasMigration!]);
+    expect(db.tables.has('_replicas')).toBe(true);
+  });
+
+  it('citas migrations include _replicas table creation', async () => {
+    const { getMigrations } = await import('@/services/database/migrations');
+    const citasMigrations = getMigrations('citas');
+
+    const replicasMigration = citasMigrations.find((m) =>
+      m.sql.includes('CREATE TABLE IF NOT EXISTS _replicas'),
+    );
+    expect(
+      replicasMigration,
+      'citas schema must include _replicas CREATE TABLE migration',
+    ).toBeDefined();
+    expect(replicasMigration!.name).toBeTruthy();
+
+    const db = createMockDb();
+    await migrate(db, [replicasMigration!]);
+    expect(db.tables.has('_replicas')).toBe(true);
+  });
+
+  it('dictionary migrations include _replicas table creation', async () => {
+    const { getMigrations } = await import('@/services/database/migrations');
+    const dictionaryMigrations = getMigrations('dictionary');
+
+    const replicasMigration = dictionaryMigrations.find((m) =>
+      m.sql.includes('CREATE TABLE IF NOT EXISTS _replicas'),
+    );
+    expect(
+      replicasMigration,
+      'dictionary schema must include _replicas CREATE TABLE migration',
+    ).toBeDefined();
+    expect(replicasMigration!.name).toBeTruthy();
+
+    const db = createMockDb();
+    await migrate(db, [replicasMigration!]);
+    expect(db.tables.has('_replicas')).toBe(true);
+  });
 });

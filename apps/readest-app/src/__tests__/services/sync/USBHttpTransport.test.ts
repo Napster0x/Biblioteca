@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { UsbBookManifest } from '@/services/sync/SyncTransport';
 import type { ReplicaRow, Hlc, FieldsObject, SyncError } from '@/types/replica';
 import type { SyncCategory } from '@/types/settings';
 
@@ -349,10 +350,15 @@ describe('USBHttpTransport', () => {
   // -------------------------------------------------------------------------
 
   describe('pushDictionaryImage', () => {
+    /** Create a minimal valid PNG array buffer (magic + 4-byte chunk header). */
+    function makePngBuffer(extra: number[] = []): ArrayBuffer {
+      return new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, ...extra]).buffer;
+    }
+
     it('PUTs image bytes to localhost URL', async () => {
       mockFetchResponse = createMockResponse({ uploaded: true });
       const t = new USBHttpTransport(7878);
-      const bytes = new Uint8Array([5, 6, 7, 8]).buffer;
+      const bytes = makePngBuffer([5, 6, 7, 8]);
 
       const result = await t.pushDictionaryImage!('entry-1', bytes);
 
@@ -367,7 +373,7 @@ describe('USBHttpTransport', () => {
     it('sends raw binary body', async () => {
       mockFetchResponse = createMockResponse({ uploaded: true });
       const t = new USBHttpTransport(7878);
-      const bytes = new Uint8Array([100, 200]).buffer;
+      const bytes = makePngBuffer([100, 200]);
 
       await t.pushDictionaryImage!('entry-y', bytes);
 
@@ -378,9 +384,7 @@ describe('USBHttpTransport', () => {
       mockFetch.mockRejectedValueOnce(new Error('Connection refused'));
       const t = new USBHttpTransport(7878);
 
-      await expect(
-        t.pushDictionaryImage!('entry-1', new Uint8Array([1]).buffer),
-      ).rejects.toMatchObject({
+      await expect(t.pushDictionaryImage!('entry-1', makePngBuffer())).rejects.toMatchObject({
         peerId: 'localhost:7878',
         kind: 'dictionary-entry',
         message: 'Connection refused',
@@ -391,9 +395,7 @@ describe('USBHttpTransport', () => {
       mockFetchResponse = createMockResponse('Error', 500);
       const t = new USBHttpTransport(7878);
 
-      await expect(
-        t.pushDictionaryImage!('entry-1', new Uint8Array([1]).buffer),
-      ).rejects.toMatchObject({
+      await expect(t.pushDictionaryImage!('entry-1', makePngBuffer())).rejects.toMatchObject({
         peerId: 'localhost:7878',
         kind: 'dictionary-entry',
         message: expect.stringContaining('500'),
@@ -404,9 +406,125 @@ describe('USBHttpTransport', () => {
       mockFetchResponse = createMockResponse({ uploaded: true });
       const t = new USBHttpTransport(7878);
 
-      await t.pushDictionaryImage!('entry-1', new Uint8Array([1]).buffer);
+      await t.pushDictionaryImage!('entry-1', makePngBuffer());
 
       expect(fetchCalls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('rejects non-PNG bytes with a sync error', async () => {
+      const t = new USBHttpTransport(7878);
+      const nonPng = new Uint8Array([0, 1, 2, 3]).buffer;
+
+      await expect(t.pushDictionaryImage!('entry-1', nonPng)).rejects.toMatchObject({
+        peerId: 'localhost:7878',
+        kind: 'dictionary-entry',
+        message: 'Not a valid PNG image',
+      } as SyncError);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Book endpoints — binary book sync via localhost
+  // -------------------------------------------------------------------------
+
+  describe('book endpoints', () => {
+    const manifest: UsbBookManifest = {
+      books: [
+        {
+          hash: 'book-a',
+          book: {
+            hash: 'book-a',
+            format: 'EPUB',
+            title: 'USB Book',
+            author: 'Author',
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          assets: [
+            { name: 'book', required: true, size: 100 },
+            { name: 'cover.png', required: true, size: 10 },
+          ],
+        },
+      ],
+    };
+
+    it('pulls the book manifest from /books/manifest with timeout signal', async () => {
+      mockFetchResponse = createMockResponse(manifest);
+      const t = new USBHttpTransport(7878);
+
+      const result = await t.pullBookManifest!();
+
+      expect(result.books[0]!.hash).toBe('book-a');
+      expect(fetchCalls[0]!.url).toBe('http://localhost:7878/books/manifest');
+      expect(fetchCalls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('PUTs sanitized book library metadata to /books/library as JSON', async () => {
+      mockFetchResponse = createMockResponse({ merged: 1, skipped: 0 });
+      const t = new USBHttpTransport(7878);
+
+      await t.pushBookLibrary!([
+        {
+          hash: 'book-a',
+          format: 'EPUB',
+          title: 'USB Book',
+          author: 'Author',
+          filePath: '/sender/path/book.epub',
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      ]);
+
+      const body = JSON.parse(fetchCalls[0]!.init!.body as string) as Array<{ filePath?: string }>;
+      expect(fetchCalls[0]!.url).toBe('http://localhost:7878/books/library');
+      expect(fetchCalls[0]!.init?.method).toBe('PUT');
+      expect(fetchCalls[0]!.init?.headers).toEqual(
+        expect.objectContaining({ 'Content-Type': 'application/json' }),
+      );
+      expect(body[0]!.filePath).toBeUndefined();
+    });
+
+    it('pulls required book assets as binary ArrayBuffers', async () => {
+      const bytes = new Uint8Array([1, 2, 3]).buffer;
+      mockFetchResponse = createMockResponse('', 200, bytes);
+      const t = new USBHttpTransport(7878);
+
+      const result = await t.pullBookAsset!('book-a', 'book');
+
+      expect(new Uint8Array(result!)).toEqual(new Uint8Array([1, 2, 3]));
+      expect(fetchCalls[0]!.url).toBe('http://localhost:7878/books/assets/book-a/book');
+    });
+
+    it('returns null when optional nav asset is missing', async () => {
+      mockFetchResponse = createMockResponse('Not Found', 404);
+      const t = new USBHttpTransport(7878);
+
+      const result = await t.pullBookAsset!('book-a', 'nav.json', { optional: true });
+
+      expect(result).toBeNull();
+    });
+
+    it('throws SyncError when a required book asset returns HTTP error', async () => {
+      mockFetchResponse = createMockResponse('Missing book', 404);
+      const t = new USBHttpTransport(7878);
+
+      await expect(t.pullBookAsset!('book-a', 'book')).rejects.toMatchObject({
+        peerId: 'localhost:7878',
+        kind: 'book',
+        message: expect.stringContaining('404'),
+      });
+    });
+
+    it('PUTs raw book asset bytes with binary body', async () => {
+      mockFetchResponse = createMockResponse({ uploaded: true });
+      const t = new USBHttpTransport(7878);
+      const bytes = new Uint8Array([9, 8, 7]).buffer;
+
+      await t.pushBookAsset!('book-a', 'cover.png', bytes);
+
+      expect(fetchCalls[0]!.url).toBe('http://localhost:7878/books/assets/book-a/cover.png');
+      expect(fetchCalls[0]!.init?.method).toBe('PUT');
+      expect(fetchCalls[0]!.init?.body).toBe(bytes);
     });
   });
 
@@ -429,6 +547,96 @@ describe('USBHttpTransport', () => {
 
       await t.push('annotation' as SyncCategory, [makeRow('test', HLC_A)]);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Image integrity — isPng and verifyImageManifest
+// ---------------------------------------------------------------------------
+
+describe('isPng', () => {
+  let isPng: typeof import('@/services/sync/USBHttpTransport').isPng;
+
+  beforeAll(async () => {
+    const mod = await import('@/services/sync/USBHttpTransport');
+    isPng = mod.isPng;
+  });
+
+  it('returns true for PNG magic bytes', () => {
+    const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13]).buffer;
+    expect(isPng(pngBytes)).toBe(true);
+  });
+
+  it('returns false for non-PNG bytes', () => {
+    const nonPng = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]).buffer;
+    expect(isPng(nonPng)).toBe(false);
+  });
+
+  it('returns false for empty buffer', () => {
+    expect(isPng(new ArrayBuffer(0))).toBe(false);
+  });
+
+  it('returns false for buffer smaller than PNG magic', () => {
+    const short = new Uint8Array([137, 80, 78]).buffer;
+    expect(isPng(short)).toBe(false);
+  });
+
+  it('returns true for PNG with 4-byte chunk header (triangulation)', () => {
+    const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82])
+      .buffer;
+    expect(isPng(pngBytes)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// verifyImageManifest — dictionary image integrity
+// ---------------------------------------------------------------------------
+
+describe('verifyImageManifest', () => {
+  let verifyImageManifest: typeof import('@/services/sync/USBHttpTransport').verifyImageManifest;
+
+  beforeAll(async () => {
+    const mod = await import('@/services/sync/USBHttpTransport');
+    verifyImageManifest = mod.verifyImageManifest;
+  });
+
+  it('returns {valid: false} when sha256 does not match (manifest says X, content differs)', async () => {
+    const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13]).buffer;
+
+    // Mock crypto.subtle.digest to return all zero bytes — guaranteed mismatch
+    const mockDigest = vi.fn().mockResolvedValue(new Uint8Array(32).buffer);
+    vi.stubGlobal('crypto', { subtle: { digest: mockDigest } });
+
+    try {
+      const result = await verifyImageManifest(pngBytes, {
+        sha256: 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('SHA-256 mismatch');
+      expect(mockDigest).toHaveBeenCalledWith('SHA-256', pngBytes);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('returns {valid: true} when sha256 matches', async () => {
+    const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13]).buffer;
+
+    // Compute the *actual* sha256 of those bytes so the hash is real
+    const knownHash = '4f43ea3f1004c954b6bbeb21fd2694281a4f6ec2bcb137781f1e0b6875dee49a';
+    const hashBytes = new Uint8Array(knownHash.match(/.{2}/g)!.map((byte) => parseInt(byte, 16)));
+    const mockDigest = vi.fn().mockResolvedValue(hashBytes.buffer);
+    vi.stubGlobal('crypto', { subtle: { digest: mockDigest } });
+
+    try {
+      const result = await verifyImageManifest(pngBytes, { sha256: knownHash });
+
+      expect(result.valid).toBe(true);
+      expect(result.error).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

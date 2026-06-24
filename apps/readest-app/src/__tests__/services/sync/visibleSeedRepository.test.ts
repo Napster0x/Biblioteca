@@ -64,7 +64,7 @@ describe('visibleSeedRepository', () => {
     expect(quoteRows[0]!.fields_jsonb['contentHash']!.v).toBe('hash-q');
   });
 
-  it('converts dictionary entries and occurrences from visible DB services into seed rows', async () => {
+  it('converts dictionary entries from visible DB services into seed rows with kind dictionary-entry', async () => {
     const entry: DictionaryEntry = {
       id: 'entry-visible-1',
       term: 'serendipia',
@@ -77,9 +77,27 @@ describe('visibleSeedRepository', () => {
       createdAt: 300,
       updatedAt: 310,
     };
+    const repository = createVisibleSeedRepository({
+      annotationsService: { listAllAnnotations: vi.fn().mockResolvedValue([]) },
+      citasService: { listAllQuotes: vi.fn().mockResolvedValue([]) },
+      dictionaryService: {
+        listAllEntries: vi.fn().mockResolvedValue([entry]),
+        listAllOccurrences: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    const rows = await repository.getSeedRows('dictionary-entry', DEVICE_ID);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.replica_id).toBe('dictionary-entry:entry-visible-1');
+    expect(rows[0]!.kind).toBe('dictionary-entry');
+    expect(rows[0]!.fields_jsonb['definition']!.v).toBe('hallazgo valioso accidental');
+  });
+
+  it('converts dictionary occurrences from visible DB services into seed rows with kind dictionary-occurrence (PR3)', async () => {
     const occurrence: DictionaryOccurrence = {
-      id: 'occ-visible-1',
-      entryId: entry.id,
+      id: 'occ-visible-2',
+      entryId: 'entry-visible-1',
       bookHash: 'book-d',
       bookTitle: 'Libro D',
       bookAuthor: 'Autora D',
@@ -96,22 +114,18 @@ describe('visibleSeedRepository', () => {
       annotationsService: { listAllAnnotations: vi.fn().mockResolvedValue([]) },
       citasService: { listAllQuotes: vi.fn().mockResolvedValue([]) },
       dictionaryService: {
-        listAllEntries: vi.fn().mockResolvedValue([entry]),
+        listAllEntries: vi.fn().mockResolvedValue([]),
         listAllOccurrences: vi.fn().mockResolvedValue([occurrence]),
       },
     });
 
-    const rows = await repository.getSeedRows('dictionary-entry', DEVICE_ID);
+    const rows = await repository.getSeedRows('dictionary-occurrence', DEVICE_ID);
 
-    expect(rows).toHaveLength(2);
-    expect(rows.map((row) => row.replica_id)).toEqual([
-      'dictionary-entry:entry-visible-1',
-      'dictionary-entry:occ-visible-1',
-    ]);
-    expect(rows[0]!.fields_jsonb['definition']!.v).toBe('hallazgo valioso accidental');
-    expect(rows[1]!.fields_jsonb['entryId']!.v).toBe(entry.id);
-    expect(rows[1]!.fields_jsonb['selectedText']!.v).toBe('serendipia');
-    expect(rows[1]!.updated_at_ts > rows[0]!.updated_at_ts).toBe(true);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.replica_id).toBe('dictionary-occurrence:occ-visible-2');
+    expect(rows[0]!.kind).toBe('dictionary-occurrence');
+    expect(rows[0]!.fields_jsonb['entryId']!.v).toBe('entry-visible-1');
+    expect(rows[0]!.fields_jsonb['selectedText']!.v).toBe('serendipia');
   });
 
   it('preserves visible tombstones as deleted ReplicaRows', async () => {
@@ -148,5 +162,48 @@ describe('visibleSeedRepository', () => {
 
     expect(row!.deleted_at_ts).toBe(row!.updated_at_ts as Hlc);
     expect(row!.replica_id).toBe('annotation:ann-deleted');
+  });
+
+  it('preserves durable replica timestamps when seeding tombstones', async () => {
+    const fieldHlc = '0000000000001-00000001-old-device' as Hlc;
+    const deleteHlc = '0000000000003-00000001-old-device' as Hlc;
+    const repository = createVisibleSeedRepository({
+      annotationsService: {
+        listAllAnnotations: vi.fn().mockResolvedValue([
+          {
+            id: 'ann-durable-tombstone',
+            bookHash: 'book-a',
+            bookTitle: null,
+            bookAuthor: null,
+            cfi: null,
+            sectionHref: null,
+            page: null,
+            text: 'deleted text',
+            note: '',
+            style: 'highlight',
+            color: 'yellow',
+            createdAt: 100,
+            updatedAt: null,
+            deletedAt: 12345,
+            _replicaTimestamps: {
+              text: fieldHlc,
+              __deleted: deleteHlc,
+            },
+          } satisfies Annotacion,
+        ]),
+      },
+      citasService: { listAllQuotes: vi.fn().mockResolvedValue([]) },
+      dictionaryService: {
+        listAllEntries: vi.fn().mockResolvedValue([]),
+        listAllOccurrences: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    const [row] = await repository.getSeedRows('annotation', DEVICE_ID);
+
+    expect(row!.replica_id).toBe('annotation:ann-durable-tombstone');
+    expect(row!.fields_jsonb['text']!.t).toBe(fieldHlc);
+    expect(row!.deleted_at_ts).toBe(deleteHlc);
+    expect(row!.updated_at_ts).toBe(deleteHlc);
   });
 });

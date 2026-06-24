@@ -31,6 +31,7 @@ vi.mock('@/services/environment', () => ({
 const DEVICE_ID = 'test-device-cccc';
 const OLD_HLC = '0000000000001-00000001-test-device-cccc' as Hlc;
 const NEW_HLC = '0000000000002-00000001-test-device-cccc' as Hlc;
+const NEWER_HLC = '0000000000003-00000001-test-device-cccc' as Hlc;
 
 function makeEntryRow(params: {
   id: string;
@@ -184,7 +185,7 @@ describe('dictionaryStore — replica applyRemoteDictionaryEntry', () => {
     expect(e.deletedAt).toBeDefined();
   });
 
-  it('applyRemoteDictionaryEntry tombstone on non-existent id does not crash', () => {
+  it('applyRemoteDictionaryEntry tombstone on non-existent id retains a tombstone', () => {
     const tombstoneRow = makeEntryRow({
       id: 'entry-ghost',
       hlc: NEW_HLC,
@@ -196,7 +197,70 @@ describe('dictionaryStore — replica applyRemoteDictionaryEntry', () => {
       useDictionaryStore.getState().applyRemoteDictionaryEntry(tombstoneRow),
     ).not.toThrow();
 
-    expect(useDictionaryStore.getState().entries).toHaveLength(0);
+    const entries = useDictionaryStore.getState().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.id).toBe('entry-ghost');
+    expect(entries[0]?.deletedAt).toBeDefined();
+    expect(entries[0]?._replicaTimestamps?.['__deleted']).toBe(NEW_HLC);
+  });
+
+  it('applyRemoteDictionaryEntry keeps a newer tombstone when a stale live row arrives', () => {
+    useDictionaryStore
+      .getState()
+      .applyRemoteDictionaryEntry(
+        makeEntryRow({ id: 'entry-delete-wins', hlc: NEW_HLC, fields: {}, deleted: true }),
+      );
+
+    useDictionaryStore.getState().applyRemoteDictionaryEntry(
+      makeEntryRow({
+        id: 'entry-delete-wins',
+        hlc: OLD_HLC,
+        fields: { term: 'stale', definition: 'stale definition' },
+      }),
+    );
+
+    const entry = useDictionaryStore.getState().entries[0]!;
+    expect(entry.deletedAt).toBeDefined();
+    expect(entry.term).toBe('');
+    expect(entry.definition).toBeUndefined();
+  });
+
+  it('applyRemoteDictionaryEntry ignores an older tombstone when newer live fields exist', () => {
+    useDictionaryStore.getState().applyRemoteDictionaryEntry(
+      makeEntryRow({
+        id: 'entry-live-wins',
+        hlc: NEWER_HLC,
+        fields: { term: 'fresh', definition: 'fresh definition' },
+      }),
+    );
+
+    useDictionaryStore
+      .getState()
+      .applyRemoteDictionaryEntry(
+        makeEntryRow({ id: 'entry-live-wins', hlc: NEW_HLC, fields: {}, deleted: true }),
+      );
+
+    const entry = useDictionaryStore.getState().entries[0]!;
+    expect(entry.deletedAt).toBeUndefined();
+    expect(entry.term).toBe('fresh');
+    expect(entry.definition).toBe('fresh definition');
+  });
+
+  it('applyRemoteDictionaryOccurrence retains an unknown tombstone for future seeds', () => {
+    useDictionaryStore.getState().applyRemoteDictionaryOccurrence(
+      makeOccurrenceRow({
+        id: 'occ-ghost',
+        hlc: NEW_HLC,
+        fields: { entryId: 'entry-ghost', bookHash: 'hash-ghost' },
+        deleted: true,
+      }),
+    );
+
+    const occurrences = useDictionaryStore.getState().occurrencesByEntryId['entry-ghost'];
+    expect(occurrences).toHaveLength(1);
+    expect(occurrences?.[0]?.id).toBe('occ-ghost');
+    expect(occurrences?.[0]?.deletedAt).toBeDefined();
+    expect(occurrences?.[0]?._replicaTimestamps?.['__deleted']).toBe(NEW_HLC);
   });
 
   // ---- applyRemoteDictionaryOccurrence ----
@@ -266,7 +330,7 @@ describe('dictionaryStore — replica applyRemoteDictionaryEntry', () => {
     useDictionaryStore.getState().applyRemoteDictionaryOccurrence(tombstone);
 
     // D4: Occurrence is soft-deleted (kept in array with deletedAt set)
-    const occs = useDictionaryStore.getState().occurrencesByEntryId['entry-1'];
+    const occs = useDictionaryStore.getState().occurrencesByEntryId['entry-1'] ?? [];
     expect(occs).toHaveLength(1);
     expect(occs[0]?.id).toBe('occ-to-del');
     expect(occs[0]?.deletedAt).toBeDefined();
@@ -534,7 +598,7 @@ describe('dictionaryStore — replica applyRemoteDictionaryEntry', () => {
     expect(mockBulkUpsertEntries).not.toHaveBeenCalled();
   });
 
-  it('applyRemoteDictionaryEntry does NOT persist tombstone for non-existent id', async () => {
+  it('applyRemoteDictionaryEntry persists tombstone for non-existent id', async () => {
     mockBulkUpsertEntries.mockClear();
 
     const tombstoneRow = makeEntryRow({
@@ -545,8 +609,11 @@ describe('dictionaryStore — replica applyRemoteDictionaryEntry', () => {
     });
     useDictionaryStore.getState().applyRemoteDictionaryEntry(tombstoneRow);
 
-    await new Promise((r) => setTimeout(r, 50));
-    expect(mockBulkUpsertEntries).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mockBulkUpsertEntries).toHaveBeenCalledTimes(1));
+    const persistedEntries = mockBulkUpsertEntries.mock.calls[0]![0];
+    expect(persistedEntries).toHaveLength(1);
+    expect(persistedEntries[0].id).toBe('entry-ghost-persist');
+    expect(persistedEntries[0].deletedAt).toBeDefined();
   });
 
   // ---------------------------------------------------------------------------
@@ -722,8 +789,10 @@ describe('dictionaryStore — replica applyRemoteDictionaryEntry', () => {
 
     const outbox = useDictionaryStore.getState().replicaOutbox;
     const stored = useDictionaryStore.getState().entry!;
-    expect(stored._replicaTimestamps?.definition).toBe(outbox[0]!.fields_jsonb['definition']!.t);
-    expect(stored._replicaTimestamps?.term).toBe(outbox[0]!.fields_jsonb['term']!.t);
+    expect(stored._replicaTimestamps?.['definition']).toBe(
+      outbox[0]!.fields_jsonb['definition']!.t,
+    );
+    expect(stored._replicaTimestamps?.['term']).toBe(outbox[0]!.fields_jsonb['term']!.t);
   });
 
   it('deleteSelectedEntries pushes tombstone ReplicaRows to the outbox', async () => {

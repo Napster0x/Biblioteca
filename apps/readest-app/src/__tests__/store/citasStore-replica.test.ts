@@ -29,6 +29,7 @@ vi.mock('@/services/environment', () => ({
 const DEVICE_ID = 'test-device-bbbb';
 const OLD_HLC = '0000000000001-00000001-test-device-bbbb' as Hlc;
 const NEW_HLC = '0000000000002-00000001-test-device-bbbb' as Hlc;
+const NEWER_HLC = '0000000000003-00000001-test-device-bbbb' as Hlc;
 
 function makeQuoteRow(params: {
   id: string;
@@ -166,7 +167,7 @@ describe('citasStore — replica applyRemoteQuote', () => {
     expect(typeof q.deletedAt).toBe('number');
   });
 
-  it('applyRemoteQuote with deleted_at_ts on a NON-EXISTENT id does not crash', () => {
+  it('applyRemoteQuote with deleted_at_ts on a NON-EXISTENT id retains a tombstone', () => {
     const tombstoneRow = makeQuoteRow({
       id: 'cite-never-existed',
       hlc: NEW_HLC,
@@ -176,7 +177,54 @@ describe('citasStore — replica applyRemoteQuote', () => {
 
     expect(() => useCitasStore.getState().applyRemoteQuote(tombstoneRow)).not.toThrow();
 
-    expect(useCitasStore.getState().quotes).toHaveLength(0);
+    const quotes = useCitasStore.getState().quotes;
+    expect(quotes).toHaveLength(1);
+    expect(quotes[0]?.id).toBe('cite-never-existed');
+    expect(quotes[0]?.deletedAt).toBeDefined();
+    expect(quotes[0]?._replicaTimestamps?.['__deleted']).toBe(NEW_HLC);
+  });
+
+  it('applyRemoteQuote keeps a newer tombstone when a stale live row arrives', () => {
+    useCitasStore
+      .getState()
+      .applyRemoteQuote(
+        makeQuoteRow({ id: 'cite-delete-wins', hlc: NEW_HLC, fields: {}, deleted: true }),
+      );
+
+    useCitasStore.getState().applyRemoteQuote(
+      makeQuoteRow({
+        id: 'cite-delete-wins',
+        hlc: OLD_HLC,
+        fields: { text: 'stale quote', contextBefore: 'stale context', bookHash: 'stale-hash' },
+      }),
+    );
+
+    const quote = useCitasStore.getState().quotes[0]!;
+    expect(quote.deletedAt).toBeDefined();
+    expect(quote.text).toBe('');
+    expect(quote.contextBefore).toBeNull();
+    expect(quote.bookHash).toBe('');
+  });
+
+  it('applyRemoteQuote ignores an older tombstone when newer live fields exist', () => {
+    useCitasStore.getState().applyRemoteQuote(
+      makeQuoteRow({
+        id: 'cite-live-wins',
+        hlc: NEWER_HLC,
+        fields: { text: 'newer quote', contextBefore: 'newer context', bookHash: 'hash-live' },
+      }),
+    );
+
+    useCitasStore
+      .getState()
+      .applyRemoteQuote(
+        makeQuoteRow({ id: 'cite-live-wins', hlc: NEW_HLC, fields: {}, deleted: true }),
+      );
+
+    const quote = useCitasStore.getState().quotes[0]!;
+    expect(quote.deletedAt).toBeUndefined();
+    expect(quote.text).toBe('newer quote');
+    expect(quote.contextBefore).toBe('newer context');
   });
 
   // ---- per-field HLC ----
@@ -335,7 +383,7 @@ describe('citasStore — replica applyRemoteQuote', () => {
     expect(mockBulkUpsertQuotes).not.toHaveBeenCalled();
   });
 
-  it('applyRemoteQuote does NOT persist tombstone for non-existent id', async () => {
+  it('applyRemoteQuote persists tombstone for non-existent id', async () => {
     mockBulkUpsertQuotes.mockClear();
 
     const tombstoneRow = makeQuoteRow({
@@ -346,8 +394,11 @@ describe('citasStore — replica applyRemoteQuote', () => {
     });
     useCitasStore.getState().applyRemoteQuote(tombstoneRow);
 
-    await new Promise((r) => setTimeout(r, 50));
-    expect(mockBulkUpsertQuotes).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mockBulkUpsertQuotes).toHaveBeenCalledTimes(1));
+    const persistedQuotes = mockBulkUpsertQuotes.mock.calls[0]![0];
+    expect(persistedQuotes).toHaveLength(1);
+    expect(persistedQuotes[0].id).toBe('cite-ghost-persist');
+    expect(persistedQuotes[0].deletedAt).toBeDefined();
   });
 
   // ---- replicaOutbox ----
@@ -442,8 +493,10 @@ describe('citasStore — replica applyRemoteQuote', () => {
 
     const outbox = useCitasStore.getState().replicaOutbox;
     const stored = useCitasStore.getState().quotes[0]!;
-    expect(stored._replicaTimestamps?.text).toBe(outbox[0]!.fields_jsonb['text']!.t);
-    expect(stored._replicaTimestamps?.contentHash).toBe(outbox[0]!.fields_jsonb['contentHash']!.t);
+    expect(stored._replicaTimestamps?.['text']).toBe(outbox[0]!.fields_jsonb['text']!.t);
+    expect(stored._replicaTimestamps?.['contentHash']).toBe(
+      outbox[0]!.fields_jsonb['contentHash']!.t,
+    );
   });
 
   it('deleteQuotes pushes a tombstone ReplicaRow to the outbox', async () => {
@@ -736,5 +789,121 @@ describe('citasStore — replica applyRemoteQuote', () => {
     const visible = useCitasStore.getState().getVisibleQuotes();
     expect(visible).toHaveLength(1);
     expect(visible[0]?.id).toBe('quote-active');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Post-PR5: tombstone coverage gaps
+  // ---------------------------------------------------------------------------
+
+  it('unknown tombstone for a never-seen quote id creates a tombstone entity with template defaults', () => {
+    const tombstone = makeQuoteRow({
+      id: 'never-seen',
+      hlc: NEW_HLC,
+      fields: {},
+      deleted: true,
+    });
+
+    useCitasStore.getState().applyRemoteQuote(tombstone);
+
+    const state = useCitasStore.getState();
+    expect(state.quotes).toHaveLength(1);
+    const q = state.quotes[0]!;
+    expect(q.id).toBe('never-seen');
+    expect(q.deletedAt).toBeDefined();
+    // Verify tombstone template defaults are empty/cleared
+    expect(q.text).toBe('');
+    expect(q.bookHash).toBe('');
+    expect(q.contextBefore).toBeNull();
+    expect(q.contextAfter).toBeNull();
+    expect(q._replicaTimestamps?.['__deleted']).toBe(NEW_HLC);
+  });
+
+  it('stale live quote loses to a newer tombstone and is marked deleted (fields preserved by tombstone spread)', () => {
+    // Apply live quote first
+    useCitasStore.getState().applyRemoteQuote(
+      makeQuoteRow({
+        id: 'stale-live',
+        hlc: OLD_HLC,
+        fields: {
+          text: 'old passage',
+          bookHash: 'hash-old',
+          contextBefore: 'old context',
+        },
+      }),
+    );
+
+    // Then apply a newer tombstone — production code does {...existing, deletedAt}
+    useCitasStore.getState().applyRemoteQuote(
+      makeQuoteRow({
+        id: 'stale-live',
+        hlc: NEW_HLC,
+        fields: {},
+        deleted: true,
+      }),
+    );
+
+    const q = useCitasStore.getState().quotes[0]!;
+    expect(q.deletedAt).toBeDefined();
+    // Tombstone spreads existing fields (does NOT clear them on an existing quote)
+    expect(q.text).toBe('old passage');
+    expect(q._replicaTimestamps?.['__deleted']).toBe(NEW_HLC);
+  });
+
+  it('newer live row resurrects a previously deleted quote', () => {
+    // First apply a tombstone
+    useCitasStore.getState().applyRemoteQuote(
+      makeQuoteRow({
+        id: 'resurrect-me',
+        hlc: OLD_HLC,
+        fields: {},
+        deleted: true,
+      }),
+    );
+
+    // Then apply a newer live row
+    useCitasStore.getState().applyRemoteQuote(
+      makeQuoteRow({
+        id: 'resurrect-me',
+        hlc: NEWER_HLC,
+        fields: {
+          text: 'resurrected text',
+          bookHash: 'hash-new',
+          contextBefore: 'new context',
+        },
+      }),
+    );
+
+    const q = useCitasStore.getState().quotes[0]!;
+    expect(q.deletedAt).toBeUndefined();
+    expect(q.text).toBe('resurrected text');
+    expect(q.bookHash).toBe('hash-new');
+    expect(q._replicaTimestamps?.['__deleted']).toBeUndefined();
+  });
+
+  it('re-applying the same unknown tombstone persists twice without duplication', async () => {
+    mockBulkUpsertQuotes.mockClear();
+
+    const tombstone = makeQuoteRow({
+      id: 'double-persist',
+      hlc: NEW_HLC,
+      fields: {},
+      deleted: true,
+    });
+
+    // First apply — creates tombstone + persists
+    useCitasStore.getState().applyRemoteQuote(tombstone);
+    await vi.waitFor(() => expect(mockBulkUpsertQuotes).toHaveBeenCalledTimes(1));
+
+    expect(useCitasStore.getState().quotes).toHaveLength(1);
+
+    mockBulkUpsertQuotes.mockClear();
+
+    // Second apply — same tombstone, no state duplication, still persists
+    useCitasStore.getState().applyRemoteQuote(tombstone);
+    await vi.waitFor(() => expect(mockBulkUpsertQuotes).toHaveBeenCalledTimes(1));
+
+    const state = useCitasStore.getState();
+    expect(state.quotes).toHaveLength(1); // No duplication
+    expect(state.quotes[0]!.deletedAt).toBeDefined();
   });
 });
