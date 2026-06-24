@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   PiBookBookmark,
@@ -136,7 +136,7 @@ export default function DictionaryGrid({ service, appService }: DictionaryGridPr
     loadEntries(service);
   }, [loadEntries, service]);
 
-  const filteredEntries = entries;
+  const filteredEntries = useMemo(() => entries.filter((e) => !e.deletedAt), [entries]);
   const gridClassName = getDictionaryGridClassName(tileSize);
 
   useEffect(() => {

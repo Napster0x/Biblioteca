@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { AnotacionesService } from '@/services/annotations/AnotacionesService';
-import type { Anotacion, AnnotacionInput } from '@/types/annotaciones';
+import type { Annotacion, AnnotacionInput } from '@/types/annotaciones';
 import type { ReplicaRow, Hlc, FieldEnvelope } from '@/types/replica';
 import { createReplicaRow, timestampsFromReplicaRow } from '@/libs/replica/factory';
 import { compareHLC } from '@/libs/replica/hlc';
@@ -52,6 +52,43 @@ function parseReplicaItemId(row: ReplicaRow): string | null {
   // Skip the kind part, join the rest in case the id itself contains colons
   if (parts.length < 2) return null;
   return parts.slice(1).join(':');
+}
+
+function maxFieldHlc(timestamps: Record<string, string | undefined>): Hlc | undefined {
+  let max: Hlc | undefined;
+  for (const [key, value] of Object.entries(timestamps)) {
+    if (key === '__deleted' || !value) continue;
+    if (!max || compareHLC(value as Hlc, max) > 0) max = value as Hlc;
+  }
+  return max;
+}
+
+function shouldApplyDelete(
+  timestamps: Record<string, string | undefined>,
+  deleteHlc: Hlc,
+): boolean {
+  const liveHlc = maxFieldHlc(timestamps);
+  return !liveHlc || compareHLC(deleteHlc, liveHlc) >= 0;
+}
+
+function makeDeletedAnnotation(id: string, deleteHlc: Hlc): Annotacion {
+  return {
+    id,
+    bookHash: '',
+    bookTitle: null,
+    bookAuthor: null,
+    cfi: null,
+    sectionHref: null,
+    page: null,
+    text: '',
+    note: '',
+    style: 'highlight',
+    color: 'yellow',
+    createdAt: Date.now(),
+    updatedAt: null,
+    deletedAt: Date.now(),
+    _replicaTimestamps: { __deleted: deleteHlc },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -240,8 +277,23 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
         nextHLC = row.updated_at_ts;
       }
 
-      useAnotacionesStore.getState().removeAnnotationsFromState(ids);
+      const tombstonesById = new Map(
+        tombstoneRows.map((row) => [parseReplicaItemId(row), row.deleted_at_ts]),
+      );
+      const deletedIds = new Set(ids);
       set((state) => ({
+        annotations: state.annotations.map((annotation) => {
+          if (!deletedIds.has(annotation.id)) return annotation;
+          const deletedHlc = tombstonesById.get(annotation.id);
+          return {
+            ...annotation,
+            deletedAt: Date.now(),
+            _replicaTimestamps: {
+              ...annotation._replicaTimestamps,
+              ...(deletedHlc ? { __deleted: deletedHlc } : {}),
+            },
+          };
+        }),
         isLoading: false,
         replicaOutbox: [...state.replicaOutbox, ...tombstoneRows],
       }));
@@ -255,7 +307,9 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
     if (ids.length === 0) return;
     const deletedIds = new Set(ids);
     set((state) => ({
-      annotations: state.annotations.filter((a) => !deletedIds.has(a.id)),
+      annotations: state.annotations.map((a) =>
+        deletedIds.has(a.id) ? { ...a, deletedAt: Date.now() } : a,
+      ),
       selectedAnnotationIds: state.selectedAnnotationIds.filter((id) => !deletedIds.has(id)),
     }));
   },
@@ -265,12 +319,24 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
     if (!itemId) return;
 
     // Deletion tombstone
-    if (row.deleted_at_ts) {
+    const deleteHlc = row.deleted_at_ts;
+    if (deleteHlc) {
       let deletedAnn: Annotacion | undefined;
       set((state) => {
         const existing = state.annotations.find((a) => a.id === itemId);
-        if (!existing) return state; // no local match → no-op
-        deletedAnn = { ...existing, deletedAt: Date.now() };
+        if (!existing) {
+          deletedAnn = makeDeletedAnnotation(itemId, deleteHlc);
+          return { annotations: [...state.annotations, deletedAnn] };
+        }
+        if (!shouldApplyDelete(existing._replicaTimestamps ?? {}, deleteHlc)) return state;
+        deletedAnn = {
+          ...existing,
+          deletedAt: Date.now(),
+          _replicaTimestamps: {
+            ...existing._replicaTimestamps,
+            __deleted: deleteHlc,
+          },
+        };
         return {
           annotations: state.annotations.map((a) => (a.id === itemId ? deletedAnn! : a)),
         };
@@ -322,17 +388,28 @@ export const useAnotacionesStore = create<AnotacionesStore>((set, get) => ({
       let changed = false;
       const merged = { ...local } as Record<string, unknown>;
       const mergedTimestamps = { ...local._replicaTimestamps };
+      const deleteHlc = mergedTimestamps['__deleted'] as Hlc | undefined;
+      let liveWinsDelete = false;
 
       for (const [key, env] of Object.entries(row.fields_jsonb)) {
         const fe = env as FieldEnvelope;
         const remoteHlc = fe.t as string;
         const localHlc = mergedTimestamps[key];
 
-        if (!localHlc || compareHLC(remoteHlc as Hlc, localHlc as Hlc) > 0) {
+        const newerThanLocal = !localHlc || compareHLC(remoteHlc as Hlc, localHlc as Hlc) > 0;
+        const newerThanDelete = !deleteHlc || compareHLC(remoteHlc as Hlc, deleteHlc) > 0;
+
+        if (newerThanLocal && newerThanDelete) {
           merged[key] = fe.v;
           mergedTimestamps[key] = remoteHlc;
           changed = true;
+          if (deleteHlc) liveWinsDelete = true;
         }
+      }
+
+      if (liveWinsDelete) {
+        delete merged['deletedAt'];
+        delete mergedTimestamps['__deleted'];
       }
 
       if (!changed) return state;

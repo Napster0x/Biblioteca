@@ -1,9 +1,44 @@
 import { FileSystem } from '@/types/system';
-import { Book } from '@/types/book';
+import type { Book } from '@/types/book';
 import { getLibraryFilename } from '@/utils/book';
 import { safeLoadJSON, safeSaveJSON } from './persistence';
 
 const COVER_CONCURRENCY = 20;
+
+function sanitizeImportedBook(book: Book): Book {
+  const { coverImageUrl: _coverImageUrl, filePath: _filePath, ...rest } = book;
+  return {
+    ...rest,
+    coverImageUrl: undefined,
+    filePath: undefined,
+    downloadedAt: book.downloadedAt ?? Date.now(),
+    uploadedAt: null,
+    deletedAt: null,
+  };
+}
+
+export function mergeImportedLibraryBooks(currentBooks: Book[], incomingBooks: Book[]): Book[] {
+  const merged = [...currentBooks];
+
+  for (const incomingBook of incomingBooks) {
+    const incoming = sanitizeImportedBook(incomingBook);
+    const existingIndex = merged.findIndex((book) => book.hash === incoming.hash);
+    if (existingIndex === -1) {
+      merged.push(incoming);
+      continue;
+    }
+
+    const existing = merged[existingIndex]!;
+    if ((existing.updatedAt ?? 0) > (incoming.updatedAt ?? 0)) continue;
+
+    merged[existingIndex] = {
+      ...incoming,
+      filePath: existing.filePath,
+    };
+  }
+
+  return merged;
+}
 
 async function processInBatches<T>(
   items: T[],

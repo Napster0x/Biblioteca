@@ -10,8 +10,6 @@ import { Book } from '@/types/book';
 import { AppService } from '@/types/system';
 import { buildBookLookupIndex } from '@/services/bookService';
 import { navigateToLibrary, navigateToReader } from '@/utils/nav';
-import { getCitasService } from '@/services/citas/citasServiceCache';
-import { useCitasStore } from '@/store/citasStore';
 import { formatAuthors, formatTitle, getPrimaryLanguage, listFormater } from '@/utils/book';
 import { getImportErrorMessage } from '@/services/errors';
 import { ingestFile } from '@/services/ingestService';
@@ -85,6 +83,7 @@ import useShortcuts from '@/hooks/useShortcuts';
 import { useCustomFonts } from '@/hooks/useCustomFonts';
 import DropIndicator from '@/components/DropIndicator';
 import SettingsDialog from '@/components/settings/SettingsDialog';
+import { createLibraryBookDeleteHandler } from './bookDelete';
 
 /**
  * Key used to persist the last directory the user imported books from.
@@ -727,38 +726,15 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
   };
 
   const handleBookDelete = () => {
-    return async (book: Book) => {
-      try {
-        await appService?.deleteBook(book);
-        book.deletedAt = Date.now();
-        book.downloadedAt = null;
-        book.coverDownloadedAt = null;
-        await updateBook(envConfig, book);
-        clearBookData(book.hash);
-        // Cascade delete: remove quotes associated with the deleted book
-        if (appService) {
-          try {
-            const cs = await getCitasService(appService);
-            const deletedIds = await cs.deleteQuotesByBook(book.hash);
-            useCitasStore.getState().removeQuotesFromState(deletedIds);
-          } catch (e) {
-            console.warn('Cascade delete of Citas quotes failed', e);
-          }
-        }
-        eventDispatcher.dispatch('toast', {
-          type: 'info',
-          timeout: 1000,
-          message: _('Book deleted: {{title}}', { title: book.title }),
-        });
-        return true;
-      } catch {
-        eventDispatcher.dispatch('toast', {
-          message: _('Failed to delete book: {{title}}', { title: book.title }),
-          type: 'error',
-        });
-        return false;
-      }
-    };
+    return createLibraryBookDeleteHandler({
+      appService,
+      envConfig,
+      updateBook,
+      clearBookData,
+      dispatchToast: (payload) => eventDispatcher.dispatch('toast', payload),
+      translate: _,
+      now: Date.now,
+    });
   };
 
   const handleUpdateMetadata = async (book: Book, metadata: BookMetadata) => {

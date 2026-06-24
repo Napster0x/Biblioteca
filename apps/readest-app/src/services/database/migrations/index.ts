@@ -83,6 +83,22 @@ const migrations: Record<SchemaType, MigrationEntry[]> = {
         ALTER TABLE dictionary_occurrences ADD COLUMN replica_timestamps TEXT DEFAULT NULL;
       `,
     },
+    {
+      name: '2026062001_dictionary_replicas_table',
+      sql: `
+        CREATE TABLE IF NOT EXISTS _replicas (
+          replica_id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL DEFAULT '',
+          user_id TEXT NOT NULL DEFAULT '',
+          fields_jsonb TEXT NOT NULL DEFAULT '{}',
+          manifest_jsonb TEXT,
+          deleted_at_ts TEXT,
+          reincarnation TEXT,
+          updated_at_ts TEXT NOT NULL DEFAULT '',
+          schema_version INTEGER NOT NULL DEFAULT 1
+        );
+      `,
+    },
   ],
   'hardcover-sync': [
     {
@@ -142,6 +158,22 @@ const migrations: Record<SchemaType, MigrationEntry[]> = {
         ALTER TABLE annotations ADD COLUMN replica_timestamps TEXT DEFAULT NULL;
       `,
     },
+    {
+      name: '2026062001_annotaciones_replicas_table',
+      sql: `
+        CREATE TABLE IF NOT EXISTS _replicas (
+          replica_id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL DEFAULT '',
+          user_id TEXT NOT NULL DEFAULT '',
+          fields_jsonb TEXT NOT NULL DEFAULT '{}',
+          manifest_jsonb TEXT,
+          deleted_at_ts TEXT,
+          reincarnation TEXT,
+          updated_at_ts TEXT NOT NULL DEFAULT '',
+          schema_version INTEGER NOT NULL DEFAULT 1
+        );
+      `,
+    },
   ],
   // Citas — saved quotes from the reader (Fase 1: shell + data model only;
   // capture from the reader and per-cite detail view are deferred to Fase 2/3).
@@ -191,6 +223,22 @@ const migrations: Record<SchemaType, MigrationEntry[]> = {
       name: '2026061301_citas_replica_timestamps',
       sql: `
         ALTER TABLE quotes ADD COLUMN replica_timestamps TEXT DEFAULT NULL;
+      `,
+    },
+    {
+      name: '2026062001_citas_replicas_table',
+      sql: `
+        CREATE TABLE IF NOT EXISTS _replicas (
+          replica_id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL DEFAULT '',
+          user_id TEXT NOT NULL DEFAULT '',
+          fields_jsonb TEXT NOT NULL DEFAULT '{}',
+          manifest_jsonb TEXT,
+          deleted_at_ts TEXT,
+          reincarnation TEXT,
+          updated_at_ts TEXT NOT NULL DEFAULT '',
+          schema_version INTEGER NOT NULL DEFAULT 1
+        );
       `,
     },
   ],

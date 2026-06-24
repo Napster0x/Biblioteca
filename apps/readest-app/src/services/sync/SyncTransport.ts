@@ -7,7 +7,27 @@
  * (dictionary image) sync.
  */
 import type { ReplicaRow, Hlc } from '@/types/replica';
+import type { Book } from '@/types/book';
 import type { SyncCategory } from '@/types/settings';
+
+export type UsbBookAssetName = 'book' | 'cover.png' | 'config.json' | 'nav.json';
+
+export interface UsbBookManifestAsset {
+  name: UsbBookAssetName;
+  required: boolean;
+  size?: number;
+  updatedAt?: number;
+}
+
+export interface UsbBookManifestEntry {
+  hash: string;
+  book: Book;
+  assets: UsbBookManifestAsset[];
+}
+
+export interface UsbBookManifest {
+  books: UsbBookManifestEntry[];
+}
 
 export interface SyncTransport {
   /** Discriminant identifying the transport mechanism. */
@@ -54,6 +74,34 @@ export interface SyncTransport {
    *          when the remote already matched.
    */
   pushDictionaryImage?(entryId: string, imageBytes: ArrayBuffer): Promise<{ uploaded: boolean }>;
+
+  pullBookManifest?(): Promise<UsbBookManifest>;
+
+  pushBookLibrary?(books: Book[]): Promise<void>;
+
+  pullBookAsset?(
+    hash: string,
+    asset: UsbBookAssetName,
+    options?: { optional?: boolean },
+  ): Promise<ArrayBuffer | null>;
+
+  pushBookAsset?(hash: string, asset: UsbBookAssetName, bytes: ArrayBuffer): Promise<void>;
+
+  /**
+   * Pull a book's config JSON from the remote transport.
+   *
+   * Returns the raw config JSON string, or `null` when the remote has no
+   * config for this book (book not found on peer).
+   */
+  pullBookConfig?(hash: string): Promise<string | null>;
+
+  /**
+   * Push a book's config JSON to the remote transport.
+   *
+   * @param hash       - Book hash.
+   * @param configJson - Full config JSON string (including `_replica` metadata).
+   */
+  pushBookConfig?(hash: string, configJson: string): Promise<void>;
 
   /**
    * Health check — verify the transport backend is reachable.

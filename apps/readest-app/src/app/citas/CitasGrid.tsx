@@ -38,9 +38,10 @@ export default function CitasGrid({ service, appService: appServiceProp }: Citas
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
 
   const filteredQuotes = useMemo(() => {
+    const visible = quotes.filter((q) => !q.deletedAt);
     const query = search.trim().toLowerCase();
-    if (!query) return quotes;
-    return quotes.filter(
+    if (!query) return visible;
+    return visible.filter(
       (quote) =>
         quote.text.toLowerCase().includes(query) ||
         (quote.bookTitle ?? '').toLowerCase().includes(query) ||

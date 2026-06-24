@@ -107,7 +107,12 @@ interface UsbStatusCopy {
   action?: string;
 }
 
-const ALL_KINDS: readonly SyncCategory[] = ['annotation', 'quote', 'dictionary-entry'];
+const ALL_KINDS: readonly SyncCategory[] = [
+  'annotation',
+  'quote',
+  'dictionary-entry',
+  'dictionary-occurrence',
+];
 const USB_HOST = 'localhost';
 
 function usbPeerId(port: number): string {
@@ -233,6 +238,16 @@ const LocalSyncPanel: React.FC<LocalSyncPanelProps> = ({ onBack }) => {
     saveSettings(envConfig, next).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ui.lastSyncSummary, ui.lastSyncedAt]);
+
+  // ── Auto-sync interval ──────────────────────────────────────────────
+  // DISABLED for debug: manual sync via DebugSyncTrigger /api/sync-trigger
+  // useEffect(() => {
+  //   if (!enabled || usbState !== 'ready' || !usbPeer) return;
+  //   const interval = setInterval(() => {
+  //     handleSyncNow();
+  //   }, 30_000);
+  //   return () => clearInterval(interval);
+  // }, [enabled, usbState, usbPeer]);
 
   const configureUsb = useCallback(async () => {
     const port = localSync.port;

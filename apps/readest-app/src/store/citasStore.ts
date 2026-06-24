@@ -49,6 +49,43 @@ function parseReplicaItemId(row: ReplicaRow): string | null {
   return parts.slice(1).join(':');
 }
 
+function maxFieldHlc(timestamps: Record<string, string | undefined>): Hlc | undefined {
+  let max: Hlc | undefined;
+  for (const [key, value] of Object.entries(timestamps)) {
+    if (key === '__deleted' || !value) continue;
+    if (!max || compareHLC(value as Hlc, max) > 0) max = value as Hlc;
+  }
+  return max;
+}
+
+function shouldApplyDelete(
+  timestamps: Record<string, string | undefined>,
+  deleteHlc: Hlc,
+): boolean {
+  const liveHlc = maxFieldHlc(timestamps);
+  return !liveHlc || compareHLC(deleteHlc, liveHlc) >= 0;
+}
+
+function makeDeletedQuote(id: string, deleteHlc: Hlc): Cite {
+  return {
+    id,
+    bookHash: '',
+    bookTitle: null,
+    bookAuthor: null,
+    cfi: null,
+    sectionHref: null,
+    page: null,
+    text: '',
+    contextBefore: null,
+    contextAfter: null,
+    contentHash: '',
+    createdAt: Date.now(),
+    updatedAt: null,
+    deletedAt: Date.now(),
+    _replicaTimestamps: { __deleted: deleteHlc },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Fire-and-forget persistence helper
 // ---------------------------------------------------------------------------
@@ -262,8 +299,24 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
         nextHLC = row.updated_at_ts;
       }
 
-      useCitasStore.getState().removeQuotesFromState(ids);
+      const tombstonesById = new Map(
+        tombstoneRows.map((row) => [parseReplicaItemId(row), row.deleted_at_ts]),
+      );
+      const deletedIds = new Set(ids);
       set((state) => ({
+        quotes: state.quotes.map((quote) => {
+          if (!deletedIds.has(quote.id)) return quote;
+          const deletedHlc = tombstonesById.get(quote.id);
+          return {
+            ...quote,
+            deletedAt: Date.now(),
+            _replicaTimestamps: {
+              ...quote._replicaTimestamps,
+              ...(deletedHlc ? { __deleted: deletedHlc } : {}),
+            },
+          };
+        }),
+        quote: state.quote && deletedIds.has(state.quote.id) ? null : state.quote,
         isLoading: false,
         replicaOutbox: [...state.replicaOutbox, ...tombstoneRows],
       }));
@@ -290,7 +343,9 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
     if (ids.length === 0) return;
     const deletedIds = new Set(ids);
     set((state) => ({
-      quotes: state.quotes.filter((quote) => !deletedIds.has(quote.id)),
+      quotes: state.quotes.map((quote) =>
+        deletedIds.has(quote.id) ? { ...quote, deletedAt: Date.now() } : quote,
+      ),
       quote: state.quote && deletedIds.has(state.quote.id) ? null : state.quote,
       selectedQuoteIds: state.selectedQuoteIds.filter((id) => !deletedIds.has(id)),
     }));
@@ -304,12 +359,24 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
     const itemId = parseReplicaItemId(row);
     if (!itemId) return;
 
-    if (row.deleted_at_ts) {
+    const deleteHlc = row.deleted_at_ts;
+    if (deleteHlc) {
       let deletedQuote: Cite | undefined;
       set((state) => {
         const existing = state.quotes.find((q) => q.id === itemId);
-        if (!existing) return state;
-        deletedQuote = { ...existing, deletedAt: Date.now() };
+        if (!existing) {
+          deletedQuote = makeDeletedQuote(itemId, deleteHlc);
+          return { quotes: [...state.quotes, deletedQuote] };
+        }
+        if (!shouldApplyDelete(existing._replicaTimestamps ?? {}, deleteHlc)) return state;
+        deletedQuote = {
+          ...existing,
+          deletedAt: Date.now(),
+          _replicaTimestamps: {
+            ...existing._replicaTimestamps,
+            __deleted: deleteHlc,
+          },
+        };
         return {
           quotes: state.quotes.map((q) => (q.id === itemId ? deletedQuote! : q)),
         };
@@ -356,17 +423,28 @@ export const useCitasStore = create<CitasStore>((set, get) => ({
       const merged = { ...local } as Record<string, unknown>;
       const mergedTimestamps = { ...local._replicaTimestamps };
       let changed = false;
+      const deleteHlc = mergedTimestamps['__deleted'] as Hlc | undefined;
+      let liveWinsDelete = false;
 
       for (const [key, env] of Object.entries(row.fields_jsonb)) {
         const fe = env as FieldEnvelope;
         const remoteHlc = fe.t as string;
         const localHlc = mergedTimestamps[key];
 
-        if (!localHlc || compareHLC(remoteHlc as Hlc, localHlc as Hlc) > 0) {
+        const newerThanLocal = !localHlc || compareHLC(remoteHlc as Hlc, localHlc as Hlc) > 0;
+        const newerThanDelete = !deleteHlc || compareHLC(remoteHlc as Hlc, deleteHlc) > 0;
+
+        if (newerThanLocal && newerThanDelete) {
           merged[key] = fe.v;
           mergedTimestamps[key] = remoteHlc;
           changed = true;
+          if (deleteHlc) liveWinsDelete = true;
         }
+      }
+
+      if (liveWinsDelete) {
+        delete merged['deletedAt'];
+        delete mergedTimestamps['__deleted'];
       }
 
       if (!changed) return state;

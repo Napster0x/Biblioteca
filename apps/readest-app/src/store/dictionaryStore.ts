@@ -49,6 +49,65 @@ function parseReplicaItemId(row: ReplicaRow): string | null {
   return parts.slice(1).join(':');
 }
 
+function maxFieldHlc(timestamps: Record<string, string | undefined>): Hlc | undefined {
+  let max: Hlc | undefined;
+  for (const [key, value] of Object.entries(timestamps)) {
+    if (key === '__deleted' || !value) continue;
+    if (!max || compareHLC(value as Hlc, max) > 0) max = value as Hlc;
+  }
+  return max;
+}
+
+function shouldApplyDelete(
+  timestamps: Record<string, string | undefined>,
+  deleteHlc: Hlc,
+): boolean {
+  const liveHlc = maxFieldHlc(timestamps);
+  return !liveHlc || compareHLC(deleteHlc, liveHlc) >= 0;
+}
+
+function makeDeletedEntry(id: string, deleteHlc: Hlc): DictionaryEntry {
+  return {
+    id,
+    term: '',
+    displayTerm: '',
+    language: undefined,
+    definition: undefined,
+    imagePath: undefined,
+    curiosity: undefined,
+    enrichmentStatus: 'none',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    deletedAt: Date.now(),
+    _replicaTimestamps: { __deleted: deleteHlc },
+  };
+}
+
+function makeDeletedOccurrence(params: {
+  id: string;
+  entryId: string;
+  deleteHlc: Hlc;
+  remoteVals: Record<string, unknown>;
+}): DictionaryOccurrence {
+  return {
+    id: params.id,
+    entryId: params.entryId,
+    bookHash: (params.remoteVals['bookHash'] as string) || '',
+    bookTitle: params.remoteVals['bookTitle'] as string | undefined,
+    bookAuthor: params.remoteVals['bookAuthor'] as string | undefined,
+    cfi: (params.remoteVals['cfi'] as string) || '',
+    sectionHref: params.remoteVals['sectionHref'] as string | undefined,
+    page: params.remoteVals['page'] as number | undefined,
+    selectedText: (params.remoteVals['selectedText'] as string) || '',
+    contextBefore: params.remoteVals['contextBefore'] as string | undefined,
+    contextAfter: params.remoteVals['contextAfter'] as string | undefined,
+    highlightNoteId: (params.remoteVals['highlightNoteId'] as string) || undefined,
+    createdAt: Date.now(),
+    deletedAt: Date.now(),
+    _replicaTimestamps: { __deleted: params.deleteHlc, entryId: params.deleteHlc },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Fire-and-forget persistence helpers
 // ---------------------------------------------------------------------------
@@ -184,8 +243,18 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
   async loadEntries(service) {
     set({ isLoading: true });
     try {
-      const entries = await service.listEntries();
-      set({ entries, isLoading: false });
+      const [entries, allOccurrences] = await Promise.all([
+        service.listEntries(),
+        service.listAllOccurrences(),
+      ]);
+      // Group occurrences by entryId so getAllReplicas can seed them
+      const occurrencesByEntryId: Record<string, DictionaryOccurrence[]> = {};
+      for (const occ of allOccurrences) {
+        const key = occ.entryId ?? '__unknown__';
+        if (!occurrencesByEntryId[key]) occurrencesByEntryId[key] = [];
+        occurrencesByEntryId[key]!.push(occ);
+      }
+      set({ entries, occurrencesByEntryId, isLoading: false });
     } catch (err) {
       console.error('[dictionaryStore] loadEntries failed:', err);
       set({ isLoading: false });
@@ -338,11 +407,24 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
         nextHLC = row.updated_at_ts;
       }
 
+      const tombstonesById = new Map(
+        tombstoneRows.map((row) => [parseReplicaItemId(row), row.deleted_at_ts]),
+      );
       const deletedIds = new Set(ids);
       set((state) => ({
-        entries: state.entries.filter((entry) => !deletedIds.has(entry.id)),
+        entries: state.entries.map((entry) => {
+          if (!deletedIds.has(entry.id)) return entry;
+          const deletedHlc = tombstonesById.get(entry.id);
+          return {
+            ...entry,
+            deletedAt: Date.now(),
+            _replicaTimestamps: {
+              ...entry._replicaTimestamps,
+              ...(deletedHlc ? { __deleted: deletedHlc } : {}),
+            },
+          };
+        }),
         entry: state.entry && deletedIds.has(state.entry.id) ? null : state.entry,
-        occurrencesByEntryId: pruneOccurrencesByEntryId(state.occurrencesByEntryId, deletedIds),
         selectedEntryIds: [],
         isSelectMode: false,
         isLoading: false,
@@ -358,12 +440,24 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
     const itemId = parseReplicaItemId(row);
     if (!itemId) return;
 
-    if (row.deleted_at_ts) {
+    const deleteHlc = row.deleted_at_ts;
+    if (deleteHlc) {
       let deletedEntry: DictionaryEntry | undefined;
       set((state) => {
         const existing = state.entries.find((e) => e.id === itemId);
-        if (!existing) return state;
-        deletedEntry = { ...existing, deletedAt: Date.now() };
+        if (!existing) {
+          deletedEntry = makeDeletedEntry(itemId, deleteHlc);
+          return { entries: [...state.entries, deletedEntry] };
+        }
+        if (!shouldApplyDelete(existing._replicaTimestamps ?? {}, deleteHlc)) return state;
+        deletedEntry = {
+          ...existing,
+          deletedAt: Date.now(),
+          _replicaTimestamps: {
+            ...existing._replicaTimestamps,
+            __deleted: deleteHlc,
+          },
+        };
         return {
           entries: state.entries.map((e) => (e.id === itemId ? deletedEntry! : e)),
         };
@@ -411,17 +505,28 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
       const merged = { ...local } as Record<string, unknown>;
       const mergedTimestamps = { ...local._replicaTimestamps };
       let changed = false;
+      const deleteHlc = mergedTimestamps['__deleted'] as Hlc | undefined;
+      let liveWinsDelete = false;
 
       for (const [key, env] of Object.entries(row.fields_jsonb)) {
         const fe = env as FieldEnvelope;
         const remoteHlc = fe.t as string;
         const localHlc = mergedTimestamps[key];
 
-        if (!localHlc || compareHLC(remoteHlc as Hlc, localHlc as Hlc) > 0) {
+        const newerThanLocal = !localHlc || compareHLC(remoteHlc as Hlc, localHlc as Hlc) > 0;
+        const newerThanDelete = !deleteHlc || compareHLC(remoteHlc as Hlc, deleteHlc) > 0;
+
+        if (newerThanLocal && newerThanDelete) {
           merged[key] = fe.v;
           mergedTimestamps[key] = remoteHlc;
           changed = true;
+          if (deleteHlc) liveWinsDelete = true;
         }
+      }
+
+      if (liveWinsDelete) {
+        delete merged['deletedAt'];
+        delete mergedTimestamps['__deleted'];
       }
 
       if (!changed) return state;
@@ -449,14 +554,41 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
     const entryId = entryIdEnv ? (entryIdEnv.v as string) : undefined;
     if (!entryId) return;
 
-    if (row.deleted_at_ts) {
+    const deleteHlc = row.deleted_at_ts;
+    if (deleteHlc) {
       let deletedOcc: DictionaryOccurrence | undefined;
+      const remoteVals: Record<string, unknown> = {};
+      for (const [key, env] of Object.entries(row.fields_jsonb)) {
+        remoteVals[key] = (env as FieldEnvelope).v;
+      }
       // Soft-delete: set deletedAt instead of removing from array
       set((state) => {
         const current = state.occurrencesByEntryId[entryId] ?? [];
         const existingIdx = current.findIndex((o) => o.id === itemId);
-        if (existingIdx < 0) return state;
-        deletedOcc = { ...current[existingIdx]!, deletedAt: Date.now() };
+        if (existingIdx < 0) {
+          deletedOcc = makeDeletedOccurrence({
+            id: itemId,
+            entryId,
+            deleteHlc,
+            remoteVals,
+          });
+          return {
+            occurrencesByEntryId: {
+              ...state.occurrencesByEntryId,
+              [entryId]: [...current, deletedOcc],
+            },
+          };
+        }
+        const existing = current[existingIdx]!;
+        if (!shouldApplyDelete(existing._replicaTimestamps ?? {}, deleteHlc)) return state;
+        deletedOcc = {
+          ...existing,
+          deletedAt: Date.now(),
+          _replicaTimestamps: {
+            ...existing._replicaTimestamps,
+            __deleted: deleteHlc,
+          },
+        };
         return {
           occurrencesByEntryId: {
             ...state.occurrencesByEntryId,
@@ -512,17 +644,28 @@ export const useDictionaryStore = create<DictionaryStoreState>((set, get) => ({
       const merged = { ...local } as Record<string, unknown>;
       const mergedTimestamps = { ...local._replicaTimestamps };
       let changed = false;
+      const deleteHlc = mergedTimestamps['__deleted'] as Hlc | undefined;
+      let liveWinsDelete = false;
 
       for (const [key, env] of Object.entries(row.fields_jsonb)) {
         const fe = env as FieldEnvelope;
         const remoteHlc = fe.t as string;
         const localHlc = mergedTimestamps[key];
 
-        if (!localHlc || compareHLC(remoteHlc as Hlc, localHlc as Hlc) > 0) {
+        const newerThanLocal = !localHlc || compareHLC(remoteHlc as Hlc, localHlc as Hlc) > 0;
+        const newerThanDelete = !deleteHlc || compareHLC(remoteHlc as Hlc, deleteHlc) > 0;
+
+        if (newerThanLocal && newerThanDelete) {
           merged[key] = fe.v;
           mergedTimestamps[key] = remoteHlc;
           changed = true;
+          if (deleteHlc) liveWinsDelete = true;
         }
+      }
+
+      if (liveWinsDelete) {
+        delete merged['deletedAt'];
+        delete mergedTimestamps['__deleted'];
       }
 
       if (!changed) return state;
@@ -628,17 +771,4 @@ function upsertEntryInList(entries: DictionaryEntry[], entry: DictionaryEntry): 
   if (index === -1) return [entry, ...entries];
 
   return entries.map((candidate) => (candidate.id === entry.id ? entry : candidate));
-}
-
-function pruneOccurrencesByEntryId(
-  occurrencesByEntryId: Record<string, DictionaryOccurrence[]>,
-  deletedIds: ReadonlySet<string>,
-): Record<string, DictionaryOccurrence[]> {
-  return Object.entries(occurrencesByEntryId).reduce<Record<string, DictionaryOccurrence[]>>(
-    (result, [entryId, occurrences]) => {
-      if (!deletedIds.has(entryId)) result[entryId] = occurrences;
-      return result;
-    },
-    {},
-  );
 }

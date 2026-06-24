@@ -34,9 +34,10 @@ export default function AnotacionesGrid({ service }: AnotacionesGridProps) {
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
 
   const filteredAnnotations = useMemo(() => {
+    const visible = annotations.filter((a) => !a.deletedAt);
     const query = search.trim().toLowerCase();
-    if (!query) return annotations;
-    return annotations.filter(
+    if (!query) return visible;
+    return visible.filter(
       (a) =>
         a.text.toLowerCase().includes(query) ||
         (a.bookAuthor ?? '').toLowerCase().includes(query) ||

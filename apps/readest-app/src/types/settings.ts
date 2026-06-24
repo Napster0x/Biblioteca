@@ -267,7 +267,8 @@ export type SyncCategory =
   | 'credentials'
   | 'annotation'
   | 'quote'
-  | 'dictionary-entry';
+  | 'dictionary-entry'
+  | 'dictionary-occurrence';
 
 export const SYNC_CATEGORIES: readonly SyncCategory[] = [
   'book',
@@ -281,6 +282,7 @@ export const SYNC_CATEGORIES: readonly SyncCategory[] = [
   'annotation',
   'quote',
   'dictionary-entry',
+  'dictionary-occurrence',
 ] as const;
 
 export interface KeyBinding {

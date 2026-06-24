@@ -34,7 +34,12 @@ import type { SyncCategory } from '@/types/settings';
 const POLL_INTERVAL_MS = 30_000;
 
 /** Kinds of replicas this hook manages. */
-const REPLICA_KINDS: readonly SyncCategory[] = ['annotation', 'quote', 'dictionary-entry'];
+const REPLICA_KINDS: readonly SyncCategory[] = [
+  'annotation',
+  'quote',
+  'dictionary-entry',
+  'dictionary-occurrence',
+];
 
 // ---------------------------------------------------------------------------
 // Hook
@@ -128,6 +133,9 @@ export function useReplicaSync(opts?: UseReplicaSyncOptions): UseReplicaSyncResu
               dictStore.applyRemoteDictionaryOccurrence(row);
               break;
             }
+            case 'dictionary-occurrence':
+              useDictionaryStore.getState().applyRemoteDictionaryOccurrence(row);
+              break;
           }
         }
 
@@ -172,6 +180,10 @@ export function useReplicaSync(opts?: UseReplicaSyncOptions): UseReplicaSyncResu
           useCitasStore.setState({ replicaOutbox: [] });
           break;
         case 'dictionary-entry':
+          outbox = [...useDictionaryStore.getState().replicaOutbox];
+          useDictionaryStore.setState({ replicaOutbox: [] });
+          break;
+        case 'dictionary-occurrence':
           outbox = [...useDictionaryStore.getState().replicaOutbox];
           useDictionaryStore.setState({ replicaOutbox: [] });
           break;
@@ -221,6 +233,11 @@ export function useReplicaSync(opts?: UseReplicaSyncOptions): UseReplicaSyncResu
               });
               break;
             case 'dictionary-entry':
+              useDictionaryStore.setState({
+                replicaOutbox: [...useDictionaryStore.getState().replicaOutbox, ...outbox],
+              });
+              break;
+            case 'dictionary-occurrence':
               useDictionaryStore.setState({
                 replicaOutbox: [...useDictionaryStore.getState().replicaOutbox, ...outbox],
               });

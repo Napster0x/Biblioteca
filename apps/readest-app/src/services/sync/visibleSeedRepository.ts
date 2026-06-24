@@ -2,12 +2,23 @@ import { createReplicaRow } from '@/libs/replica/factory';
 import { AnotacionesService } from '@/services/annotations/AnotacionesService';
 import { CitasService } from '@/services/citas/CitasService';
 import { DictionaryService } from '@/services/dictionary/DictionaryService';
+import { useAnotacionesStore } from '@/store/annotacionesStore';
+import { useCitasStore } from '@/store/citasStore';
+import { useDictionaryStore } from '@/store/dictionaryStore';
 import environmentConfig from '@/services/environment';
 import type { Annotacion } from '@/types/annotaciones';
 import type { Cite } from '@/types/citas';
 import type { DictionaryEntry, DictionaryOccurrence } from '@/types/dictionary';
 import type { ReplicaRow, Hlc } from '@/types/replica';
 import type { SyncCategory } from '@/types/settings';
+
+const DELETED_TIMESTAMP_KEY = '__deleted';
+
+type ReplicaTimestampedItem = {
+  id: string;
+  deletedAt?: number;
+  _replicaTimestamps?: Record<string, string>;
+};
 
 type VisibleAnnotationsService = Pick<AnotacionesService, 'listAllAnnotations'>;
 type VisibleCitasService = Pick<CitasService, 'listAllQuotes'>;
@@ -90,62 +101,83 @@ export function createVisibleSeedRepository(
           return quotesToReplicaRows(quotes, deviceId);
         }
         case 'dictionary-entry': {
-          const [entries, occurrences] = await Promise.all([
-            dependencies.dictionaryService.listAllEntries(),
-            dependencies.dictionaryService.listAllOccurrences(),
-          ]);
-          return dictionaryToReplicaRows(entries, occurrences, deviceId);
+          const entries = await dependencies.dictionaryService.listAllEntries();
+          return dictionaryToReplicaRows(entries, [], deviceId);
         }
+        case 'dictionary-occurrence': {
+          const occurrences = await dependencies.dictionaryService.listAllOccurrences();
+          return dictionaryToReplicaRows([], occurrences, deviceId);
+        }
+        default:
+          return [];
       }
     },
   };
 }
 
 export const defaultVisibleSeedProvider: VisibleSeedProvider = async (kind, deviceId) => {
-  const appService = await environmentConfig.getAppService();
-
+  // Prefer direct DB reads so the seed works even when Zustand stores
+  // haven't been loaded yet (e.g. after a cold app start). Fall back to
+  // stores when the app is running in a web context without DB access.
   switch (kind) {
     case 'annotation': {
-      const service = await AnotacionesService.open(appService);
       try {
-        return annotationsToReplicaRows(await service.listAllAnnotations(), deviceId);
-      } finally {
-        await service.close();
+        const appService = await environmentConfig.getAppService();
+        const annService = await AnotacionesService.open(appService);
+        const annotations = await annService.listAllAnnotations();
+        return annotationsToReplicaRows(annotations, deviceId);
+      } catch {
+        return useAnotacionesStore.getState().getAllReplicas(deviceId);
       }
     }
     case 'quote': {
-      const service = await CitasService.open(appService);
       try {
-        return quotesToReplicaRows(await service.listAllQuotes(), deviceId);
-      } finally {
-        await service.close();
+        const appService = await environmentConfig.getAppService();
+        const citasService = await CitasService.open(appService);
+        const quotes = await citasService.listAllQuotes();
+        return quotesToReplicaRows(quotes, deviceId);
+      } catch {
+        return useCitasStore.getState().getAllReplicas(deviceId);
       }
     }
     case 'dictionary-entry': {
-      const service = await DictionaryService.open(appService);
       try {
-        const [entries, occurrences] = await Promise.all([
-          service.listAllEntries(),
-          service.listAllOccurrences(),
-        ]);
-        return dictionaryToReplicaRows(entries, occurrences, deviceId);
-      } finally {
-        await service.close();
+        const appService = await environmentConfig.getAppService();
+        const dictService = await DictionaryService.open(appService);
+        const entries = await dictService.listAllEntries();
+        return dictionaryToReplicaRows(entries, [], deviceId);
+      } catch {
+        return useDictionaryStore
+          .getState()
+          .getAllReplicas(deviceId)
+          .filter((row) => row.kind === 'dictionary-entry');
       }
     }
+    case 'dictionary-occurrence': {
+      try {
+        const appService = await environmentConfig.getAppService();
+        const dictService = await DictionaryService.open(appService);
+        const occurrences = await dictService.listAllOccurrences();
+        return dictionaryToReplicaRows([], occurrences, deviceId);
+      } catch {
+        return useDictionaryStore
+          .getState()
+          .getAllReplicas(deviceId)
+          .filter((row) => row.kind === 'dictionary-occurrence');
+      }
+    }
+    default:
+      return [];
   }
 };
 
 function annotationsToReplicaRows(annotations: Annotacion[], deviceId: string): ReplicaRow[] {
   let lastHLC: Hlc | undefined;
   return annotations.map((annotation) => {
-    const row = createReplicaRow({
+    const row = durableItemToReplicaRow({
       kind: 'annotation',
-      item: {
-        id: annotation.id,
-        fields: pickReplicaFields(annotation, ANNOTATION_REPLICA_FIELDS),
-        deletedAt: annotation.deletedAt ? new Date(annotation.deletedAt) : undefined,
-      },
+      item: annotation,
+      fields: pickReplicaFields(annotation, ANNOTATION_REPLICA_FIELDS),
       deviceId,
       lastHLC,
     });
@@ -157,13 +189,10 @@ function annotationsToReplicaRows(annotations: Annotacion[], deviceId: string): 
 function quotesToReplicaRows(quotes: Cite[], deviceId: string): ReplicaRow[] {
   let lastHLC: Hlc | undefined;
   return quotes.map((quote) => {
-    const row = createReplicaRow({
+    const row = durableItemToReplicaRow({
       kind: 'quote',
-      item: {
-        id: quote.id,
-        fields: pickReplicaFields(quote, QUOTE_REPLICA_FIELDS),
-        deletedAt: quote.deletedAt ? new Date(quote.deletedAt) : undefined,
-      },
+      item: quote,
+      fields: pickReplicaFields(quote, QUOTE_REPLICA_FIELDS),
       deviceId,
       lastHLC,
     });
@@ -181,13 +210,10 @@ function dictionaryToReplicaRows(
   let lastHLC: Hlc | undefined;
 
   for (const entry of entries) {
-    const row = createReplicaRow({
+    const row = durableItemToReplicaRow({
       kind: 'dictionary-entry',
-      item: {
-        id: entry.id,
-        fields: pickReplicaFields(entry, ENTRY_REPLICA_FIELDS),
-        deletedAt: entry.deletedAt ? new Date(entry.deletedAt) : undefined,
-      },
+      item: entry,
+      fields: pickReplicaFields(entry, ENTRY_REPLICA_FIELDS),
       deviceId,
       lastHLC,
     });
@@ -196,13 +222,10 @@ function dictionaryToReplicaRows(
   }
 
   for (const occurrence of occurrences) {
-    const row = createReplicaRow({
-      kind: 'dictionary-entry',
-      item: {
-        id: occurrence.id,
-        fields: pickReplicaFields(occurrence, OCCURRENCE_REPLICA_FIELDS),
-        deletedAt: occurrence.deletedAt ? new Date(occurrence.deletedAt) : undefined,
-      },
+    const row = durableItemToReplicaRow({
+      kind: 'dictionary-occurrence',
+      item: occurrence,
+      fields: pickReplicaFields(occurrence, OCCURRENCE_REPLICA_FIELDS),
       deviceId,
       lastHLC,
     });
@@ -211,6 +234,53 @@ function dictionaryToReplicaRows(
   }
 
   return rows;
+}
+
+function durableItemToReplicaRow(input: {
+  kind: SyncCategory;
+  item: ReplicaTimestampedItem;
+  fields: Record<string, unknown>;
+  deviceId: string;
+  lastHLC?: Hlc;
+}): ReplicaRow {
+  const row = createReplicaRow({
+    kind: input.kind,
+    item: {
+      id: input.item.id,
+      fields: input.fields,
+      deletedAt: input.item.deletedAt ? new Date(input.item.deletedAt) : undefined,
+    },
+    deviceId: input.deviceId,
+    lastHLC: input.lastHLC,
+  });
+
+  const timestamps = input.item._replicaTimestamps;
+  if (!timestamps) return row;
+
+  for (const [key, timestamp] of Object.entries(timestamps)) {
+    if (key === DELETED_TIMESTAMP_KEY) continue;
+    const field = row.fields_jsonb[key];
+    if (!field) continue;
+    row.fields_jsonb[key] = { ...field, t: timestamp as Hlc };
+  }
+
+  const deleteTimestamp = timestamps[DELETED_TIMESTAMP_KEY] as Hlc | undefined;
+  if (deleteTimestamp && row.deleted_at_ts) {
+    row.deleted_at_ts = deleteTimestamp;
+  }
+
+  const durableMax = maxHlc(Object.values(timestamps).map((timestamp) => timestamp as Hlc));
+  if (durableMax) row.updated_at_ts = durableMax;
+
+  return row;
+}
+
+function maxHlc(values: readonly (Hlc | undefined)[]): Hlc | undefined {
+  let max: Hlc | undefined;
+  for (const value of values) {
+    if (value && (!max || value > max)) max = value;
+  }
+  return max;
 }
 
 function pickReplicaFields<T extends object>(

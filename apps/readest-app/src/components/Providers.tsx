@@ -22,6 +22,14 @@ import AtmosphereOverlay from '@/components/AtmosphereOverlay';
 import AppLockScreen from '@/components/AppLockScreen';
 import AppLockDialog from '@/components/settings/AppLockDialog';
 import { useAppLockStore } from '@/store/appLockStore';
+import { useReplicaSync } from '@/hooks/useReplicaSync';
+import { DebugSyncTrigger, type DebugSyncTriggerEnv } from '@/components/DebugSyncTrigger';
+
+/** Wraps useReplicaSync so WebDAV sync polls on every page, not only in settings. */
+function ReplicaSyncProvider({ children }: { children: React.ReactNode }) {
+  useReplicaSync();
+  return <>{children}</>;
+}
 
 const Providers = ({ children }: { children: React.ReactNode }) => {
   const { envConfig, appService } = useEnv();
@@ -108,19 +116,28 @@ const Providers = ({ children }: { children: React.ReactNode }) => {
   // lock store decide whether to lock.
   const showAppLockScreen = isLockInitialized && !isUnlocked;
   const appShellHidden = !isLockInitialized || !isUnlocked;
+  const debugSyncEnv: DebugSyncTriggerEnv = {
+    nodeEnv: process.env.NODE_ENV,
+    devHarness: process.env.NEXT_PUBLIC_BIBLIOTECA_DEV_SYNC_HARNESS,
+  };
+  const shouldMountDebugSyncTrigger =
+    debugSyncEnv.nodeEnv === 'development' || debugSyncEnv.devHarness === '1';
 
   return (
     <IconContext.Provider value={{ size: `${iconSize}px` }}>
       <DropdownProvider>
         <CommandPaletteProvider>
-          <div
-            aria-hidden={appShellHidden}
-            style={appShellHidden ? { display: 'none' } : undefined}
-          >
-            {children}
-            <CommandPalette />
-            <AtmosphereOverlay />
-          </div>
+          <ReplicaSyncProvider>
+            {shouldMountDebugSyncTrigger && <DebugSyncTrigger env={debugSyncEnv} />}
+            <div
+              aria-hidden={appShellHidden}
+              style={appShellHidden ? { display: 'none' } : undefined}
+            >
+              {children}
+              <CommandPalette />
+              <AtmosphereOverlay />
+            </div>
+          </ReplicaSyncProvider>
           <AppLockDialog />
           {showAppLockScreen && <AppLockScreen />}
         </CommandPaletteProvider>
@@ -130,3 +147,9 @@ const Providers = ({ children }: { children: React.ReactNode }) => {
 };
 
 export default Providers;
+// 1781719693
+// force-reload 1781723436.274979210
+// hmr-poke 1781723768
+// poke 1781781516.131813
+
+// poke 1781781980.729009
