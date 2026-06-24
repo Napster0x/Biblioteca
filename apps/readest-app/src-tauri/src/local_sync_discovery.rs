@@ -78,7 +78,10 @@ impl MdnsDiscovery {
         // ── Build and register our service ────────────────────────────
         let instance_name = sanitize_instance_name(&device_name);
         let host_name = build_mdns_hostname(&hostname);
-        let txt_props = [("device_name", device_name.as_str()), ("version", version.as_str())];
+        let txt_props = [
+            ("device_name", device_name.as_str()),
+            ("version", version.as_str()),
+        ];
 
         let service_info = ServiceInfo::new(
             SERVICE_TYPE,

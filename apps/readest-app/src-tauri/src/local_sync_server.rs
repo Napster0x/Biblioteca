@@ -9,6 +9,7 @@
  *   GET  /health                        → { status: "ok", deviceName }
  *   GET  /replicas/:kind                 → ReplicaRow[] filtered by kind + ?since=HLC
  *   PUT  /replicas/:kind                 → merges incoming rows by replica_id (HLC wins)
+ *   POST /__dev/reset                    → guarded dev harness runtime state clear
  *   GET  /dictionary-images/:entryId     → binary PNG (404 if absent)
  *   PUT  /dictionary-images/:entryId     → write raw PNG body to disk
  *
@@ -38,6 +39,9 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use crate::visible_repo::VisibleRepository;
 
 const LOCAL_SYNC_BIND_HOST: &str = "127.0.0.1";
+const DEV_RESET_PATH: &str = "/__dev/reset";
+const DEV_RESET_HEADER: &str = "X-Biblioteca-Dev-Sync-Harness";
+const DEV_RESET_TOKEN: &str = "DELETE_DEV_SYNC_STATE";
 
 fn build_server_bind_addr(port: u16) -> String {
     format!("{LOCAL_SYNC_BIND_HOST}:{port}")
@@ -69,6 +73,12 @@ struct HealthResponse {
     status: String,
     #[serde(rename = "deviceName")]
     device_name: String,
+    #[serde(rename = "serverVersion")]
+    server_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commit: Option<String>,
+    #[serde(rename = "startedAt")]
+    started_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,7 +246,61 @@ enum Route {
     Health,
     Replicas(String),
     DictionaryImages(String),
+    BooksIndex,
+    BooksManifest,
+    BookAsset { hash: String, asset: BookAsset },
+    DevReset,
     NotFound,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BookAsset {
+    File,
+    Cover,
+    Config,
+    Nav,
+}
+
+impl BookAsset {
+    fn from_route(segment: &str) -> Option<Self> {
+        match segment {
+            "file" | "book" => Some(Self::File),
+            "cover" | "cover.png" => Some(Self::Cover),
+            "config" | "config.json" => Some(Self::Config),
+            "nav" | "nav.json" => Some(Self::Nav),
+            _ => None,
+        }
+    }
+
+    fn manifest_name(self) -> &'static str {
+        match self {
+            Self::File => "book",
+            Self::Cover => "cover.png",
+            Self::Config => "config.json",
+            Self::Nav => "nav.json",
+        }
+    }
+
+    fn fixed_filename(self) -> Option<&'static str> {
+        match self {
+            Self::File => None,
+            Self::Cover => Some("cover.png"),
+            Self::Config => Some("config.json"),
+            Self::Nav => Some("nav.json"),
+        }
+    }
+
+    fn content_type(self) -> &'static str {
+        match self {
+            Self::File => "application/octet-stream",
+            Self::Cover => "image/png",
+            Self::Config | Self::Nav => "application/json",
+        }
+    }
+
+    fn required(self) -> bool {
+        matches!(self, Self::File)
+    }
 }
 
 fn parse_route(url: &str) -> Route {
@@ -244,6 +308,10 @@ fn parse_route(url: &str) -> Route {
 
     if path == "/health" {
         return Route::Health;
+    }
+
+    if path == DEV_RESET_PATH {
+        return Route::DevReset;
     }
 
     if let Some(rest) = path.strip_prefix("/replicas/") {
@@ -265,7 +333,47 @@ fn parse_route(url: &str) -> Route {
         }
     }
 
+    if path == "/books/index" || path == "/books/library" {
+        return Route::BooksIndex;
+    }
+
+    if path == "/books/manifest" {
+        return Route::BooksManifest;
+    }
+
+    if let Some(rest) = path.strip_prefix("/books/assets/") {
+        let parts: Vec<&str> = rest.trim_end_matches('/').split('/').collect();
+        if parts.len() == 2 && is_safe_book_hash(parts[0]) {
+            if let Some(asset) = BookAsset::from_route(parts[1]) {
+                return Route::BookAsset {
+                    hash: parts[0].to_string(),
+                    asset,
+                };
+            }
+        }
+    }
+
+    if let Some(rest) = path.strip_prefix("/books/") {
+        let parts: Vec<&str> = rest.trim_end_matches('/').split('/').collect();
+        if parts.len() == 2 && is_safe_book_hash(parts[0]) {
+            if let Some(asset) = BookAsset::from_route(parts[1]) {
+                return Route::BookAsset {
+                    hash: parts[0].to_string(),
+                    asset,
+                };
+            }
+        }
+    }
+
     Route::NotFound
+}
+
+fn is_safe_book_hash(hash: &str) -> bool {
+    !hash.is_empty()
+        && !hash.contains("..")
+        && hash
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
 fn get_query_param(url: &str, key: &str) -> Option<String> {
@@ -311,6 +419,7 @@ fn handle_request(
     let method = req.method();
 
     match (method, parse_route(&url)) {
+        (&Method::Options, _) => respond_options(req),
         (&Method::Get, Route::Health) => serve_health(req, device_name),
         (&Method::Get, Route::Replicas(kind)) => {
             let since = get_query_param(&url, "since");
@@ -319,11 +428,21 @@ fn handle_request(
         (&Method::Put, Route::Replicas(kind)) => {
             serve_put_replicas(req, visible_repo, &kind);
         }
+        (&Method::Post, Route::DevReset) => serve_dev_reset(req, visible_repo),
         (&Method::Get, Route::DictionaryImages(entry_id)) => {
             serve_get_dictionary_image(req, replicas_dir, &entry_id);
         }
         (&Method::Put, Route::DictionaryImages(entry_id)) => {
             serve_put_dictionary_image(req, replicas_dir, &entry_id);
+        }
+        (&Method::Get, Route::BooksIndex) => serve_get_books_index(req, replicas_dir),
+        (&Method::Put, Route::BooksIndex) => serve_put_books_index(req, replicas_dir),
+        (&Method::Get, Route::BooksManifest) => serve_get_books_manifest(req, replicas_dir),
+        (&Method::Get, Route::BookAsset { hash, asset }) => {
+            serve_get_book_asset(req, replicas_dir, &hash, asset);
+        }
+        (&Method::Put, Route::BookAsset { hash, asset }) => {
+            serve_put_book_asset(req, replicas_dir, &hash, asset);
         }
         _ => {
             respond_404(req);
@@ -331,24 +450,69 @@ fn handle_request(
     }
 }
 
+fn respond_options(req: Request) {
+    let resp = Response::empty(StatusCode(204))
+        .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap())
+        .with_header(
+            Header::from_bytes("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS").unwrap(),
+        )
+        .with_header(
+            Header::from_bytes(
+                "Access-Control-Allow-Headers",
+                "Content-Type, X-Biblioteca-Dev-Sync-Harness",
+            )
+            .unwrap(),
+        )
+        .with_header(Header::from_bytes("Access-Control-Max-Age", "600").unwrap());
+    let _ = req.respond(resp);
+}
+
 fn respond_404(req: Request) {
     let resp = Response::from_string("Not Found")
         .with_status_code(StatusCode(404))
-        .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
+        .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap())
+        .with_header(
+            Header::from_bytes("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS").unwrap(),
+        )
+        .with_header(
+            Header::from_bytes(
+                "Access-Control-Allow-Headers",
+                "Content-Type, X-Biblioteca-Dev-Sync-Harness",
+            )
+            .unwrap(),
+        );
     let _ = req.respond(resp);
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────
 
 fn serve_health(req: Request, device_name: &str) {
+    let started_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "unknown".into());
     let body = HealthResponse {
         status: "ok".into(),
         device_name: device_name.into(),
+        server_version: env!("CARGO_PKG_VERSION").into(),
+        commit: option_env!("GIT_HASH").map(|s| s.into()),
+        started_at,
     };
     let json = serde_json::to_string(&body).unwrap_or_else(|_| r#"{"status":"error"}"#.into());
     let resp = Response::from_string(json)
         .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
-        .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
+        .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap())
+        .with_header(
+            Header::from_bytes("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS")
+                .unwrap(),
+        )
+        .with_header(
+            Header::from_bytes(
+                "Access-Control-Allow-Headers",
+                "Content-Type, X-Biblioteca-Dev-Sync-Harness",
+            )
+            .unwrap(),
+        );
     let _ = req.respond(resp);
 }
 
@@ -358,22 +522,37 @@ fn serve_get_replicas(
     kind: &str,
     since: Option<&str>,
 ) {
-    match visible_repo.pull(kind, since) {
-        Ok(rows) => {
+    let pull_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        visible_repo.pull(kind, since)
+    }));
+
+    match pull_result {
+        Err(panic) => respond_json_status(
+            req,
+            &json_error(&format!("replica pull panic: {}", panic_message(panic))),
+            StatusCode(500),
+        ),
+        Ok(Ok(rows)) => {
             let json = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
             respond_json(req, &json);
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             respond_json_status(req, &json_error(&e), StatusCode(500));
         }
     }
 }
 
-fn serve_put_replicas(
-    mut req: Request,
-    visible_repo: &Arc<dyn VisibleRepository>,
-    kind: &str,
-) {
+fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.to_string()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
+fn serve_put_replicas(mut req: Request, visible_repo: &Arc<dyn VisibleRepository>, kind: &str) {
     let mut body = String::new();
     if let Err(e) = req.as_reader().read_to_string(&mut body) {
         return respond_json_status(
@@ -398,10 +577,38 @@ fn serve_put_replicas(
         }
     };
 
-    match visible_repo.push(kind, &incoming) {
-        Ok(count) => respond_json_status(req, &json_merge_result(count), StatusCode(200)),
+    let push_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        visible_repo.push(kind, &incoming)
+    }));
+
+    match push_result {
+        Err(panic) => respond_json_status(
+            req,
+            &json_error(&format!("replica push panic: {}", panic_message(panic))),
+            StatusCode(500),
+        ),
+        Ok(rows) => match rows {
+            Ok(count) => respond_json_status(req, &json_merge_result(count), StatusCode(200)),
+            Err(e) => respond_json_status(req, &json_error(&e), StatusCode(500)),
+        },
+    }
+}
+
+fn serve_dev_reset(req: Request, visible_repo: &Arc<dyn VisibleRepository>) {
+    if !has_dev_reset_guard(&req) {
+        return respond_json_status(req, &json_error("dev reset guard missing"), StatusCode(403));
+    }
+
+    match visible_repo.clear_dev_state() {
+        Ok(cleared) => respond_json_status(req, &json_dev_reset_result(cleared), StatusCode(200)),
         Err(e) => respond_json_status(req, &json_error(&e), StatusCode(500)),
     }
+}
+
+fn has_dev_reset_guard(req: &Request) -> bool {
+    req.headers().iter().any(|header| {
+        header.field.equiv(DEV_RESET_HEADER) && header.value.as_str() == DEV_RESET_TOKEN
+    })
 }
 
 // ── File I/O ──────────────────────────────────────────────────────────────
@@ -450,6 +657,234 @@ fn merge_and_save(path: &Path, incoming: Vec<ReplicaRow>) -> Result<usize, Strin
     Ok(merged_count)
 }
 
+fn app_data_dir_from_replicas_dir(replicas_dir: &Path) -> PathBuf {
+    if replicas_dir.file_name().and_then(|name| name.to_str()) == Some("replicas") {
+        if let Some(local_sync_dir) = replicas_dir.parent() {
+            if local_sync_dir.file_name().and_then(|name| name.to_str()) == Some("local-sync") {
+                if let Some(app_data_dir) = local_sync_dir.parent() {
+                    return app_data_dir.to_path_buf();
+                }
+            }
+        }
+    }
+
+    replicas_dir.to_path_buf()
+}
+
+fn books_dir_from_replicas_dir(replicas_dir: &Path) -> PathBuf {
+    app_data_dir_from_replicas_dir(replicas_dir)
+        .join("Readest")
+        .join("Books")
+}
+
+fn books_index_path(books_dir: &Path) -> PathBuf {
+    books_dir.join("library.json")
+}
+
+fn load_books_index(books_dir: &Path) -> Result<Vec<serde_json::Value>, String> {
+    let path = books_index_path(books_dir);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let raw = fs::read_to_string(&path).map_err(|e| format!("read books index: {e}"))?;
+    let mut books: Vec<serde_json::Value> =
+        serde_json::from_str(&raw).map_err(|e| format!("parse books index: {e}"))?;
+    for book in &mut books {
+        sanitize_book_metadata(book);
+    }
+    Ok(books)
+}
+
+fn sanitize_book_metadata(book: &mut serde_json::Value) {
+    if let Some(object) = book.as_object_mut() {
+        object.remove("filePath");
+        object.remove("coverImageUrl");
+    }
+}
+
+fn book_is_tombstone(book: &serde_json::Value) -> bool {
+    book.get("deletedAt").and_then(|value| value.as_u64()).is_some()
+}
+
+fn book_live_reimport_is_newer_than_tombstone(
+    incoming: &serde_json::Value,
+    existing_tombstone: &serde_json::Value,
+) -> bool {
+    match (
+        incoming.get("createdAt").and_then(|value| value.as_u64()),
+        existing_tombstone
+            .get("deletedAt")
+            .and_then(|value| value.as_u64()),
+    ) {
+        (Some(created_at), Some(deleted_at)) => created_at > deleted_at,
+        _ => false,
+    }
+}
+
+fn safe_book_filename(name: &str) -> Option<&str> {
+    if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
+        return None;
+    }
+
+    Some(name)
+}
+
+fn book_filename_from_index(books_dir: &Path, hash: &str) -> Option<String> {
+    let books = load_books_index(books_dir).ok()?;
+    books.into_iter().find_map(|book| {
+        if book.get("hash").and_then(|value| value.as_str()) != Some(hash) {
+            return None;
+        }
+
+        for key in ["fileName", "filename", "name"] {
+            if let Some(name) = book.get(key).and_then(|value| value.as_str()) {
+                if let Some(safe) = safe_book_filename(name) {
+                    return Some(safe.to_string());
+                }
+            }
+        }
+
+        None
+    })
+}
+
+fn book_file_fallback(books_dir: &Path, hash: &str) -> Option<String> {
+    let book_dir = books_dir.join(hash);
+    let entries = fs::read_dir(book_dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name != "cover.png" && name != "config.json" && name != "nav.json" {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn filename_from_library_format(books_dir: &Path, hash: &str) -> Option<String> {
+    let books = load_books_index(books_dir).ok()?;
+    let book = books.into_iter().find(|b| b.get("hash").and_then(|v| v.as_str()) == Some(hash))?;
+
+    let title = book
+        .get("sourceTitle")
+        .or_else(|| book.get("title"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("book");
+
+    let format = book
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("EPUB");
+
+    let ext = match format.to_lowercase().as_str() {
+        "pdf" => "pdf",
+        _ => "epub",
+    };
+
+    let safe_title: String = title
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+
+    let safe_title = safe_title.trim_matches('_');
+    if safe_title.is_empty() {
+        return Some(format!("book.{ext}"));
+    }
+    Some(format!("{safe_title}.{ext}"))
+}
+
+fn book_asset_path(books_dir: &Path, hash: &str, asset: BookAsset) -> Result<PathBuf, String> {
+    if !is_safe_book_hash(hash) {
+        return Err("invalid book hash".to_string());
+    }
+
+    let filename = match asset.fixed_filename() {
+        Some(name) => name.to_string(),
+        None => book_filename_from_index(books_dir, hash)
+            .or_else(|| filename_from_library_format(books_dir, hash))
+            .or_else(|| book_file_fallback(books_dir, hash))
+            .unwrap_or_else(|| "book.epub".to_string()),
+    };
+
+    let filename =
+        safe_book_filename(&filename).ok_or_else(|| "invalid book asset filename".to_string())?;
+    Ok(books_dir.join(hash).join(filename))
+}
+
+fn read_book_asset(books_dir: &Path, hash: &str, asset: BookAsset) -> Result<Vec<u8>, String> {
+    let path = book_asset_path(books_dir, hash, asset)?;
+    fs::read(path).map_err(|e| format!("read book asset: {e}"))
+}
+
+fn write_book_asset(
+    books_dir: &Path,
+    hash: &str,
+    asset: BookAsset,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let path = book_asset_path(books_dir, hash, asset)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir book asset: {e}"))?;
+    }
+    fs::write(path, bytes).map_err(|e| format!("write book asset: {e}"))
+}
+
+fn build_books_manifest(books_dir: &Path) -> Result<serde_json::Value, String> {
+    let books = load_books_index(books_dir)?;
+    let manifest_books: Vec<serde_json::Value> = books
+        .into_iter()
+        .filter_map(|book| {
+            let hash = book.get("hash")?.as_str()?.to_string();
+            if !is_safe_book_hash(&hash) {
+                return None;
+            }
+
+            let assets = [
+                BookAsset::File,
+                BookAsset::Cover,
+                BookAsset::Config,
+                BookAsset::Nav,
+            ]
+            .into_iter()
+            .map(|asset| {
+                let path = book_asset_path(books_dir, &hash, asset).ok();
+                let size = path
+                    .as_ref()
+                    .and_then(|path| fs::metadata(path).ok())
+                    .map(|metadata| metadata.len());
+                serde_json::json!({
+                    "name": asset.manifest_name(),
+                    "required": asset.required(),
+                    "size": size,
+                })
+            })
+            .collect::<Vec<_>>();
+
+            // Skip books whose required assets are missing on disk,
+            // unless the book is tombstoned (deletedAt is set) — tombstones
+            // must be included so the remote peer can discover the deletion.
+            let is_tombstone = book.get("deletedAt").and_then(|v| v.as_u64()).is_some();
+            if !is_tombstone {
+                let has_all_required = assets.iter().all(|asset| {
+                    !asset["required"].as_bool().unwrap_or(false) || asset["size"].as_u64().is_some()
+                });
+                if !has_all_required {
+                    return None;
+                }
+            }
+
+            Some(serde_json::json!({
+                "book": book,
+                "hash": hash,
+                "assets": assets,
+            }))
+        })
+        .collect();
+
+    Ok(serde_json::json!({ "books": manifest_books }))
+}
+
 // ── Response helpers ──────────────────────────────────────────────────────
 
 fn respond_json(req: Request, json: &str) {
@@ -463,7 +898,11 @@ fn respond_json_status(req: Request, json: &str, status: StatusCode) {
     let resp = Response::from_string(json)
         .with_status_code(status)
         .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
-        .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
+        .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap())
+        .with_header(
+            Header::from_bytes("Access-Control-Allow-Methods", "GET, PUT, OPTIONS").unwrap(),
+        )
+        .with_header(Header::from_bytes("Access-Control-Allow-Headers", "Content-Type").unwrap());
     let _ = req.respond(resp);
 }
 
@@ -475,28 +914,60 @@ fn json_merge_result(count: usize) -> String {
     serde_json::json!({ "merged": count }).to_string()
 }
 
+fn json_dev_reset_result(cleared: usize) -> String {
+    serde_json::json!({ "ok": true, "cleared": { "rows": cleared } }).to_string()
+}
+
+// ── Image validation helpers ──────────────────────────────────────────────
+
+const PNG_HEADER: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+
+/// Reject entry IDs that could escape the images directory.
+/// Allows alphanumeric, hyphens, underscores, dots — but never `..`, `/`, `\`.
+fn is_safe_entry_id(id: &str) -> bool {
+    !id.is_empty()
+        && id != ".."
+        && !id.contains('/')
+        && !id.contains('\\')
+        && id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+/// Check whether `bytes` starts with the PNG magic signature.
+fn is_png(bytes: &[u8]) -> bool {
+    bytes.len() >= 8 && bytes[..8] == PNG_HEADER
+}
+
 // ── Dictionary image I/O ──────────────────────────────────────────────────
 
 /// Resolve the dictionary-images directory relative to the replicas dir.
 fn images_dir(replicas_dir: &Path) -> PathBuf {
-    replicas_dir.join("dictionary-images")
+    app_data_dir_from_replicas_dir(replicas_dir)
+        .join("Readest")
+        .join("Dictionaries")
+        .join("entries")
 }
 
-/// Write raw binary bytes to `{images_dir}/{entry_id}.png`.
+/// Write raw binary bytes to `{images_dir}/{entry_id}/image.png`.
 fn save_dictionary_image(images_dir: &Path, entry_id: &str, bytes: &[u8]) -> Result<(), String> {
-    let file_path = images_dir.join(format!("{entry_id}.png"));
+    let entry_dir = images_dir.join(entry_id);
+    fs::create_dir_all(&entry_dir).map_err(|e| format!("mkdir dict image: {e}"))?;
+    let file_path = entry_dir.join("image.png");
     fs::write(&file_path, bytes).map_err(|e| format!("write image: {e}"))
 }
 
-/// Read image bytes from `{images_dir}/{entry_id}.png`.
+/// Read image bytes from `{images_dir}/{entry_id}/image.png`.
 fn read_dictionary_image(images_dir: &Path, entry_id: &str) -> Result<Vec<u8>, String> {
-    let file_path = images_dir.join(format!("{entry_id}.png"));
+    let file_path = images_dir.join(entry_id).join("image.png");
     fs::read(&file_path).map_err(|e| format!("read image: {e}"))
 }
 
 // ── Dictionary image handlers ──────────────────────────────────────────────
 
 fn serve_get_dictionary_image(req: Request, replicas_dir: &Path, entry_id: &str) {
+    if !is_safe_entry_id(entry_id) {
+        return respond_404(req);
+    }
+
     let dir = images_dir(replicas_dir);
 
     match read_dictionary_image(&dir, entry_id) {
@@ -512,6 +983,14 @@ fn serve_get_dictionary_image(req: Request, replicas_dir: &Path, entry_id: &str)
 }
 
 fn serve_put_dictionary_image(mut req: Request, replicas_dir: &Path, entry_id: &str) {
+    if !is_safe_entry_id(entry_id) {
+        let _ = req.respond(
+            Response::from_string("{\"error\":\"invalid entry id\"}")
+                .with_status_code(StatusCode(400)),
+        );
+        return;
+    }
+
     let dir = images_dir(replicas_dir);
 
     // Ensure the images directory exists
@@ -532,6 +1011,15 @@ fn serve_put_dictionary_image(mut req: Request, replicas_dir: &Path, entry_id: &
         return;
     }
 
+    // Validate PNG magic bytes
+    if !is_png(&body) {
+        let _ = req.respond(
+            Response::from_string("{\"error\":\"not a valid PNG image\"}")
+                .with_status_code(StatusCode(400)),
+        );
+        return;
+    }
+
     match save_dictionary_image(&dir, entry_id, &body) {
         Ok(()) => {
             let resp = Response::from_string("{\"uploaded\":true}")
@@ -544,6 +1032,156 @@ fn serve_put_dictionary_image(mut req: Request, replicas_dir: &Path, entry_id: &
                     .with_status_code(StatusCode(500)),
             );
         }
+    }
+}
+
+// ── Book handlers ─────────────────────────────────────────────────────────
+
+fn serve_get_books_index(req: Request, replicas_dir: &Path) {
+    let books_dir = books_dir_from_replicas_dir(replicas_dir);
+    match load_books_index(&books_dir) {
+        Ok(books) => {
+            let json = serde_json::to_string(&books).unwrap_or_else(|_| "[]".to_string());
+            respond_json(req, &json);
+        }
+        Err(e) => respond_json_status(req, &json_error(&e), StatusCode(500)),
+    }
+}
+
+fn serve_put_books_index(mut req: Request, replicas_dir: &Path) {
+    let books_dir = books_dir_from_replicas_dir(replicas_dir);
+    let mut body = String::new();
+    if let Err(e) = req.as_reader().read_to_string(&mut body) {
+        return respond_json_status(
+            req,
+            &json_error(&format!("Body read failed: {e}")),
+            StatusCode(400),
+        );
+    }
+
+    let incoming: Vec<serde_json::Value> = if body.trim().is_empty() {
+        Vec::new()
+    } else {
+        match serde_json::from_str(&body) {
+            Ok(books) => books,
+            Err(e) => {
+                return respond_json_status(
+                    req,
+                    &json_error(&format!("Invalid JSON: {e}")),
+                    StatusCode(400),
+                );
+            }
+        }
+    };
+
+    if let Err(e) = fs::create_dir_all(&books_dir) {
+        return respond_json_status(
+            req,
+            &json_error(&format!("mkdir books: {e}")),
+            StatusCode(500),
+        );
+    }
+
+    // Merge incoming into existing library by hash — do not overwrite unrelated books.
+    let mut merged = load_books_index(&books_dir).unwrap_or_default();
+    let mut idx_by_hash: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, book) in merged.iter().enumerate() {
+        if let Some(hash) = book.get("hash").and_then(|v| v.as_str()) {
+            idx_by_hash.insert(hash.to_string(), i);
+        }
+    }
+
+    for mut book in incoming {
+        sanitize_book_metadata(&mut book);
+        if let Some(hash) = book.get("hash").and_then(|v| v.as_str()) {
+            if let Some(&idx) = idx_by_hash.get(hash) {
+                let existing_is_tombstone = book_is_tombstone(&merged[idx]);
+                let incoming_is_tombstone = book_is_tombstone(&book);
+                if existing_is_tombstone
+                    && !incoming_is_tombstone
+                    && !book_live_reimport_is_newer_than_tombstone(&book, &merged[idx])
+                {
+                    continue;
+                }
+                merged[idx] = book;
+            } else {
+                idx_by_hash.insert(hash.to_string(), merged.len());
+                merged.push(book);
+            }
+        }
+    }
+
+    let json = match serde_json::to_string_pretty(&merged) {
+        Ok(json) => json,
+        Err(e) => {
+            return respond_json_status(
+                req,
+                &json_error(&format!("serialize: {e}")),
+                StatusCode(500),
+            )
+        }
+    };
+
+    match fs::write(books_index_path(&books_dir), json) {
+        Ok(()) => respond_json_status(
+            req,
+            &serde_json::json!({ "merged": merged.len() }).to_string(),
+            StatusCode(200),
+        ),
+        Err(e) => respond_json_status(
+            req,
+            &json_error(&format!("write books index: {e}")),
+            StatusCode(500),
+        ),
+    }
+}
+
+fn serve_get_books_manifest(req: Request, replicas_dir: &Path) {
+    let books_dir = books_dir_from_replicas_dir(replicas_dir);
+    match build_books_manifest(&books_dir) {
+        Ok(manifest) => respond_json(req, &manifest.to_string()),
+        Err(e) => respond_json_status(req, &json_error(&e), StatusCode(500)),
+    }
+}
+
+fn serve_get_book_asset(req: Request, replicas_dir: &Path, hash: &str, asset: BookAsset) {
+    let books_dir = books_dir_from_replicas_dir(replicas_dir);
+    match read_book_asset(&books_dir, hash, asset) {
+        Ok(bytes) => {
+            let resp = Response::from_data(bytes)
+                .with_header(Header::from_bytes("Content-Type", asset.content_type()).unwrap())
+                .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap())
+                .with_header(
+                    Header::from_bytes("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
+                        .unwrap(),
+                )
+                .with_header(
+                    Header::from_bytes("Access-Control-Allow-Headers", "Content-Type").unwrap(),
+                );
+            let _ = req.respond(resp);
+        }
+        Err(_) => respond_404(req),
+    }
+}
+
+fn serve_put_book_asset(mut req: Request, replicas_dir: &Path, hash: &str, asset: BookAsset) {
+    let books_dir = books_dir_from_replicas_dir(replicas_dir);
+    let mut body = Vec::new();
+    if let Err(e) = req.as_reader().read_to_end(&mut body) {
+        return respond_json_status(
+            req,
+            &json_error(&format!("Body read failed: {e}")),
+            StatusCode(400),
+        );
+    }
+
+    match write_book_asset(&books_dir, hash, asset, &body) {
+        Ok(()) => respond_json_status(
+            req,
+            &serde_json::json!({ "uploaded": true }).to_string(),
+            StatusCode(200),
+        ),
+        Err(e) => respond_json_status(req, &json_error(&e), StatusCode(400)),
     }
 }
 
@@ -574,11 +1212,7 @@ mod tests {
     }
 
     impl VisibleRepository for MockVisibleRepo {
-        fn pull(
-            &self,
-            kind: &str,
-            since: Option<&str>,
-        ) -> Result<Vec<ReplicaRow>, String> {
+        fn pull(&self, kind: &str, since: Option<&str>) -> Result<Vec<ReplicaRow>, String> {
             let data = self.data.lock().map_err(|e| e.to_string())?;
             let rows = data.get(kind).cloned().unwrap_or_default();
             if let Some(since_val) = since {
@@ -587,10 +1221,7 @@ mod tests {
                     .filter(|r| r.kind == kind && r.updated_at_ts.as_str() > since_val)
                     .collect())
             } else {
-                Ok(rows
-                    .into_iter()
-                    .filter(|r| r.kind == kind)
-                    .collect())
+                Ok(rows.into_iter().filter(|r| r.kind == kind).collect())
             }
         }
 
@@ -626,6 +1257,31 @@ mod tests {
 
     fn make_mock_adapter() -> Arc<dyn VisibleRepository> {
         Arc::new(MockVisibleRepo::new())
+    }
+
+    struct PanickingVisibleRepo {
+        panic_on_pull: bool,
+        panic_on_push: bool,
+    }
+
+    impl VisibleRepository for PanickingVisibleRepo {
+        fn pull(&self, _kind: &str, _since: Option<&str>) -> Result<Vec<ReplicaRow>, String> {
+            if self.panic_on_pull {
+                panic!("test pull panic");
+            }
+            Ok(vec![])
+        }
+
+        fn push(&self, _kind: &str, _rows: &[ReplicaRow]) -> Result<usize, String> {
+            if self.panic_on_push {
+                panic!("test push panic");
+            }
+            Ok(0)
+        }
+
+        fn health(&self) -> bool {
+            true
+        }
     }
 
     fn make_row(id: &str, kind: &str, hlc: &str) -> ReplicaRow {
@@ -743,7 +1399,10 @@ mod tests {
 
             assert_eq!(diagnostic.kind, kind);
             assert_eq!(diagnostic.repository, ReplicaRepositoryMode::VisibleAdapter);
-            assert!(diagnostic.visible_repository_ready, "adapter should be ready for {kind}");
+            assert!(
+                diagnostic.visible_repository_ready,
+                "adapter should be ready for {kind}"
+            );
             assert_eq!(diagnostic.gate, SourceOfTruthGate::Unblocked);
             assert!(
                 diagnostic.detail.contains(".db"),
@@ -787,8 +1446,11 @@ mod tests {
         fs::create_dir_all(&replicas_dir).unwrap();
         let annotation_json = replicas_file_path(&replicas_dir, "annotation");
 
-        merge_and_save(&annotation_json, vec![make_row("annotation:visible-gate", "annotation", "T9")])
-            .unwrap();
+        merge_and_save(
+            &annotation_json,
+            vec![make_row("annotation:visible-gate", "annotation", "T9")],
+        )
+        .unwrap();
 
         assert!(
             annotation_json.exists(),
@@ -896,6 +1558,70 @@ mod tests {
         assert_eq!(saved.len(), 1);
     }
 
+    // ── Entry ID safety ───────────────────────────────────────────────
+
+    #[test]
+    fn is_safe_entry_id_rejects_dot_dot() {
+        assert!(!is_safe_entry_id(".."));
+        assert!(!is_safe_entry_id("../etc"));
+        assert!(!is_safe_entry_id("entry/.."));
+    }
+
+    #[test]
+    fn is_safe_entry_id_allows_consecutive_dots() {
+        // Consecutive dots inside a filename are NOT path traversal
+        assert!(is_safe_entry_id("a..b"));
+        assert!(is_safe_entry_id("entry...v1"));
+    }
+
+    #[test]
+    fn is_safe_entry_id_rejects_slash() {
+        assert!(!is_safe_entry_id("a/b"));
+        assert!(!is_safe_entry_id("entry/id"));
+    }
+
+    #[test]
+    fn is_safe_entry_id_allows_normal_ids() {
+        assert!(is_safe_entry_id("entry-123"));
+        assert!(is_safe_entry_id("abc123"));
+        assert!(is_safe_entry_id("my.entry"));
+    }
+
+    #[test]
+    fn is_safe_entry_id_rejects_backslash() {
+        assert!(!is_safe_entry_id("a\\b"));
+    }
+
+    #[test]
+    fn is_safe_entry_id_rejects_empty() {
+        assert!(!is_safe_entry_id(""));
+    }
+
+    // ── PNG validation ─────────────────────────────────────────────────
+
+    #[test]
+    fn is_png_validates_magic_bytes() {
+        let png = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13];
+        assert!(is_png(&png));
+    }
+
+    #[test]
+    fn is_png_rejects_non_png_bytes() {
+        let not_png: Vec<u8> = b"not a png file".to_vec();
+        assert!(!is_png(&not_png));
+    }
+
+    #[test]
+    fn is_png_rejects_short_bytes() {
+        let short: Vec<u8> = vec![0, 1, 2];
+        assert!(!is_png(&short));
+    }
+
+    #[test]
+    fn is_png_rejects_empty() {
+        assert!(!is_png(&[]));
+    }
+
     // ── Dictionary image routes ───────────────────────────────────────
 
     #[test]
@@ -927,11 +1653,130 @@ mod tests {
         ));
     }
 
+    // ── Book routes ───────────────────────────────────────────────────
+
+    #[test]
+    fn route_books_accepts_index_manifest_and_safe_assets() {
+        assert!(matches!(parse_route("/books/index"), Route::BooksIndex));
+        assert!(matches!(
+            parse_route("/books/manifest"),
+            Route::BooksManifest
+        ));
+        assert!(matches!(
+            parse_route("/books/book-hash-123/file"),
+            Route::BookAsset { hash, asset } if hash == "book-hash-123" && asset == BookAsset::File
+        ));
+        assert!(matches!(
+            parse_route("/books/book_hash_123/cover"),
+            Route::BookAsset { hash, asset } if hash == "book_hash_123" && asset == BookAsset::Cover
+        ));
+        assert!(matches!(
+            parse_route("/books/book.hash.123/config"),
+            Route::BookAsset { hash, asset } if hash == "book.hash.123" && asset == BookAsset::Config
+        ));
+        assert!(matches!(
+            parse_route("/books/book.hash.123/nav"),
+            Route::BookAsset { hash, asset } if hash == "book.hash.123" && asset == BookAsset::Nav
+        ));
+    }
+
+    #[test]
+    fn route_books_rejects_path_traversal_and_unknown_assets() {
+        assert!(matches!(parse_route("/books/../file"), Route::NotFound));
+        assert!(matches!(
+            parse_route("/books/book/../../config"),
+            Route::NotFound
+        ));
+        assert!(matches!(
+            parse_route("/books/book/%2e%2e/config"),
+            Route::NotFound
+        ));
+        assert!(matches!(
+            parse_route("/books/book/not-allowed"),
+            Route::NotFound
+        ));
+        assert!(matches!(parse_route("/books//file"), Route::NotFound));
+    }
+
+    #[test]
+    fn books_manifest_lists_library_books_and_required_optional_assets() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let books_dir = dir.path().join("Readest").join("Books");
+        let hash = "book-hash-1";
+        let book_dir = books_dir.join(hash);
+        fs::create_dir_all(&book_dir).unwrap();
+        fs::write(
+            books_dir.join("library.json"),
+            r#"[{"hash":"book-hash-1","title":"Test Book","fileName":"test.epub","filePath":"/sender/test.epub","coverImageUrl":"blob:sender"}]"#,
+        )
+        .unwrap();
+        fs::write(book_dir.join("test.epub"), b"epub bytes").unwrap();
+        fs::write(book_dir.join("cover.png"), b"cover bytes").unwrap();
+        fs::write(book_dir.join("config.json"), b"{}").unwrap();
+
+        let manifest = build_books_manifest(&books_dir).unwrap();
+
+        assert_eq!(manifest["books"].as_array().unwrap().len(), 1);
+        let book = &manifest["books"][0];
+        assert_eq!(book["hash"], hash);
+        assert_eq!(book["book"]["title"], "Test Book");
+        assert!(book["book"].get("filePath").is_none());
+        assert!(book["book"].get("coverImageUrl").is_none());
+        let assets = book["assets"].as_array().unwrap();
+        assert!(assets
+            .iter()
+            .any(|asset| asset["name"] == "book" && asset["required"] == true));
+        assert!(assets
+            .iter()
+            .any(|asset| asset["name"] == "cover.png" && asset["required"] == false));
+        assert!(assets
+            .iter()
+            .any(|asset| asset["name"] == "config.json" && asset["required"] == false));
+        assert!(assets
+            .iter()
+            .any(|asset| asset["name"] == "nav.json" && asset["required"] == false));
+    }
+
+    #[test]
+    fn book_asset_roundtrip_and_optional_nav_absence() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let books_dir = dir.path().join("Readest").join("Books");
+        let hash = "roundtrip-book";
+
+        write_book_asset(&books_dir, hash, BookAsset::File, b"epub bytes").unwrap();
+        write_book_asset(&books_dir, hash, BookAsset::Cover, b"cover bytes").unwrap();
+        write_book_asset(&books_dir, hash, BookAsset::Config, br#"{"theme":"dark"}"#).unwrap();
+
+        assert_eq!(
+            read_book_asset(&books_dir, hash, BookAsset::File).unwrap(),
+            b"epub bytes"
+        );
+        assert_eq!(
+            read_book_asset(&books_dir, hash, BookAsset::Cover).unwrap(),
+            b"cover bytes"
+        );
+        assert_eq!(
+            read_book_asset(&books_dir, hash, BookAsset::Config).unwrap(),
+            br#"{"theme":"dark"}"#
+        );
+        assert!(read_book_asset(&books_dir, hash, BookAsset::Nav).is_err());
+    }
+
+    #[test]
+    fn book_asset_paths_stay_under_books_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let books_dir = dir.path().join("Readest").join("Books");
+
+        assert!(book_asset_path(&books_dir, "safe-hash", BookAsset::File).is_ok());
+        assert!(book_asset_path(&books_dir, "../escape", BookAsset::File).is_err());
+        assert!(book_asset_path(&books_dir, "safe/escape", BookAsset::Cover).is_err());
+        assert!(book_asset_path(&books_dir, "%2e%2e", BookAsset::Config).is_err());
+    }
+
     #[test]
     fn dictionary_image_write_and_read() {
         let dir = tempfile::TempDir::new().unwrap();
         let images_dir = dir.path().join("dictionary-images");
-        fs::create_dir_all(&images_dir).unwrap();
 
         let entry_id = "entry-abc";
         let bytes: Vec<u8> = vec![137, 80, 78, 71, 13, 10, 26, 10]; // PNG header
@@ -939,8 +1784,8 @@ mod tests {
         // Write (PUT)
         save_dictionary_image(&images_dir, entry_id, &bytes).unwrap();
 
-        // Verify file exists
-        let file_path = images_dir.join(format!("{entry_id}.png"));
+        // Verify file exists at {images_dir}/{entry_id}/image.png
+        let file_path = images_dir.join(entry_id).join("image.png");
         assert!(file_path.exists());
 
         // Read (GET)
@@ -952,7 +1797,6 @@ mod tests {
     fn dictionary_image_not_found() {
         let dir = tempfile::TempDir::new().unwrap();
         let images_dir = dir.path().join("dictionary-images");
-        fs::create_dir_all(&images_dir).unwrap();
 
         let result = read_dictionary_image(&images_dir, "nonexistent");
         assert!(result.is_err());
@@ -965,11 +1809,16 @@ mod tests {
         let resp = HealthResponse {
             status: "ok".into(),
             device_name: "test-device".into(),
+            server_version: env!("CARGO_PKG_VERSION").into(),
+            commit: option_env!("GIT_HASH").map(|s| s.into()),
+            started_at: "1234567890".into(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["status"], "ok");
         assert_eq!(v["deviceName"], "test-device");
+        assert_eq!(v["serverVersion"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["startedAt"], "1234567890");
     }
 
     // ── Integration test: start server → HTTP requests → stop ──────────
@@ -1062,13 +1911,51 @@ mod tests {
     }
 
     #[test]
+    fn integration_health_includes_version_and_started_at() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("replicas");
+        let port = find_free_port();
+
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir.clone(),
+            "version-test".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
+
+        let (status, body) = http_request(
+            "127.0.0.1",
+            port,
+            "GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        );
+        server.stop();
+
+        assert_eq!(status, 200);
+        let json: serde_json::Value =
+            serde_json::from_str(body.lines().last().unwrap_or("{}")).unwrap();
+        assert_eq!(json["status"], "ok");
+        assert!(json["serverVersion"].is_string(), "serverVersion must be present");
+        assert!(!json["serverVersion"].as_str().unwrap_or("").is_empty());
+        assert!(json["startedAt"].is_string(), "startedAt must be present");
+        let started = json["startedAt"].as_str().unwrap();
+        assert!(started.parse::<u64>().is_ok(), "startedAt must be a unix timestamp");
+
+    }
+
+    #[test]
     fn integration_put_and_get_replicas() {
         let dir = tempfile::TempDir::new().unwrap();
         let replicas_dir = dir.path().join("replicas");
         let port = find_free_port();
 
-        let mut server =
-            SyncServer::start(port, replicas_dir.clone(), "integration-test".into(), make_mock_adapter()).unwrap();
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir.clone(),
+            "integration-test".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
 
         // PUT two rows
         let rows = vec![
@@ -1106,13 +1993,292 @@ mod tests {
     }
 
     #[test]
-    fn integration_since_cursor_filtering() {
+    fn integration_options_preflight_allows_replica_put() {
         let dir = tempfile::TempDir::new().unwrap();
         let replicas_dir = dir.path().join("replicas");
         let port = find_free_port();
 
         let mut server =
-            SyncServer::start(port, replicas_dir.clone(), "cursor-test".into(), make_mock_adapter()).unwrap();
+            SyncServer::start(port, replicas_dir, "cors-test".into(), make_mock_adapter()).unwrap();
+
+        let (status, body) = http_request(
+            "127.0.0.1",
+            port,
+            "OPTIONS /replicas/quote HTTP/1.0\r\nHost: localhost\r\nOrigin: http://localhost:3000\r\nAccess-Control-Request-Method: PUT\r\nAccess-Control-Request-Headers: content-type\r\n\r\n",
+        );
+
+        server.stop();
+
+        assert_eq!(status, 204);
+        assert!(body.contains("Access-Control-Allow-Origin: *"));
+        assert!(body.contains("Access-Control-Allow-Methods: GET, PUT, OPTIONS"));
+        assert!(body.contains("Access-Control-Allow-Headers: Content-Type"));
+    }
+
+    #[test]
+    fn integration_options_preflight_allows_books_put() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("local-sync").join("replicas");
+        let port = find_free_port();
+
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir,
+            "books-cors-test".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
+
+        let (status, body) = http_request(
+            "127.0.0.1",
+            port,
+            "OPTIONS /books/book-hash-1/file HTTP/1.0\r\nHost: localhost\r\nOrigin: http://localhost:3000\r\nAccess-Control-Request-Method: PUT\r\nAccess-Control-Request-Headers: content-type\r\n\r\n",
+        );
+
+        server.stop();
+
+        assert_eq!(status, 204);
+        assert!(body.contains("Access-Control-Allow-Origin: *"));
+        assert!(body.contains("Access-Control-Allow-Methods: GET, PUT, OPTIONS"));
+        assert!(body.contains("Access-Control-Allow-Headers: Content-Type"));
+    }
+
+    #[test]
+    fn integration_books_index_manifest_and_binary_asset_roundtrip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("local-sync").join("replicas");
+        let port = find_free_port();
+
+        let mut server =
+            SyncServer::start(port, replicas_dir, "books-test".into(), make_mock_adapter())
+                .unwrap();
+
+        let library = r#"[{"hash":"book-hash-1","title":"Test Book","fileName":"test.epub","filePath":"/sender/test.epub"}]"#;
+        let put_index = format!(
+            "PUT /books/index HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            library.len(),
+            library
+        );
+        let (put_index_status, _) = http_request("127.0.0.1", port, &put_index);
+        assert_eq!(put_index_status, 200);
+
+        let book_bytes = b"epub bytes";
+        let put_file = format!(
+            "PUT /books/book-hash-1/file HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+            book_bytes.len()
+        );
+        let put_file_bytes: Vec<u8> = put_file
+            .as_bytes()
+            .iter()
+            .chain(book_bytes)
+            .copied()
+            .collect();
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        stream.write_all(&put_file_bytes).unwrap();
+        let mut put_file_response = String::new();
+        stream.read_to_string(&mut put_file_response).unwrap();
+        assert!(
+            put_file_response.starts_with("HTTP/1.1 200")
+                || put_file_response.starts_with("HTTP/1.0 200")
+        );
+
+        let (manifest_status, manifest_body) = http_request(
+            "127.0.0.1",
+            port,
+            "GET /books/manifest HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        );
+        assert_eq!(manifest_status, 200);
+        let manifest_json: serde_json::Value =
+            serde_json::from_str(manifest_body.lines().last().unwrap_or("{}")).unwrap();
+        assert_eq!(manifest_json["books"][0]["hash"], "book-hash-1");
+
+        let (get_file_status, get_file_raw) = http_request_raw(
+            "127.0.0.1",
+            port,
+            "GET /books/book-hash-1/file HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        );
+
+        server.stop();
+
+        assert_eq!(get_file_status, 200);
+        let header_end = get_file_raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .unwrap();
+        assert_eq!(&get_file_raw[header_end + 4..], book_bytes);
+    }
+
+    #[test]
+    fn integration_books_index_keeps_tombstone_when_live_row_is_pushed_after_delete() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("local-sync").join("replicas");
+        let port = find_free_port();
+
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir,
+            "books-tombstone-test".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
+
+        let tombstone = r#"[{"hash":"book-hash-1","title":"Test Book","fileName":"test.epub","updatedAt":100,"deletedAt":101,"downloadedAt":null}]"#;
+        let put_tombstone = format!(
+            "PUT /books/index HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            tombstone.len(),
+            tombstone
+        );
+        let (put_tombstone_status, _) = http_request("127.0.0.1", port, &put_tombstone);
+        assert_eq!(put_tombstone_status, 200);
+
+        let stale_live = r#"[{"hash":"book-hash-1","title":"Test Book","fileName":"test.epub","updatedAt":200,"deletedAt":null}]"#;
+        let put_live = format!(
+            "PUT /books/index HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            stale_live.len(),
+            stale_live
+        );
+        let (put_live_status, _) = http_request("127.0.0.1", port, &put_live);
+        assert_eq!(put_live_status, 200);
+
+        let (get_status, get_body) = http_request(
+            "127.0.0.1",
+            port,
+            "GET /books/index HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        );
+
+        server.stop();
+
+        assert_eq!(get_status, 200);
+        let returned: Vec<serde_json::Value> =
+            serde_json::from_str(get_body.lines().last().unwrap_or("[]")).unwrap();
+        assert_eq!(returned[0]["hash"], "book-hash-1");
+        assert_eq!(returned[0]["deletedAt"], 101);
+    }
+
+    #[test]
+    fn integration_books_index_allows_live_reimport_newer_than_tombstone() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("local-sync").join("replicas");
+        let port = find_free_port();
+
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir,
+            "books-reimport-test".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
+
+        let tombstone = r#"[{"hash":"book-hash-1","title":"Test Book","fileName":"test.epub","createdAt":1,"updatedAt":100,"deletedAt":101,"downloadedAt":null}]"#;
+        let put_tombstone = format!(
+            "PUT /books/index HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            tombstone.len(),
+            tombstone
+        );
+        let (put_tombstone_status, _) = http_request("127.0.0.1", port, &put_tombstone);
+        assert_eq!(put_tombstone_status, 200);
+
+        let reimported_live = r#"[{"hash":"book-hash-1","title":"Test Book","fileName":"test.epub","createdAt":200,"updatedAt":201,"deletedAt":null}]"#;
+        let put_live = format!(
+            "PUT /books/index HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            reimported_live.len(),
+            reimported_live
+        );
+        let (put_live_status, _) = http_request("127.0.0.1", port, &put_live);
+        assert_eq!(put_live_status, 200);
+
+        let (get_status, get_body) = http_request(
+            "127.0.0.1",
+            port,
+            "GET /books/index HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        );
+
+        server.stop();
+
+        assert_eq!(get_status, 200);
+        let returned: Vec<serde_json::Value> =
+            serde_json::from_str(get_body.lines().last().unwrap_or("[]")).unwrap();
+        assert_eq!(returned[0]["hash"], "book-hash-1");
+        assert_eq!(returned[0]["createdAt"], 200);
+        assert!(returned[0]["deletedAt"].is_null());
+    }
+
+    #[test]
+    fn integration_pull_panic_returns_http_500_instead_of_empty_reply() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("replicas");
+        let port = find_free_port();
+
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir,
+            "panic-test".into(),
+            Arc::new(PanickingVisibleRepo {
+                panic_on_pull: true,
+                panic_on_push: false,
+            }),
+        )
+        .unwrap();
+
+        let (status, body) = http_request(
+            "127.0.0.1",
+            port,
+            "GET /replicas/annotation HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        );
+
+        server.stop();
+
+        assert_eq!(status, 500);
+        assert!(body.contains("replica pull panic"));
+        assert!(body.contains("test pull panic"));
+    }
+
+    #[test]
+    fn integration_push_panic_returns_http_500_instead_of_empty_reply() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("replicas");
+        let port = find_free_port();
+
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir,
+            "panic-test".into(),
+            Arc::new(PanickingVisibleRepo {
+                panic_on_pull: false,
+                panic_on_push: true,
+            }),
+        )
+        .unwrap();
+
+        let rows = vec![make_row("r-panic", "annotation", "T10")];
+        let put_body = serde_json::to_string(&rows).unwrap();
+        let put_request = format!(
+            "PUT /replicas/annotation HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            put_body.len(),
+            put_body
+        );
+        let (status, body) = http_request("127.0.0.1", port, &put_request);
+
+        server.stop();
+
+        assert_eq!(status, 500);
+        assert!(body.contains("replica push panic"));
+        assert!(body.contains("test push panic"));
+    }
+
+    #[test]
+    fn integration_since_cursor_filtering() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("replicas");
+        let port = find_free_port();
+
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir.clone(),
+            "cursor-test".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
 
         // PUT rows with different HLCs
         let rows = vec![
@@ -1155,7 +2321,13 @@ mod tests {
         let replicas_dir = dir.path().join("replicas");
         let port = find_free_port();
 
-        let mut server = SyncServer::start(port, replicas_dir.clone(), "img-test".into(), make_mock_adapter()).unwrap();
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir.clone(),
+            "img-test".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
 
         // PUT an image (raw bytes with HTTP headers)
         let png_bytes: Vec<u8> = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13];
@@ -1211,7 +2383,13 @@ mod tests {
         let replicas_dir = dir.path().join("replicas");
         let port = find_free_port();
 
-        let mut server = SyncServer::start(port, replicas_dir.clone(), "img-404".into(), make_mock_adapter()).unwrap();
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir.clone(),
+            "img-404".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
 
         let (status, _) = http_request(
             "127.0.0.1",
@@ -1222,5 +2400,54 @@ mod tests {
         server.stop();
 
         assert_eq!(status, 404);
+    }
+
+    #[test]
+    fn integration_dictionary_image_rejects_non_png_put() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("replicas");
+        let port = find_free_port();
+
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir.clone(),
+            "img-nonpng".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
+
+        // PUT non-PNG bytes (plain text, not a valid image)
+        let non_png_body = b"this is not a png image";
+        let put_request = format!(
+            "PUT /dictionary-images/entry-nonpng HTTP/1.0\r\nHost: localhost\r\nContent-Type: image/png\r\nContent-Length: {}\r\n\r\n",
+            non_png_body.len()
+        );
+        let put_request_bytes: Vec<u8> = put_request
+            .as_bytes()
+            .iter()
+            .chain(non_png_body)
+            .copied()
+            .collect();
+
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream.write_all(&put_request_bytes).unwrap();
+        let mut put_response = Vec::new();
+        stream.read_to_end(&mut put_response).unwrap();
+        let put_resp_str = String::from_utf8_lossy(&put_response);
+        let put_status: u16 = put_resp_str
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        server.stop();
+
+        assert_eq!(put_status, 400, "non-PNG upload should be rejected with 400");
     }
 }

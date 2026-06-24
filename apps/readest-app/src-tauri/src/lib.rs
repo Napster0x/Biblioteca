@@ -28,10 +28,10 @@ mod dir_scanner;
 mod discord_rpc;
 mod local_sync_discovery;
 mod local_sync_server;
-mod visible_repo;
 #[cfg(target_os = "macos")]
 mod macos;
 mod transfer_file;
+mod visible_repo;
 use local_sync_discovery::{find_local_ipv4, PeerInfo};
 #[cfg(target_os = "windows")]
 use tauri::webview::ScrollBarStyle;
@@ -280,7 +280,8 @@ fn start_local_sync_server(
 
     let visible_repo = std::sync::Arc::new(visible_repo::LibsqlVisibleRepo::new(data_dir.clone()));
 
-    let server = local_sync_server::SyncServer::start(port, replicas_dir, device_name, visible_repo)?;
+    let server =
+        local_sync_server::SyncServer::start(port, replicas_dir, device_name, visible_repo)?;
 
     let mut locked = state.lock().map_err(|e| e.to_string())?;
     locked.server = Some(server);
@@ -487,7 +488,12 @@ fn parse_adb_forward_list(output: &str, serial: &str, sync_port: u16) -> Vec<Adb
 }
 
 fn build_list_forward_rules_args(serial: &str) -> Vec<String> {
-    vec!["-s".into(), serial.into(), "forward".into(), "--list".into()]
+    vec![
+        "-s".into(),
+        serial.into(),
+        "forward".into(),
+        "--list".into(),
+    ]
 }
 
 fn build_setup_usb_tunnel_args(serial: &str, port: u16) -> Vec<String> {
@@ -563,10 +569,7 @@ fn check_adb() -> Result<(), String> {
 /// if `adb` is not installed or no devices are connected.
 #[tauri::command]
 fn list_usb_devices() -> Vec<String> {
-    match adb_cmd()
-        .args(["devices", "-l"])
-        .output()
-    {
+    match adb_cmd().args(["devices", "-l"]).output() {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             parse_adb_devices(&stdout)
@@ -580,10 +583,7 @@ fn list_usb_devices() -> Vec<String> {
 
 #[tauri::command]
 fn list_usb_devices_detailed() -> Vec<UsbDeviceStatus> {
-    match adb_cmd()
-        .args(["devices", "-l"])
-        .output()
-    {
+    match adb_cmd().args(["devices", "-l"]).output() {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             parse_adb_devices_detailed(&stdout)
@@ -955,6 +955,75 @@ pub fn run() {
             macos::menu::setup_macos_menu(app.handle())?;
 
             app.handle().emit("window-ready", ()).unwrap();
+
+            // Auto-start sync server on Android if toggle is enabled in settings.
+            #[cfg(target_os = "android")]
+            {
+                let settings_path = app
+                    .path()
+                    .app_data_dir()
+                    .unwrap_or_default()
+                    .join("Readest")
+                    .join("settings.json");
+                println!("[auto-start] checking {}", settings_path.display());
+                match std::fs::read_to_string(&settings_path) {
+                    Ok(contents) => {
+                        println!("[auto-start] settings read, {} bytes", contents.len());
+                        match serde_json::from_str::<serde_json::Value>(&contents) {
+                            Ok(settings) => {
+                                let enabled = settings
+                                    .get("localSync")
+                                    .and_then(|v| v.get("enabled"))
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+                                println!("[auto-start] localSync.enabled = {enabled}");
+                                if enabled {
+                                    let port = settings
+                                        .get("localSync")
+                                        .and_then(|v| v.get("port"))
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(7878) as u16;
+                                    let state = app
+                                        .state::<std::sync::Arc<std::sync::Mutex<LocalSyncState>>>();
+                                    let mut locked = state.lock().unwrap();
+                                    if locked.server.is_none() {
+                                        drop(locked);
+                                        let data_dir =
+                                            app.path().app_data_dir().unwrap_or_default();
+                                        let replicas_dir =
+                                            data_dir.join("local-sync").join("replicas");
+                                        let device_name = get_device_hostname();
+                                        let visible_repo = std::sync::Arc::new(
+                                            visible_repo::LibsqlVisibleRepo::new(data_dir),
+                                        );
+                                        match local_sync_server::SyncServer::start(
+                                            port,
+                                            replicas_dir,
+                                            device_name,
+                                            visible_repo,
+                                        ) {
+                                            Ok(server) => {
+                                                let mut locked = state.lock().unwrap();
+                                                locked.server = Some(server);
+                                                println!("[auto-start] server started on port {port}");
+                                            }
+                                            Err(e) => {
+                                                println!("[auto-start] server start failed: {e}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                println!("[auto-start] json parse error: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("[auto-start] cannot read settings: {e}");
+                    }
+                }
+            }
 
             Ok(())
         })
