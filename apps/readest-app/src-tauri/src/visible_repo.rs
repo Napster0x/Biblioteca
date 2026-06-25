@@ -63,7 +63,8 @@ const CREATE_REPLICAS_TABLE: &str = "
         deleted_at_ts TEXT,
         reincarnation TEXT,
         updated_at_ts TEXT NOT NULL DEFAULT '',
-        schema_version INTEGER NOT NULL DEFAULT 1
+        schema_version INTEGER NOT NULL DEFAULT 1,
+        semantic_key TEXT
     );
     CREATE INDEX IF NOT EXISTS idx__replicas_kind_upd
         ON _replicas(kind, updated_at_ts);
@@ -568,7 +569,7 @@ fn field_str(fields: &serde_json::Value, key: &str) -> Option<String> {
 /// Mirrors TS `normalizeDictionaryTerm`: NFC + lowercase + soft-hyphen strip.
 /// This is used during sync push to match dictionary entries by normalized
 /// (term, language) rather than by replica_id alone.
-fn normalize_dictionary_term(term: &str) -> String {
+pub fn normalize_dictionary_term(term: &str) -> String {
     term.nfc()
         .collect::<String>()
         .replace('\u{00AD}', "")
@@ -1221,6 +1222,185 @@ impl VisibleRepository for LibsqlVisibleRepo {
     }
 }
 
+/// Ensure the `semantic_key` column exists on the `_replicas` table.
+/// This handles migration for databases created before the column was added.
+fn ensure_semantic_key_column(conn: &Connection) -> Result<(), String> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('_replicas') WHERE name = 'semantic_key'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("check semantic_key column: {e}"))?;
+    if !exists {
+        conn.execute_batch("ALTER TABLE _replicas ADD COLUMN semantic_key TEXT")
+            .map_err(|e| format!("add semantic_key column: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Compute a semantic key for a dictionary-entry row.
+///
+/// Returns `"{normalized_term}|{language}"` or `None` if the term is missing or empty.
+pub fn compute_semantic_key(fields_jsonb: &serde_json::Value) -> Option<String> {
+    let term = field_str(fields_jsonb, "term")?;
+    if term.is_empty() {
+        return None;
+    }
+    let normalized = normalize_dictionary_term(&term);
+    let language = field_str(fields_jsonb, "language").unwrap_or_default();
+    Some(format!("{}|{}", normalized, language))
+}
+
+/// Filter out rows from `rows` that already exist in `_replicas` with
+/// equal-or-higher HLC. Two passes:
+///
+/// 1. **Exact replica_id match** — if a row exists with updated_at_ts >= incoming, skip it.
+/// 2. **Semantic match** (dictionary-entry only) — if a row with the same `semantic_key`
+///    and `kind = 'dictionary-entry'` exists with updated_at_ts >= incoming, skip it.
+pub fn filter_unchanged_replicas(
+    kind: &str,
+    rows: &[ReplicaRow],
+    db_path: &str,
+) -> Result<Vec<ReplicaRow>, String> {
+    let conn = Connection::open(db_path).map_err(|e| format!("open db: {e}"))?;
+    conn.execute_batch(CREATE_REPLICAS_TABLE)
+        .map_err(|e| format!("create _replicas: {e}"))?;
+    ensure_semantic_key_column(&conn)?;
+
+    let mut result = Vec::new();
+
+    for row in rows {
+        // Pass 1: exact replica_id match
+        let existing_hlc: Option<String> = conn
+            .query_row(
+                "SELECT updated_at_ts FROM _replicas WHERE replica_id = ?1",
+                [&row.replica_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        let skip_by_replica = match existing_hlc {
+            Some(ref existing) if existing.as_str() >= row.updated_at_ts.as_str() => true,
+            _ => false,
+        };
+
+        if skip_by_replica {
+            continue;
+        }
+
+        // Pass 2: semantic match for dictionary-entry
+        if kind == "dictionary-entry" {
+            if let Some(semantic_key) = compute_semantic_key(&row.fields_jsonb) {
+                let semantic_hlc: Option<String> = conn
+                    .query_row(
+                        "SELECT updated_at_ts FROM _replicas \
+                         WHERE semantic_key = ?1 AND kind = 'dictionary-entry' \
+                         LIMIT 1",
+                        [&semantic_key],
+                        |r| r.get(0),
+                    )
+                    .ok();
+
+                if let Some(ref existing) = semantic_hlc {
+                    if existing.as_str() >= row.updated_at_ts.as_str() {
+                        continue;
+                    }
+                }
+            }
+        }
+
+        result.push(row.clone());
+    }
+
+    Ok(result)
+}
+
+/// Upsert a single ReplicaRow into `_replicas`, computing and storing the
+/// `semantic_key` column for dictionary-entry rows.
+pub fn write_replica_metadata(row: &ReplicaRow, db_path: &str) -> Result<(), String> {
+    let conn = Connection::open(db_path).map_err(|e| format!("open db: {e}"))?;
+    conn.execute_batch(CREATE_REPLICAS_TABLE)
+        .map_err(|e| format!("create _replicas: {e}"))?;
+    ensure_semantic_key_column(&conn)?;
+
+    let semantic_key = if row.kind == "dictionary-entry" {
+        compute_semantic_key(&row.fields_jsonb)
+    } else {
+        None
+    };
+
+    let fields_str = row.fields_jsonb.to_string();
+    let manifest_str = row.manifest_jsonb.as_ref().map(|m| m.to_string());
+
+    conn.execute(
+        "INSERT OR REPLACE INTO _replicas \
+         (replica_id, kind, user_id, fields_jsonb, manifest_jsonb, \
+          deleted_at_ts, reincarnation, updated_at_ts, schema_version, semantic_key) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            &row.replica_id,
+            &row.kind,
+            &row.user_id,
+            &fields_str,
+            &manifest_str,
+            &row.deleted_at_ts,
+            &row.reincarnation,
+            &row.updated_at_ts,
+            row.schema_version,
+            semantic_key,
+        ],
+    )
+    .map_err(|e| format!("upsert _replicas: {e}"))?;
+
+    Ok(())
+}
+
+/// Ensure `_replicas` and the application table for `kind` exist.
+/// Idempotent — safe to call multiple times.
+///
+/// Supports kinds: `annotation`, `quote`, `dictionary-entry`.
+/// Unknown kinds still create `_replicas`.
+pub fn ensure_replica_tables(kind: &str, db_path: &str) -> Result<(), String> {
+    let conn = Connection::open(db_path).map_err(|e| format!("open db: {e}"))?;
+
+    conn.execute_batch(CREATE_REPLICAS_TABLE)
+        .map_err(|e| format!("create _replicas: {e}"))?;
+    ensure_semantic_key_column(&conn)?;
+
+    let app_ddl = match kind {
+        "dictionary-entry" => Some(
+            "CREATE TABLE IF NOT EXISTS dictionary_entries (\
+               id TEXT PRIMARY KEY, term TEXT, display_term TEXT, language TEXT, \
+               definition TEXT, enrichment_status TEXT DEFAULT 'pending', \
+               image_path TEXT, curiosity TEXT, \
+               created_at INTEGER, updated_at INTEGER, deleted_at INTEGER);",
+        ),
+        "quote" => Some(
+            "CREATE TABLE IF NOT EXISTS quotes (\
+               id TEXT PRIMARY KEY, book_hash TEXT, book_title TEXT, book_author TEXT, \
+               cfi TEXT, section_href TEXT, page INTEGER, text TEXT, \
+               context_before TEXT, context_after TEXT, content_hash TEXT, \
+               created_at INTEGER, updated_at INTEGER, deleted_at INTEGER);",
+        ),
+        "annotation" => Some(
+            "CREATE TABLE IF NOT EXISTS annotations (\
+               id TEXT PRIMARY KEY, book_hash TEXT, book_title TEXT, book_author TEXT, \
+               cfi TEXT, section_href TEXT, page INTEGER, text TEXT, note TEXT DEFAULT '', \
+               style TEXT DEFAULT 'highlight', color TEXT DEFAULT 'yellow', \
+               created_at INTEGER, updated_at INTEGER, deleted_at INTEGER);",
+        ),
+        _ => None,
+    };
+
+    if let Some(ddl) = app_ddl {
+        conn.execute_batch(ddl)
+            .map_err(|e| format!("create app table: {e}"))?;
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1261,53 +1441,10 @@ mod tests {
                 Ok(0)
             }
 
-    fn health(&self) -> bool {
-        true
-    }
-
-    fn clear_dev_state(&self) -> Result<usize, String> {
-        const KINDS: [&str; 4] = ["annotation", "quote", "dictionary-entry", "dictionary-occurrence"];
-        let mut cleared = 0usize;
-
-        for kind in KINDS {
-            let mut conns = self.conn_for_kind(kind)?;
-            let conn = conns
-                .get_mut(kind)
-                .ok_or_else(|| format!("no connection for kind {kind}"))?;
-            cleared += delete_if_table_exists(conn, "_replicas")?;
-            match kind {
-                "annotation" => cleared += delete_if_table_exists(conn, "annotations")?,
-                "quote" => cleared += delete_if_table_exists(conn, "quotes")?,
-                "dictionary-entry" => cleared += delete_if_table_exists(conn, "dictionary_entries")?,
-                "dictionary-occurrence" => cleared += delete_if_table_exists(conn, "dictionary_occurrences")?,
-                _ => {}
+            fn health(&self) -> bool {
+                true
             }
         }
-
-        let mut conns = self
-            .connections
-            .lock()
-            .map_err(|e| format!("lock poisoned: {e}"))?;
-        conns.clear();
-
-        Ok(cleared)
-    }
-}
-
-fn delete_if_table_exists(conn: &Connection, table: &str) -> Result<usize, String> {
-    let exists: bool = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            [table],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("check table {table}: {e}"))?;
-    if !exists {
-        return Ok(0);
-    }
-    conn.execute(&format!("DELETE FROM {table}"), [])
-        .map_err(|e| format!("clear table {table}: {e}"))
-}
 
         let repo = MockRepo;
         assert!(repo.health());
@@ -2887,6 +3024,449 @@ fn delete_if_table_exists(conn: &Connection, table: &str) -> Result<usize, Strin
             )
             .unwrap();
         assert_eq!(count, 2, "occurrences must NOT be deduped — each is a distinct event");
+    }
+
+    // ── compute_semantic_key ──────────────────────────────────────────
+
+    #[test]
+    fn compute_semantic_key_returns_normalized_term_and_language() {
+        let fields = serde_json::json!({
+            "term": {"v": "Hello", "t": "T100", "s": "dev-a"},
+            "language": {"v": "en", "t": "T100", "s": "dev-a"}
+        });
+        let result = compute_semantic_key(&fields);
+        assert_eq!(result, Some("hello|en".to_string()));
+    }
+
+    #[test]
+    fn compute_semantic_key_returns_none_when_term_is_missing() {
+        let fields = serde_json::json!({
+            "language": {"v": "en", "t": "T100", "s": "dev-a"}
+        });
+        let result = compute_semantic_key(&fields);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn compute_semantic_key_returns_none_when_term_is_empty() {
+        let fields = serde_json::json!({
+            "term": {"v": "", "t": "T100", "s": "dev-a"},
+            "language": {"v": "en", "t": "T100", "s": "dev-a"}
+        });
+        let result = compute_semantic_key(&fields);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn compute_semantic_key_normalizes_term_with_accents() {
+        let fields = serde_json::json!({
+            "term": {"v": "Café", "t": "T100", "s": "dev-a"},
+            "language": {"v": "fr", "t": "T100", "s": "dev-a"}
+        });
+        let result = compute_semantic_key(&fields);
+        assert_eq!(result, Some("café|fr".to_string()));
+    }
+
+    #[test]
+    fn compute_semantic_key_strips_soft_hyphen() {
+        let fields = serde_json::json!({
+            "term": {"v": "hell\u{00AD}o", "t": "T100", "s": "dev-a"},
+            "language": {"v": "en", "t": "T100", "s": "dev-a"}
+        });
+        let result = compute_semantic_key(&fields);
+        assert_eq!(result, Some("hello|en".to_string()));
+    }
+
+    #[test]
+    fn compute_semantic_key_handles_missing_language() {
+        let fields = serde_json::json!({
+            "term": {"v": "Hello", "t": "T100", "s": "dev-a"}
+        });
+        let result = compute_semantic_key(&fields);
+        assert_eq!(result, Some("hello|".to_string()));
+    }
+
+    // ── filter_unchanged_replicas ──────────────────────────────────────
+
+    #[test]
+    fn filter_unchanged_replicas_returns_all_when_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let rows = vec![
+            make_row("r1", "annotation", "T100"),
+            make_row("r2", "annotation", "T200"),
+        ];
+
+        let result = filter_unchanged_replicas("annotation", &rows, db_str).unwrap();
+        assert_eq!(result.len(), 2, "all rows returned when _replicas is empty");
+    }
+
+    #[test]
+    fn filter_unchanged_replicas_excludes_exact_match_equal_hlc() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        // Pre-seed _replicas with a row
+        let conn = Connection::open(db_str).unwrap();
+        conn.execute_batch(CREATE_REPLICAS_TABLE).unwrap();
+        conn.execute(
+            "INSERT INTO _replicas (replica_id, kind, user_id, fields_jsonb, updated_at_ts, schema_version) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params!["r1", "annotation", "user", "{}", "T100", 1],
+        ).unwrap();
+        drop(conn);
+
+        let rows = vec![make_row("r1", "annotation", "T100")];
+        let result = filter_unchanged_replicas("annotation", &rows, db_str).unwrap();
+        assert!(result.is_empty(), "row with equal HLC should be excluded");
+    }
+
+    #[test]
+    fn filter_unchanged_replicas_includes_higher_hlc() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let conn = Connection::open(db_str).unwrap();
+        conn.execute_batch(CREATE_REPLICAS_TABLE).unwrap();
+        conn.execute(
+            "INSERT INTO _replicas (replica_id, kind, user_id, fields_jsonb, updated_at_ts, schema_version) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params!["r1", "annotation", "user", "{}", "T100", 1],
+        ).unwrap();
+        drop(conn);
+
+        let rows = vec![make_row("r1", "annotation", "T200")];
+        let result = filter_unchanged_replicas("annotation", &rows, db_str).unwrap();
+        assert_eq!(result.len(), 1, "row with higher HLC should be included");
+    }
+
+    #[test]
+    fn filter_unchanged_replicas_excludes_lower_hlc() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let conn = Connection::open(db_str).unwrap();
+        conn.execute_batch(CREATE_REPLICAS_TABLE).unwrap();
+        conn.execute(
+            "INSERT INTO _replicas (replica_id, kind, user_id, fields_jsonb, updated_at_ts, schema_version) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params!["r1", "annotation", "user", "{}", "T200", 1],
+        ).unwrap();
+        drop(conn);
+
+        let rows = vec![make_row("r1", "annotation", "T100")];
+        let result = filter_unchanged_replicas("annotation", &rows, db_str).unwrap();
+        assert!(result.is_empty(), "row with lower HLC should be excluded");
+    }
+
+    #[test]
+    fn filter_unchanged_replicas_semantic_match_excludes_dict_entry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let conn = Connection::open(db_str).unwrap();
+        conn.execute_batch(CREATE_REPLICAS_TABLE).unwrap();
+        // Insert a dictionary-entry with semantic_key
+        conn.execute(
+            "INSERT INTO _replicas (replica_id, kind, user_id, fields_jsonb, updated_at_ts, schema_version, semantic_key) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "dictionary-entry:existing",
+                "dictionary-entry",
+                "user",
+                r#"{"term":{"v":"hello","t":"T100","s":"dev"},"language":{"v":"en","t":"T100","s":"dev"}}"#,
+                "T100",
+                1,
+                "hello|en",
+            ],
+        ).unwrap();
+        drop(conn);
+
+        // Same semantic key, different replica_id, same HLC
+        let row = ReplicaRow {
+            user_id: "user".into(),
+            kind: "dictionary-entry".into(),
+            replica_id: "dictionary-entry:new".into(),
+            fields_jsonb: serde_json::json!({
+                "term": {"v": "hello", "t": "T100", "s": "dev"},
+                "language": {"v": "en", "t": "T100", "s": "dev"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: "T100".into(),
+            schema_version: 1,
+        };
+        let result = filter_unchanged_replicas("dictionary-entry", &[row], db_str).unwrap();
+        assert!(result.is_empty(), "dict entry with same semantic_key+equal HLC should be excluded");
+    }
+
+    #[test]
+    fn filter_unchanged_replicas_no_semantic_pass_for_non_dict() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let conn = Connection::open(db_str).unwrap();
+        conn.execute_batch(CREATE_REPLICAS_TABLE).unwrap();
+        drop(conn);
+
+        // An annotation row — should NOT trigger semantic pass (only dict-entry does)
+        let row = make_row("annotation:new-id", "annotation", "T100");
+        // No _replicas row exists yet, so it should be included
+        let result = filter_unchanged_replicas("annotation", &[row], db_str).unwrap();
+        assert_eq!(result.len(), 1, "non-dict must not have semantic pass");
+    }
+
+    #[test]
+    fn filter_unchanged_replicas_semantic_match_respects_higher_hlc() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let conn = Connection::open(db_str).unwrap();
+        conn.execute_batch(CREATE_REPLICAS_TABLE).unwrap();
+        conn.execute(
+            "INSERT INTO _replicas (replica_id, kind, user_id, fields_jsonb, updated_at_ts, schema_version, semantic_key) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "dictionary-entry:existing",
+                "dictionary-entry",
+                "user",
+                r#"{"term":{"v":"hello","t":"T100","s":"dev"},"language":{"v":"en","t":"T100","s":"dev"}}"#,
+                "T100",
+                1,
+                "hello|en",
+            ],
+        ).unwrap();
+        drop(conn);
+
+        // Incoming has higher HLC T200 → should pass
+        let row = ReplicaRow {
+            user_id: "user".into(),
+            kind: "dictionary-entry".into(),
+            replica_id: "dictionary-entry:new".into(),
+            fields_jsonb: serde_json::json!({
+                "term": {"v": "hello", "t": "T200", "s": "dev"},
+                "language": {"v": "en", "t": "T200", "s": "dev"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: "T200".into(),
+            schema_version: 1,
+        };
+        let result = filter_unchanged_replicas("dictionary-entry", &[row], db_str).unwrap();
+        assert_eq!(result.len(), 1, "row with higher HLC must pass even with semantic match");
+    }
+
+    #[test]
+    fn filter_unchanged_replicas_invalid_db_path_returns_error() {
+        let result = filter_unchanged_replicas("annotation", &[], "/nonexistent/dir/test.db");
+        assert!(result.is_err(), "invalid db path must return error");
+    }
+
+    // ── write_replica_metadata ──────────────────────────────────────────
+
+    #[test]
+    fn write_replica_metadata_inserts_row() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let row = make_row("r1", "annotation", "T100");
+        write_replica_metadata(&row, db_str).unwrap();
+
+        let conn = Connection::open(db_str).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _replicas WHERE replica_id = ?1",
+                ["r1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "row must be inserted");
+    }
+
+    #[test]
+    fn write_replica_metadata_overwrite_respects_hlc() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        // Insert first at T100
+        let row1 = make_row("r1", "annotation", "T100");
+        write_replica_metadata(&row1, db_str).unwrap();
+
+        // Overwrite with lower HLC
+        let row2 = make_row("r1", "annotation", "T050");
+        write_replica_metadata(&row2, db_str).unwrap();
+
+        // HLC should be T100 (last write wins with INSERT OR REPLACE)
+        let conn = Connection::open(db_str).unwrap();
+        let hlc: String = conn
+            .query_row(
+                "SELECT updated_at_ts FROM _replicas WHERE replica_id = ?1",
+                ["r1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // INSERT OR REPLACE always overwrites, so last write wins
+        assert_eq!(hlc, "T050", "last write wins with INSERT OR REPLACE");
+    }
+
+    #[test]
+    fn write_replica_metadata_computes_semantic_key_for_dict_entry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let row = ReplicaRow {
+            user_id: "user".into(),
+            kind: "dictionary-entry".into(),
+            replica_id: "dictionary-entry:d1".into(),
+            fields_jsonb: serde_json::json!({
+                "term": {"v": "Hello", "t": "T100", "s": "dev"},
+                "language": {"v": "en", "t": "T100", "s": "dev"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: "T100".into(),
+            schema_version: 1,
+        };
+        write_replica_metadata(&row, db_str).unwrap();
+
+        let conn = Connection::open(db_str).unwrap();
+        let semantic_key: Option<String> = conn
+            .query_row(
+                "SELECT semantic_key FROM _replicas WHERE replica_id = ?1",
+                ["dictionary-entry:d1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(semantic_key, Some("hello|en".to_string()));
+    }
+
+    #[test]
+    fn write_replica_metadata_semantic_key_null_for_non_dict() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        let row = make_row("ann-1", "annotation", "T100");
+        write_replica_metadata(&row, db_str).unwrap();
+
+        let conn = Connection::open(db_str).unwrap();
+        let semantic_key: Option<String> = conn
+            .query_row(
+                "SELECT semantic_key FROM _replicas WHERE replica_id = ?1",
+                ["ann-1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(semantic_key, None, "non-dict kinds must have NULL semantic_key");
+    }
+
+    #[test]
+    fn write_replica_metadata_invalid_path_returns_error() {
+        let row = make_row("r1", "annotation", "T100");
+        let result = write_replica_metadata(&row, "/nonexistent/dir/test.db");
+        assert!(result.is_err(), "invalid db path must return error");
+    }
+
+    // ── ensure_replica_tables ───────────────────────────────────────────
+
+    #[test]
+    fn ensure_replica_tables_creates_replicas_and_app_table() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        ensure_replica_tables("dictionary-entry", db_str).unwrap();
+
+        let conn = Connection::open(db_str).unwrap();
+        let replicas_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_replicas'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(replicas_count, 1, "_replicas table must exist");
+
+        let entries_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dictionary_entries'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(entries_count, 1, "dictionary_entries table must exist");
+    }
+
+    #[test]
+    fn ensure_replica_tables_idempotent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        ensure_replica_tables("dictionary-entry", db_str).unwrap();
+        ensure_replica_tables("dictionary-entry", db_str).unwrap();
+
+        let conn = Connection::open(db_str).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_replicas'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "second call must be idempotent");
+    }
+
+    #[test]
+    fn ensure_replica_tables_creates_annotation_tables() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        ensure_replica_tables("annotation", db_str).unwrap();
+
+        let conn = Connection::open(db_str).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='annotations'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "annotations table must exist");
+    }
+
+    #[test]
+    fn ensure_replica_tables_unknown_kind_creates_only_replicas() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db_str = db_path.to_str().unwrap();
+
+        ensure_replica_tables("unknown-kind", db_str).unwrap();
+
+        let conn = Connection::open(db_str).unwrap();
+        let replicas_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_replicas'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(replicas_count, 1, "_replicas must exist");
     }
 
     /// SID-4: Field-level edits survive dedup — when dedup merges to an

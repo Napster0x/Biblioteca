@@ -30,6 +30,7 @@ mod local_sync_discovery;
 mod local_sync_server;
 #[cfg(target_os = "macos")]
 mod macos;
+mod sync_commands;
 mod transfer_file;
 mod visible_repo;
 use local_sync_discovery::{find_local_ipv4, PeerInfo};
@@ -676,6 +677,12 @@ pub fn run() {
             list_usb_devices_detailed,
             list_forward_rules,
             setup_usb_tunnel,
+            // Sync dedup commands (PR #1 — harness-code-path-unification)
+            sync_commands::normalize_term,
+            sync_commands::compute_semantic_key,
+            sync_commands::filter_unchanged_replicas,
+            sync_commands::write_replica_metadata,
+            sync_commands::ensure_replica_tables,
             #[cfg(target_os = "macos")]
             macos::safari_auth::auth_with_safari,
             #[cfg(target_os = "macos")]
