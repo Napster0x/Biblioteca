@@ -2,7 +2,7 @@
  * localSyncUtils tests.
  *
  * Tests: filterReachablePeers, createPeerTransport, runSyncCycle (seed +
- * incremental + SyncResult + onStep).
+ * incremental + SyncResult + onStep, Tauri invoke integration).
  * Run with: npx vitest run src/__tests__/services/sync/localSyncUtils.test.ts
  */
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
@@ -17,6 +17,21 @@ const mockDefaultVisibleSeedProvider = vi.hoisted(() => vi.fn<VisibleSeedProvide
 
 vi.mock('@/services/sync/visibleSeedRepository', () => ({
   defaultVisibleSeedProvider: mockDefaultVisibleSeedProvider,
+}));
+
+// ---------------------------------------------------------------------------
+// Tauri invoke mocks (for PR #3 — wire runSyncCycle)
+// ---------------------------------------------------------------------------
+
+const mockInvoke = vi.hoisted(() => vi.fn());
+const mockAppDataDir = vi.hoisted(() => vi.fn());
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: mockInvoke,
+}));
+
+vi.mock('@tauri-apps/api/path', () => ({
+  appDataDir: mockAppDataDir,
 }));
 
 // ---------------------------------------------------------------------------
@@ -189,6 +204,8 @@ describe('localSyncUtils', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset module-level state (e.g. _dbPathCache) between tests
+    mod.__resetSyncModuleState?.();
     mockAnotacionesStore.replicaOutbox = [];
     mockAnotacionesStore.applyRemoteAnnotation.mockClear();
     mockCitasStore.replicaOutbox = [];
@@ -723,6 +740,152 @@ describe('localSyncUtils', () => {
 
       // Quote rows were restored and should be pushed on retry
       expect(retryTransport.push).toHaveBeenCalledWith('quote', [quoteRow]);
+    });
+
+    // ── PR #3: Tauri invoke integration ──────────────────────────────────
+
+    it('calls invoke filter_unchanged_replicas before transport.push (USB)', async () => {
+      const order: string[] = [];
+      mockAppDataDir.mockResolvedValue('/tmp/test-readest');
+      mockInvoke.mockImplementation(async (cmd: string, args: Record<string, unknown>) => {
+        if (cmd === 'filter_unchanged_replicas') {
+          order.push('invoke:filter');
+          // Return original rows so push proceeds
+          return args.rows_json as ReplicaRow[];
+        }
+        return undefined;
+      });
+
+      const transport = createMockTransport({
+        kind: 'usb',
+        push: vi.fn(async () => {
+          order.push('push');
+        }),
+      });
+      mockAnotacionesStore.replicaOutbox = [makeAnnotationRow('order-test', HLC_B)];
+
+      await mod.runSyncCycle(transport, ['annotation'], PEER_ID);
+
+      expect(order).toEqual(['invoke:filter', 'push']);
+    });
+
+    it('calls invoke filter_unchanged_replicas after transport.pull and before applyRemote', async () => {
+      const order: string[] = [];
+      mockAppDataDir.mockResolvedValue('/tmp/test-readest');
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'filter_unchanged_replicas') {
+          order.push('invoke:filter-pull');
+          return [];
+        }
+        return undefined;
+      });
+
+      const transport = createMockTransport({
+        kind: 'usb',
+        pull: vi.fn(async () => {
+          order.push('pull');
+          return [makeAnnotationRow('pull-filter-test', HLC_A)];
+        }),
+      });
+
+      await mod.runSyncCycle(transport, ['annotation'], PEER_ID);
+
+      expect(order).toContain('invoke:filter-pull');
+      // Remote rows were filtered out → nothing applied
+      expect(mockAnotacionesStore.applyRemoteAnnotation).not.toHaveBeenCalled();
+    });
+
+    it('gracefully degrades when Tauri invoke is not available (web context)', async () => {
+      // appDataDir rejects — Tauri not available
+      mockAppDataDir.mockRejectedValue(new Error('Not in Tauri'));
+
+      const outboxRow = makeAnnotationRow('degrade-test', HLC_B);
+      const remoteRow = makeAnnotationRow('degrade-remote', HLC_A);
+      mockAnotacionesStore.replicaOutbox = [outboxRow];
+
+      const transport = createMockTransport({
+        kind: 'usb',
+        pull: vi.fn().mockResolvedValue([remoteRow]),
+      });
+
+      await mod.runSyncCycle(transport, ['annotation'], PEER_ID);
+
+      // All rows pushed (no filtering) — graceful degradation
+      expect(transport.push).toHaveBeenCalledWith('annotation', [outboxRow]);
+      // All remote rows applied (no filtering)
+      expect(mockAnotacionesStore.applyRemoteAnnotation).toHaveBeenCalledWith(remoteRow);
+      // No invoke calls attempted
+      expect(mockInvoke).not.toHaveBeenCalled();
+    });
+
+    it('does not push rows filtered out by filter_unchanged_replicas', async () => {
+      mockAppDataDir.mockResolvedValue('/tmp/test-readest');
+      const keptRow = makeAnnotationRow('kept', HLC_B);
+      const removedRow = makeAnnotationRow('removed', HLC_C);
+
+      mockInvoke.mockImplementation(async (cmd: string, args: Record<string, unknown>) => {
+        if (cmd === 'filter_unchanged_replicas') {
+          const rows = args.rows_json as ReplicaRow[];
+          return rows.filter((r) => r.replica_id !== 'annotation:removed');
+        }
+        return undefined;
+      });
+
+      mockAnotacionesStore.replicaOutbox = [keptRow, removedRow];
+      const transport = createMockTransport({ kind: 'usb' });
+
+      await mod.runSyncCycle(transport, ['annotation'], PEER_ID);
+
+      // Only the kept row should be pushed
+      expect(transport.push).toHaveBeenCalledWith('annotation', [keptRow]);
+      expect(transport.push).not.toHaveBeenCalledWith(
+        'annotation',
+        expect.arrayContaining([removedRow]),
+      );
+      expect(transport.pushedRows).toContainEqual(keptRow);
+      expect(transport.pushedRows).not.toContainEqual(removedRow);
+    });
+
+    it('calls write_replica_metadata for each successfully pushed row', async () => {
+      mockAppDataDir.mockResolvedValue('/tmp/test-readest');
+      mockInvoke.mockResolvedValue(undefined);
+
+      const row1 = makeAnnotationRow('meta-1', HLC_B);
+      const row2 = makeAnnotationRow('meta-2', HLC_C);
+      mockAnotacionesStore.replicaOutbox = [row1, row2];
+      const transport = createMockTransport({ kind: 'usb' });
+
+      await mod.runSyncCycle(transport, ['annotation'], PEER_ID);
+
+      expect(mockInvoke).toHaveBeenCalledWith(
+        'write_replica_metadata',
+        expect.objectContaining({
+          row_json: expect.objectContaining({ replica_id: 'annotation:meta-1' }),
+        }),
+      );
+      expect(mockInvoke).toHaveBeenCalledWith(
+        'write_replica_metadata',
+        expect.objectContaining({
+          row_json: expect.objectContaining({ replica_id: 'annotation:meta-2' }),
+        }),
+      );
+    });
+
+    it('does not call write_replica_metadata when transport.push throws', async () => {
+      mockAppDataDir.mockResolvedValue('/tmp/test-readest');
+      mockInvoke.mockResolvedValue(undefined);
+
+      const row1 = makeAnnotationRow('push-fail-row', HLC_B);
+      mockAnotacionesStore.replicaOutbox = [row1];
+      const transport = createMockTransport({
+        kind: 'usb',
+        push: vi.fn().mockRejectedValue(new Error('Push failed')),
+      });
+
+      await mod.runSyncCycle(transport, ['annotation'], PEER_ID);
+
+      // write_replica_metadata should NOT have been called since push failed
+      expect(mockInvoke).not.toHaveBeenCalledWith('write_replica_metadata', expect.anything());
     });
   });
 

@@ -139,6 +139,63 @@ function manifestFromRow(row: ReplicaRow): { sha256?: string; byteSize?: number 
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Tauri bridge helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Cache for the app data directory path.
+ * Populated lazily on first call to `getDbPath()`.
+ */
+let _dbPathCache: string | undefined;
+
+/** @internal Reset module-level state for test isolation. */
+export function __resetSyncModuleState(): void {
+  _dbPathCache = undefined;
+}
+
+/**
+ * Try to get the app data directory path for Tauri invoke calls.
+ * Returns empty string when Tauri is not available (web context).
+ * Result is cached after first resolution to avoid repeated dynamic imports.
+ */
+async function getDbPath(): Promise<string> {
+  if (_dbPathCache !== undefined) return _dbPathCache;
+  try {
+    const { appDataDir } = await import('@tauri-apps/api/path');
+    _dbPathCache = await appDataDir();
+  } catch {
+    _dbPathCache = '';
+  }
+  return _dbPathCache;
+}
+
+/**
+ * Filter rows through Tauri `filter_unchanged_replicas` if available.
+ * Gracefully degrades to returning all rows when invoke is not available
+ * or throws (web context / non-Tauri runtime).
+ */
+async function filterUnchangedViaInvoke(
+  rows: ReplicaRow[],
+  kind: SyncCategory,
+  dbPath: string,
+): Promise<ReplicaRow[]> {
+  if (!dbPath || rows.length === 0) return rows;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const result = await invoke('filter_unchanged_replicas', {
+      kind,
+      rows_json: rows,
+      db_path: dbPath,
+    });
+    // Defensive: if invoke returns undefined or non-array, fall back to all rows
+    return Array.isArray(result) ? (result as ReplicaRow[]) : rows;
+  } catch (err) {
+    console.warn('[sync] filter_unchanged_replicas invoke failed, using all rows', err);
+    return rows;
+  }
+}
+
 function restoreOutboxRows(kind: SyncCategory, rows: ReplicaRow[]): void {
   if (rows.length === 0) return;
 
@@ -230,6 +287,7 @@ export async function runSyncCycle(
     seedProvider ??
     (await import('@/services/sync/visibleSeedRepository')).defaultVisibleSeedProvider;
   const startedAt = Date.now();
+  const dbPath = await getDbPath();
   const errors: SyncError[] = [];
   const kindsResult: Record<string, SyncKindResult> = {};
 
@@ -301,6 +359,21 @@ export async function runSyncCycle(
             }
           }
         }
+
+        // ── Write replica metadata to _replicas table ──
+        if (dbPath) {
+          try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            for (const row of toPush) {
+              await invoke('write_replica_metadata', { row_json: row, db_path: dbPath });
+            }
+          } catch (err) {
+            console.warn(
+              '[sync] write_replica_metadata invoke failed, skipping metadata write',
+              err,
+            );
+          }
+        }
       } catch (err: unknown) {
         const msg = errorMessageFromUnknown(err);
         errors.push({
@@ -316,6 +389,8 @@ export async function runSyncCycle(
 
     if (transport.kind === 'usb') {
       await collectLocalRowsToPush();
+      // ── Filter unchanged replicas before pushing ──
+      toPush = await filterUnchangedViaInvoke(toPush, kind, dbPath);
       await pushLocalRows();
     }
 
@@ -334,6 +409,9 @@ export async function runSyncCycle(
       });
       continue; // Try next kind
     }
+
+    // ── Filter unchanged replicas after pull, before applying locally ──
+    remoteRows = await filterUnchangedViaInvoke(remoteRows, kind, dbPath);
 
     // ── 2. Apply remote rows locally ──
     if (remoteRows.length > 0) {
@@ -423,6 +501,8 @@ export async function runSyncCycle(
     if (transport.kind !== 'usb') {
       // ── 3. Collect local rows to push ──
       await collectLocalRowsToPush();
+      // ── Filter unchanged replicas before pushing ──
+      toPush = await filterUnchangedViaInvoke(toPush, kind, dbPath);
       // ── 4. Push ──
       await pushLocalRows();
     }
