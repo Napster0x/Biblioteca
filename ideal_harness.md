@@ -490,6 +490,44 @@ Si podemos hacer eso de forma repetible, observable y segura, entonces tenemos u
 
 ---
 
+## Principio crítico: fidelidad del code path
+
+> **El harness debe ejecutar el MISMO code path que la UI real.**
+
+Esto significa que cualquier lógica de filtrado, deduplicación, merge o gestión de `_replicas` que existe en el harness debe existir también en `runSyncCycle()` de la UI — o, idealmente, ambas deben usar el mismo módulo compartido.
+
+Si el harness implementa una optimización o protección que la UI real no tiene (como `filterUnchangedReplicas()` con `semantic_key`), los tests del harness pueden dar **falsos positivos**: pasan en el entorno de pruebas pero no reflejan el comportamiento real de la app.
+
+### Reglas de fidelidad
+
+1. **No puede haber código de sync CRDT+HLC que solo exista en el harness.** Cualquier función de filtrado, merge, dedup o gestión de réplicas debe estar disponible para `runSyncCycle()` o debe moverse al Rust compartido (`visible_repo.rs`).
+2. **La tabla `_replicas` debe mantenerse en ambos lados** (desktop y Android), no solo donde el harness la usa.
+3. **El semantic dedup (`normalizeTerm()`, `computeSemanticKey()`, `filterUnchangedReplicas()`) debe existir en el pipeline de push/pull de la UI real**, no solo en el harness.
+4. **Si una optimización solo es posible en el harness** (ej. leer SQLite directo vs. vía Zustand), debe documentarse explícitamente como divergencia conocida y tener un plan para cerrarla.
+5. **Todo nuevo caso de prueba debe validarse** contra la UI real al menos una vez antes de darse por válido, no solo contra el harness.
+
+### Consecuencia para el diseño
+
+El principio de fidelidad implica que la arquitectura del harness y la UI deben converger hacia:
+
+```txt
+Capa compartida (TypeScript o Rust):
+  - normalizeTerm() / computeSemanticKey()
+  - filterUnchangedReplicas() / writeReplicaMetadata()
+  - Per-field HLC merge
+  - _replicas management
+
+         ↙                    ↘
+  Harness (Node.js)      UI (Zustand → Tauri)
+  - misma lógica          - misma lógica
+  - SQLite directo         - vía servicios/app
+  - inyección de backend   - inyección de backend
+```
+
+Si el harness y la UI usan la misma implementación de `filterUnchangedReplicas`, `writeReplicaMetadata`, y semantic dedup, entonces un test que pasa en el harness **garantiza** que la UI real se comportará igual.
+
+---
+
 ## Conclusión
 
 El harness ideal no automatiza por automatizar. Su objetivo es dar control.
@@ -505,5 +543,6 @@ entorno real
 + observabilidad profunda
 + reporte semántico
 + limpieza segura
++ code path FIEL a la UI real
 = harness CRDT+HLC útil
 ```

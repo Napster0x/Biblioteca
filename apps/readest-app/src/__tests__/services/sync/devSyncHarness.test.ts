@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 const appRootPath = process.cwd();
 const triggerScript = join(appRootPath, 'scripts/dev-sync-trigger.mjs');
 const syncExecuteScript = join(appRootPath, 'scripts/sync-execute.mjs');
+const syncFilterStandalone = join(appRootPath, 'scripts/sync-filter-standalone.mjs');
 const resetScript = join(appRootPath, 'scripts/dev-sync-reset.mjs');
 const doctorScript = join(appRootPath, 'scripts/dev-sync-doctor.mjs');
 const envModule = join(appRootPath, 'scripts/sync-dev-env.mjs');
@@ -6321,7 +6322,7 @@ describe('sync-execute pull filter evidence', () => {
 
 describe('sync-execute semantic filter pure functions', () => {
   it('normalizeTerm: NFC composition, lowercase, strips U+00AD, guards null/undefined', async () => {
-    const { normalizeTerm } = await import(pathToFileURL(syncExecuteScript).href);
+    const { normalizeTerm } = await import(pathToFileURL(syncFilterStandalone).href);
     // NFC composition: decomposed A + combining acute → composed á
     expect(normalizeTerm('\u0041\u0301')).toBe('á');
     // Lowercase
@@ -6341,7 +6342,7 @@ describe('sync-execute semantic filter pure functions', () => {
   });
 
   it('computeSemanticKey: valid JSONB, null fields_jsonb, empty term, missing language', async () => {
-    const { computeSemanticKey } = await import(pathToFileURL(syncExecuteScript).href);
+    const { computeSemanticKey } = await import(pathToFileURL(syncFilterStandalone).href);
     const makeRow = (term: unknown, lang: unknown) => ({
       fields_jsonb: { term: { v: term }, language: { v: lang } },
     });
@@ -6366,7 +6367,7 @@ describe('sync-execute semantic filter pure functions', () => {
 
   it('newerOrEqualSemanticReplicaExists: match found, not found, HLC gate, null key', async () => {
     const { newerOrEqualSemanticReplicaExists } = await import(
-      pathToFileURL(syncExecuteScript).href
+      pathToFileURL(syncFilterStandalone).href
     );
     const dbDir = makeTempRoot('semantic-replica-exists');
     const dbPath = join(dbDir, 'test.db');
