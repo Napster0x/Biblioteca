@@ -84,19 +84,34 @@ Símbolos:
 
 ```txt
 L      = Libro
-D      = Entrada de Diccionario
-F_D    = Frase asociada a una palabra del Diccionario
+D      = Entrada de Diccionario (dictionary_entries)
+         → campos: term (inmutable), definition (editable), imagePath (editable)
+F_D    = Ocurrencia/Frase asociada a una palabra del Diccionario
+         (dictionary_occurrences — evento INMUTABLE)
+         → selectedText, cfi, contextBefore, contextAfter
 IMG_D  = Imagen asociada a una palabra del Diccionario
+         (almacenada como PNG en Dictionaries/entries/{entryId}/image.png)
 
-C      = Cita
-T_C    = Texto citado recogido
+C      = Cita (quotes — INMUTABLE, sin campo note/comment)
+         → text, contextBefore, contextAfter, contentHash
+T_C    = Texto citado recogido (es el mismo campo C.text)
 
-N      = Anotación
-T_N    = Texto sobre el que se hizo la anotación
+N      = Anotación (annotations)
+         → text (inmutable = selectedText original), note (editable)
+T_N    = Texto sobre el que se hizo la anotación (es N.text, INMUTABLE)
 
 H_D    = Highlight asociado a Diccionario
 H_C    = Highlight asociado a Citas
 H_N    = Highlight asociado a Anotaciones
+
+NOTA: Los highlights NO son entidad SQL. Son objetos BookNote dentro
+del array booknotes[] del BookConfig (config.json) de cada libro.
+NUNCA se editan — solo se crean y se borran (soft-delete).
+
+Colores de highlights (VERIFICADO en código):
+  Diccionario → caller-defined (NO es fijo azul)
+  Cita 🟥     → #fca5a5 (rojo fijo)
+  Anotación 🟨 → yellow (fijo)
 
 H_D -> D = highlight que apunta a una entrada de Diccionario
 H_C -> C = highlight que apunta a una Cita
@@ -719,6 +734,99 @@ Para anotaciones personales, es recomendable evitar pérdida silenciosa.
 
 # 13. Conflictos de edición
 
+> ⚠️ **Mythbusting** — Esta sección ha sido verificada contra el código fuente
+> (visible_repo.rs, sync-execute.mjs, tipos TS, componentes UI). Lo que sigue
+> es la verdad del sistema, no suposiciones. Ver `sdd-explore` para trazabilidad completa.
+
+## 13.0. Mapa de campos por entidad (VERIFICADO)
+
+### 📚 Libro (`library.json`, no SQLite)
+
+| Campo | Editable | Evidencia UI |
+|-------|----------|-------------|
+| `title` | ✅ SÍ | BookDetailEdit.tsx:57-62 |
+| `author` | ✅ SÍ | BookDetailEdit.tsx:70-77 |
+| `coverImageUrl` | ✅ SÍ | BookDetailEdit.tsx:150-166 — selector de imagen local |
+| `group/groupId` | ✅ SÍ | GroupingModal.tsx |
+| `readingStatus` | ✅ SÍ | Bookshelf.tsx:455, SetStatusAlert.tsx |
+| `progress` | ✅ SÍ (automático) | libraryStore.updateBookProgress |
+| `metadata.subtitle` | ✅ SÍ | BookDetailEdit.tsx |
+| `metadata.series` | ✅ SÍ | BookDetailEdit.tsx |
+| `metadata.seriesIndex` | ✅ SÍ | BookDetailEdit.tsx |
+| `metadata.seriesTotal` | ✅ SÍ | BookDetailEdit.tsx |
+| `metadata.isbn` | ✅ SÍ | BookDetailEdit.tsx |
+| `metadata.publisher` | ✅ SÍ | BookDetailEdit.tsx |
+| `metadata.published` | ✅ SÍ | BookDetailEdit.tsx |
+| `metadata.language` | ✅ SÍ | BookDetailEdit.tsx |
+| `metadata.description` | ✅ SÍ | BookDetailEdit.tsx |
+| `hash` | ❌ NO | Derivado del contenido del archivo |
+| `sourceTitle` | ❌ NO | Parsed al importar para localizar el archivo |
+| `format` | ❌ NO | Detectado del archivo |
+
+### 📖 Diccionario — Entrada (`dictionary_entries`)
+
+| Campo | Editable | Evidencia |
+|-------|----------|-----------|
+| `definition` | ✅ SÍ | DictionaryDetailPage.tsx:312-325 — contentEditable div |
+| `imagePath` | ✅ SÍ | DictionaryDetailPage.tsx:328-361 — image picker + clipboard paste |
+| `term` | ❌ NO | Identidad semántica. No existe en UpdateEntryInput. |
+| `displayTerm` | ❌ NO | Se setea = term al crear. |
+| `language` | ❌ NO | Se define al crear. No existe en UpdateEntryInput. |
+| `curiosity` | ⚠️ EXISTE en DB pero NO HAY UI | Columna en DB + mapeada en ENTRY_FIELDS + soportada en UpdateEntryInput. Pero ningún componente UI la expone. No se considera "editable" para testing >80%. |
+| `enrichmentStatus` | ❌ NO | Solo se setea al crear ('pending'/'none'). |
+
+### 📖 Diccionario — Ocurrencia (`dictionary_occurrences`)
+
+La ocurrencia es un **evento inmutable**. Se crea y se borra (soft-delete).
+No tiene columna `updated_at`. No existe `updateOccurrence` en service ni store.
+
+| Campo | Editable |
+|-------|----------|
+| TODOS | ❌ NO — la ocurrencia no se edita nunca |
+
+### 💬 Cita (`quotes`)
+
+La cita es **texto recogido textual**. No hay UI de edición.
+`CitasService.updateQuote` existe pero **NUNCA se invoca desde la UI**.
+
+| Campo | Editable | Nota |
+|-------|----------|------|
+| NINGUNO | ❌ NO | No hay página `/citas/[id]`. Solo CitasGrid (read-only) + CitasTile. |
+| `note` / `comment` | ❌ NO EXISTE | El tipo `Cite` no tiene campo note. |
+
+### 🟨 Anotación (`annotations`)
+
+| Campo | Editable | Evidencia |
+|-------|----------|-----------|
+| `note` | ✅ SÍ | annotacionesStore.ts:220 — updateAnnotation(id, note, service) |
+| `text` | ❌ NO | Selected text original. UpdateAnnotacionInput NO lo incluye. |
+| `color` | ❌ NO | Se setea al crear. No existe en UpdateAnnotacionInput. |
+| `style` | ❌ NO | No existe en UpdateAnnotacionInput. |
+
+### 🖍️ Highlight (NO es tabla SQL — es BookNote en `booknotes[]` del config.json)
+
+Los highlights NO existen como entidad CRDT independiente. Son objetos dentro del
+`booknotes[]` del `BookConfig` de cada libro. Se asocian a la entidad semántica
+via `dictionaryEntryId`, `annotationId`, o `citeId`.
+
+| Campo | Editable |
+|-------|----------|
+| TODOS | ❌ NO — los BookNote highlights se crean y se borran (soft-delete), nunca se editan |
+
+**Colores por tipo semántico (verificados en código):**
+
+| Tipo | Color | Dónde se define |
+|------|-------|-----------------|
+| Diccionario | El que el caller pase (NO es fijo azul) | dictionaryCapture.ts — recibe `input.color` del annotator |
+| Cita 🟥 | `#fca5a5` (rojo) | globals.css:28 → `--citas-highlight` + `resolveCitasHighlightColor()` |
+| Anotación 🟨 | `yellow` (hardcoded) | annotacionesCapture.ts:33,53 |
+
+**IMPORTANTE**: El color del highlight de Diccionario NO es fijo. Depende de lo que
+el annotator pase al crear la captura. Para testing, asumir que Dictionary usa
+el color por defecto del annotator (que puede variar).
+
+---
+
 ## 13.1. A edita un campo, B no toca nada
 
 ```txt
@@ -728,29 +836,57 @@ B: D(definición="vieja")
 A/B: D(definición="nueva")
 ```
 
-Repetir para los campos **editables** del sistema:
+Repetir para los campos **realmente editables** del sistema (verificados contra código):
 
 ```txt
+# 📚 Libro
 Libro.título
 Libro.autor
-Libro.portada
-Diccionario.palabra
+Libro.portada (coverImageUrl)
+Libro.grupo (group/groupId)
+Libro.estado_lectura (readingStatus)
+Libro.progreso (progress)
+Libro.metadatos: subtítulo, serie, índice_serie, total_serie, isbn,
+                 editorial, publicado, idioma, descripción
+
+# 📖 Diccionario (entrada)
 Diccionario.definición
-Diccionario.curiosidad
-Diccionario.frase
-Diccionario.imagen
-Anotación.texto
+Diccionario.imagen (imagePath)
+
+# 🟨 Anotación
+Anotación.nota (note)
 ```
 
-**NO son editables** (diseño del sistema):
+**NO son editables** (verificado contra código):
 
 ```txt
-Cita.texto           → La cita es el texto seleccionado textual, no se edita.
-Cita.comentario      → No existe. Las notas sobre una cita son Anotaciones.
-Highlight.color      → Fijo por tipo: 🟦 Diccionario, 🟥 Cita, 🟨 Anotación.
-Highlight.rango      → El rango seleccionado original no se modifica.
-Highlight.tipo       → El tipo semántico del highlight es inmutable.
-Anotación.texto_seleccionado → El texto base del que se partió no se modifica.
+# 📖 Diccionario — entrada
+Diccionario.palabra (term)        → Identidad semántica. Inmutable por diseño.
+Diccionario.idioma (language)     → Se define al crear. No existe en UpdateEntryInput.
+Diccionario.curiosidad            → ⚠️ EXISTE en DB + service, PERO no hay UI.
+                                    No debe incluirse en casos de testing >80%.
+Diccionario.estado_enriquecimiento → Solo se setea al crear.
+
+# 📖 Diccionario — ocurrencia
+Diccionario.frase/selectedText    → La ocurrencia es un EVENTO INMUTABLE.
+Diccionario.contexto              → No tiene updated_at en DB. No existe updateOccurrence.
+Diccionario.cfi/rango             → Ubicación en el libro. Inmutable.
+
+# 💬 Cita
+Cita.texto                        → Texto recogido textual. Inmutable.
+Cita.comentario                   → ❌ NO EXISTE este campo en el tipo Cite.
+Cita.contexto                     → No hay UI de edición.
+
+# 🟨 Anotación
+Anotación.texto (text)            → Selected text original. Inmutable.
+Anotación.texto_seleccionado      → Es el mismo campo `text`. Inmutable.
+
+# 🖍️ Highlight (BookNote)
+Highlight.color                   → Inmutable. Dictionary: caller-defined.
+                                      Cita: #fca5a5 rojo fijo.
+                                      Anotación: yellow fijo.
+Highlight.rango                   → El rango seleccionado original no se modifica.
+Highlight.tipo                    → El tipo semántico es inmutable.
 ```
 
 ---
@@ -758,13 +894,24 @@ Anotación.texto_seleccionado → El texto base del que se partió no se modific
 ## 13.2. A y B editan campos distintos
 
 ```txt
-A: D(definición="nueva", curiosidad="vieja")
-B: D(definición="vieja", curiosidad="nueva")
+A: D(definición="nueva")
+B: N(nota="reflexión personal")
 ->
-A/B: D(definición="nueva", curiosidad="nueva")
+A/B: D(definición="nueva") + N(nota="reflexión personal")
 ```
 
-Debe probarse merge por campo.
+Debe probarse merge por entidad: cambios en entidades distintas no interfieren.
+
+Para ediciones en la MISMA entidad pero campos distintos:
+
+```txt
+A: Libro(título="nuevo")
+B: Libro(autor="nueva")
+->
+A/B: Libro(título="nuevo", autor="nueva")
+```
+
+Debe probarse merge por campo dentro de la misma entidad.
 
 ---
 
@@ -779,6 +926,11 @@ A/B: D(definición="versión B")
 
 Si se usa LWW por campo, gana el HLC mayor.
 
+Aplicable a cualquier campo editable:
+- `Libro.título` / `Libro.autor` / `Libro.portada`
+- `Diccionario.definición` / `Diccionario.imagen`
+- `Anotación.nota`
+
 ---
 
 ## 13.4. A y B editan el mismo campo con mismo tiempo físico
@@ -791,60 +943,89 @@ A/B:
   gana desempate estable por nodeId
 ```
 
-Debe ser determinista.
+Debe ser determinista. Aplicable a cualquier campo editable.
 
 ---
 
 ## 13.5. A edita el dato, el highlight permanece fijo
 
-Los highlights semánticos no tienen campos editables por el usuario:
-su color, rango y tipo vienen determinados por su función
-(Diccionario 🟦, Cita 🟥, Anotación 🟨). Lo que sí se edita
-es el dato subyacente.
+Los highlights semánticos (BookNote) **no tienen ningún campo editable**:
+no se puede cambiar su color, rango, tipo ni texto asociado.
+Son un marcador visual que refleja la entidad semántica subyacente.
+Lo que sí se edita es el dato (definición del diccionario, nota de la anotación, etc.).
 
 ```txt
 A: D(definición="nueva")
-B: H_D (color fijo 🟦, rango fijo)
+B: H_D (color según caller, rango fijo)
 ->
 A/B:
   D(definición="nueva")
   H_D sin cambios
 ```
 
-El highlight es un marcador visual. La edición no debe pisar
-el dato ni viceversa, pero el highlight en sí no tiene estado
-editable.
+**NOTA sobre colores:**
+
+| Tipo | Color | Fijo |
+|------|-------|------|
+| Diccionario 🟦 | Caller-defined | ❌ NO es fijo azul |
+| Cita 🟥 | `#fca5a5` | ✅ Sí |
+| Anotación 🟨 | `yellow` | ✅ Sí |
+
+El color del highlight de Diccionario depende de lo que el annotator pase al crear la captura.
+En tests, no asumir un color específico para Dictionary.
 
 ---
 
 ## 13.6. Las citas no se editan
 
 Las citas son el texto seleccionado textual. No tienen
-comentario ni texto corregible. La usuario puede crear una
-**Anotación** sobre el texto recogido si quiere añadir una
+comentario ni texto corregible. El tipo `Cite` **no tiene campo `note`**.
+La usuario puede crear una **Anotación** sobre el texto recogido si quiere añadir una
 reflexión personal.
 
 ```txt
 A: C(texto="texto citado textual") — no se edita
-B: puede crear N + T_N sobre el mismo texto seleccionado
+B: puede crear N(nota="reflexión") + text="texto seleccionado"
 ->
 A/B:
   C inalterada
-  N + T_N coexistiendo
+  N(nota="reflexión") coexistiendo
 ```
 
 ---
 
-## 13.7. A edita anotación, B edita texto base de la anotación
+## 13.7. A edita la nota de una anotación, B no toca nada
 
 ```txt
-A: N(texto="mi análisis nuevo")
-B: T_N(textoSeleccionado="texto base corregido")
+A: N(nota="mi análisis nuevo")
+B: N(nota="mi análisis viejo")
+->
+A/B: N(nota="mi análisis nuevo")
+```
+
+**Solo `note` es editable** en las anotaciones. El campo `text` (selected text original)
+es inmutable por diseño — no existe en `UpdateAnnotacionInput`.
+
+No existe escenario donde "A edita anotación, B edita texto base" porque
+el texto base NO se puede editar. Si B quiere corregir el texto seleccionado,
+no tiene forma de hacerlo en el sistema actual. Ese caso no debe incluirse.
+
+---
+
+## 13.8. A edita definición de diccionario, B añade ocurrencia al mismo libro (no conflicto)
+
+```txt
+A: D(definición="nueva")
+B: L + H_D -> D + F_D + IMG_D (nueva ocurrencia, misma palabra)
 ->
 A/B:
-  N(texto="mi análisis nuevo")
-  T_N(textoSeleccionado="texto base corregido")
+  D(definición="nueva")
+  Ocurrencia nueva conservada
+  Highlight nuevo conservado
 ```
+
+La ocurrencia es un evento inmutable. No hay conflicto entre editar la definición
+y crear una nueva ocurrencia de la misma palabra.
 
 ---
 
@@ -1309,23 +1490,31 @@ resultado esperado:
 
 # 18. Casos específicos de Anotaciones
 
+> 📝 **Modelo de Anotación (VERIFICADO)**
+> - `annotations.text` = texto seleccionado original (INMUTABLE, se setea al crear)
+> - `annotations.note` = nota del usuario (EDITABLE, único campo en UpdateAnnotacionInput)
+>
+> En los casos usamos `N(nota="...")` para la nota editable y el contexto
+> `text="..."` para el texto seleccionado si hace falta distinguirlos.
+> Si solo se escribe `N("...")`, se refiere a la nota.
+
 ## 18.1. Anotación creada en A, no en B
 
 ```txt
-A: L + H_N -> N("mi comentario") + T_N
+A: L + H_N -> N(nota="reflexión personal") + text="texto seleccionado"
 B: L
 ->
 A/B:
-  L + H_N -> N("mi comentario") + T_N
+  L + H_N -> N(nota="reflexión personal") + text="texto seleccionado"
 ```
 
 ---
 
-## 18.2. A y B editan la misma anotación
+## 18.2. A y B editan la misma anotación (campo note)
 
 ```txt
-A: N("interpretación A")
-B: N("interpretación B")
+A: N(nota="interpretación A")
+B: N(nota="interpretación B")
 ->
 según política:
   CRDT de texto
@@ -1336,12 +1525,15 @@ según política:
 
 Para texto libre personal, conviene evitar pérdida silenciosa.
 
+**Solo `note` puede editarse.** El campo `text` (selected text original)
+es inmutable y no se ve afectado por este caso.
+
 ---
 
 ## 18.3. A edita anotación, B borra anotación
 
 ```txt
-A: N("texto nuevo")
+A: N(nota="texto nuevo")
 B: delete N
 ->
 según HLC/política:
@@ -1355,7 +1547,7 @@ según HLC/política:
 ## 18.4. Anotación vacía
 
 ```txt
-A: H_N -> N("") + T_N
+A: H_N -> N(nota="") + text="texto seleccionado"
 B: ∅
 ->
 según validación:
@@ -1369,12 +1561,12 @@ según validación:
 
 ```txt
 A: delete L
-B: L + H_N -> N("comentario") + T_N
+B: L + H_N -> N(nota="comentario") + text="texto seleccionado"
 ->
 A/B:
   L eliminado
-  N conservada
-  T_N conservado
+  N(nota) conservada
+  text (selectedText) conservado
   origen marcado como sourceBookDeleted
 ```
 
@@ -2188,39 +2380,39 @@ Si el sistema solo usa `bookId + tombstone permanente`, puede ocurrir el bug pel
 |---|---|---|---|
 | T056 | Editar título y portada | O edita título, M edita portada, sync | Ambos cambios sobreviven. |
 | T057 | Editar mismo título | O título=A, M título=B, sync | Gana HLC o conflicto visible. |
-| T058 | Editar definición y curiosidad | O edita definición, M curiosidad, sync | Merge por campo. |
+| T058 | Editar definición e imagen (Diccionario) | O edita definición, M cambia imagen, sync | Merge por campo — ambos sobreviven. |
 | T059 | Editar misma definición | O definición=A, M definición=B, sync | Gana HLC o conflicto visible. |
-| T060 | Editar imagen principal concurrentemente | O IMG principal=A, M IMG principal=B, sync | Principal por HLC/política; no borrar imágenes sin razón. |
-| T061 | Editar cita y texto citado | O edita comentario de C, M corrige T_C, sync | Ambos cambios sobreviven. |
-| T062 | Editar anotación y texto base | O edita N, M corrige T_N, sync | N y T_N actualizados. |
-| T063 | Editar highlight y dato | O cambia color H_D, M edita D, sync | Color y D editado sobreviven. |
-| T064 | Editar highlight y borrar libro | O cambia color H_D, M borra L, sync | L borrado; D conserva; H_D detached/unresolved si se conserva metadata. |
+| T060 | Editar imagen de diccionario concurrentemente | O imagePath=A, M imagePath=B, sync | Gana HLC o política; no borrar imágenes sin razón. |
+| T061 | (eliminado — las citas no se editan) | | |
+| T062 | Editar nota de anotación | O edita N(nota), sync | Solo note se actualiza. text (selectedText) inmutable. |
+| T063 | Editar dato con highlight fijo | O edita D(definición), sync | Highlight (BookNote) NO cambia. Es marcador visual inmutable. |
+| T064 | Editar dato y borrar libro | O edita D, M borra L, sync | L borrado; D editada permanece. H_D detached/unresolved. |
 | T065 | Editar dato y borrar highlight | O edita D, M borra H_D, sync | D conserva edición; H_D eliminado/detached. |
 | T066 | Editar libro y borrar libro | O renombra L, M borra L, sync | Según política: remove-wins, HLC o conflicto. Registrar en Engram. |
-| T067 | Editar cita y borrar libro | O edita C, M borra L, sync | L borrado; C editada permanece. |
-| T068 | Editar anotación y borrar libro | O edita N, M borra L, sync | L borrado; N editada permanece. |
-| T069 | Editar palabra y borrar libro | O edita D, M borra L, sync | L borrado; D editada permanece. |
-| T070 | Editar dos campos del mismo highlight | O cambia color, M cambia rango, sync | Merge por campo o conflicto si rango/color son atómicos. |
+| T067 | (eliminado — las citas no se editan) | | |
+| T068 | Editar anotación y borrar libro | O edita N(nota), M borra L, sync | L borrado; N editada permanece. text (selectedText) conservado. |
+| T069 | Editar definición y borrar libro | O edita D(definición), M borra L, sync | L borrado; D editada permanece. |
+| T070 | (eliminado — los highlights no se editan) | | |
 
 ## 29.5. Borrados explícitos, deletes vs updates y dependencias
 
 | ID | Caso | Secuencia | Resultado esperado / comprobación |
 |---|---|---|---|
-| T071 | Borrar palabra vs editar palabra | O borra D, M edita D, sync | Resultado por HLC/política. No media entrada. |
-| T072 | Borrar cita vs editar cita | O borra C, M edita C, sync | Delete/update/conflicto según política. |
-| T073 | Borrar anotación vs editar anotación | O borra N, M edita N, sync | Delete/update/conflicto según política. |
-| T074 | Borrar imagen vs editar palabra | O borra IMG_D, M edita D, sync | D editada; imagen por HLC/política. |
-| T075 | Borrar frase vs editar palabra | O borra F_D, M edita D, sync | D editada; F_D según política. |
-| T076 | Borrar libro y borrar cita | O borra L, M borra C, sync | L borrado; C borrada explícitamente; T_C según política. |
-| T077 | Borrar libro y borrar palabra | O borra L, M borra D, sync | L borrado; D borrada solo porque hubo delete explícito de D. |
+| T071 | Borrar entrada diccionario vs editar definición | O borra D, M edita D(definición), sync | Resultado por HLC/política. |
+| T072 | Borrar cita vs mantener | O borra C, sync | C desaparece. No se edita. |
+| T073 | Borrar anotación vs editar nota | O borra N, M edita N(nota), sync | Delete/update/conflicto según política. |
+| T074 | Borrar imagen vs editar definición | O borra IMG_D, M edita D(definición), sync | D editada; imagen por HLC/política. |
+| T075 | Borrar ocurrencia vs mantener entrada | O borra F_D (occurrence), sync | D(entrada) permanece. La occurrence es evento inmutable. |
+| T076 | Borrar libro y borrar cita | O borra L, M borra C, sync | L borrado; C borrada explícitamente. |
+| T077 | Borrar libro y borrar entrada diccionario | O borra L, M borra D, sync | L borrado; D borrada solo porque hubo delete explícito de D. |
 | T078 | Borrar libro y borrar anotación | O borra L, M borra N, sync | L borrado; N borrada si delete explícito gana. |
 | T079 | Delete viejo no borra dato nuevo | M delete D gen1 HLC10, O create D gen2 HLC20, sync | D gen2 existe. |
 | T080 | Delete nuevo borra dato viejo | O update HLC10, M delete HLC20, sync | Dato eliminado. |
-| T081 | Borrar highlight no borra Diccionario | O borra H_D, sync | D/F/IMG permanecen. |
-| T082 | Borrar highlight de cita | O borra H_C, sync | C/T_C permanecen o quedan detached según política. |
-| T083 | Borrar highlight de anotación | O borra H_N, sync | N/T_N permanecen o quedan detached según política. |
-| T084 | Borrar texto base de anotación | O borra T_N explícitamente, M edita N, sync | N no debe apuntar a T_N inexistente sin estado explícito. |
-| T085 | Borrar texto citado explícitamente | O borra T_C, M edita C, sync | C no debe apuntar a T_C inexistente sin estado explícito. |
+| T081 | Borrar highlight no borra Diccionario | O borra H_D, sync | D(definición+imagen) permanecen. |
+| T082 | Borrar highlight de cita | O borra H_C, sync | C permanece o queda detached según política. |
+| T083 | Borrar highlight de anotación | O borra H_N, sync | N(nota) permanece o queda detached según política. |
+| T084 | (eliminado — annotations.text es inmutable, no se puede borrar explícitamente) | | |
+| T085 | (eliminado — quotes.text es la entidad misma, no hay "texto citado" por separado) | | |
 
 ## 29.6. Orden de llegada, paquetes parciales y retries
 
@@ -2409,7 +2601,7 @@ El usuario edita lo que recogió o borra un libro.
 
 | # | Grupo | Casos | Ref. |
 |---|-------|-------|------|
-| 9 | Editar campo en UN dispositivo | Cambiar título, autor, portada; definición/curiosidad/frase/imagen de diccionario; texto de anotación | §13.1 |
+| 9 | Editar campo en UN dispositivo | Cambiar título/autor/portada/grupo/metadatos del libro; definición/imagen de diccionario; nota de anotación | §13.1 |
 | 10 | Borrar libro conserva datos | delete L → D/C/N sobreviven | §14.1-14.4 |
 | 11 | Datos sin libro (detached) | D/F_D/IMG_D, C, N sin L → sobreviven | §10.1-10.5 |
 | 12 | Editar dato conservado sin libro | Editar definición/imagen de D detached; editar N detached. C no se edita (es textual). T_N no se edita (es el texto base). | §17.5, §18.3 |
@@ -2425,7 +2617,7 @@ Dos dispositivos, uso normal, pero sin coordinación.
 | 15 | Mismo libro desde cada dispositivo | mismo ID no duplica, mismo hash distinto ID | §8.4-8.6 |
 | 16 | Misma palabra desde dos dispositivos | D("zozobrar") desde L1 y L2 → una entrada global | §16.4 |
 | 17 | Misma cita mismo rango desde dos dispositivos | Una cita lógica, sin duplicados | §17.1 |
-| 18 | Editar dato con highlight fijo | A edita D, highlight permanece (color/rango fijos por tipo) | §13.5-13.7 |
+| 18 | Editar dato con highlight fijo | A edita D, highlight permanece (BookNote inmutable). Colores: Dictionary caller-defined, Cita #fca5a5, Anotación yellow | §13.5-13.7 |
 | 19 | Mismo rango, grupos distintos | H_D y H_C sobre mismo texto → conviven | §15.3 |
 | 20 | Rangos solapados | H_C 100-150 y H_N 120-180 → conviven | §15.4 |
 
