@@ -543,7 +543,6 @@ const CASES = [
       };
     },
   },
-];
 
   // ── Bloque B: M→O (Android → Desktop) ──────────────────────────────────────
   //
@@ -949,7 +948,7 @@ async function main() {
   console.log('');
 
   // Save report
-  const reportPath = join(REPORTS_DIR, `casos-2-8-${Date.now()}.json`);
+  const reportPath = join(REPORTS_DIR, `casos-2-14-${Date.now()}.json`);
   const report = {
     timestamp: new Date().toISOString(),
     results,
