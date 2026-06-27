@@ -728,7 +728,7 @@ B: D(definición="vieja")
 A/B: D(definición="nueva")
 ```
 
-Repetir para:
+Repetir para los campos **editables** del sistema:
 
 ```txt
 Libro.título
@@ -739,12 +739,18 @@ Diccionario.definición
 Diccionario.curiosidad
 Diccionario.frase
 Diccionario.imagen
-Cita.texto
-Cita.comentario
 Anotación.texto
-Highlight.color
-Highlight.rango
-Highlight.tipo
+```
+
+**NO son editables** (diseño del sistema):
+
+```txt
+Cita.texto           → La cita es el texto seleccionado textual, no se edita.
+Cita.comentario      → No existe. Las notas sobre una cita son Anotaciones.
+Highlight.color      → Fijo por tipo: 🟦 Diccionario, 🟥 Cita, 🟨 Anotación.
+Highlight.rango      → El rango seleccionado original no se modifica.
+Highlight.tipo       → El tipo semántico del highlight es inmutable.
+Anotación.texto_seleccionado → El texto base del que se partió no se modifica.
 ```
 
 ---
@@ -789,30 +795,42 @@ Debe ser determinista.
 
 ---
 
-## 13.5. A edita el dato, B edita el highlight asociado
+## 13.5. A edita el dato, el highlight permanece fijo
+
+Los highlights semánticos no tienen campos editables por el usuario:
+su color, rango y tipo vienen determinados por su función
+(Diccionario 🟦, Cita 🟥, Anotación 🟨). Lo que sí se edita
+es el dato subyacente.
 
 ```txt
 A: D(definición="nueva")
-B: H_D(color="amarillo")
+B: H_D (color fijo 🟦, rango fijo)
 ->
 A/B:
   D(definición="nueva")
-  H_D(color="amarillo")
+  H_D sin cambios
 ```
 
-No deben pisarse.
+El highlight es un marcador visual. La edición no debe pisar
+el dato ni viceversa, pero el highlight en sí no tiene estado
+editable.
 
 ---
 
-## 13.6. A edita cita, B edita texto recogido
+## 13.6. Las citas no se editan
+
+Las citas son el texto seleccionado textual. No tienen
+comentario ni texto corregible. La usuario puede crear una
+**Anotación** sobre el texto recogido si quiere añadir una
+reflexión personal.
 
 ```txt
-A: C(comentario="nueva interpretación")
-B: T_C(texto="texto citado corregido")
+A: C(texto="texto citado textual") — no se edita
+B: puede crear N + T_N sobre el mismo texto seleccionado
 ->
 A/B:
-  C(comentario="nueva interpretación")
-  T_C(texto="texto citado corregido")
+  C inalterada
+  N + T_N coexistiendo
 ```
 
 ---
@@ -2348,16 +2366,42 @@ Esta sección ordena los casos de **más habitual** (uso diario) a **más rebusc
 
 El usuario lee en un dispositivo, recoge datos, sincroniza.
 
+Cada caso tiene dos direcciones:
+
+| Dirección | Creador | Sync | Receptor |
+|-----------|---------|------|----------|
+| **O→M** | Ordenador (desktop) | desktop → Android | Android |
+| **M→O** | Android (móvil) | Android → desktop | Desktop |
+
+### Bloque A — Dirección O→M (desktop → Android)
+
 | # | Grupo | Casos | Ref. |
 |---|-------|-------|------|
 | 1 | Sync de libro básico | L\|∅ → L en ambos, ∅\|∅ → ∅, mismo ID no duplica | §8.1-8.4 |
-| 2 | Diccionario en un dispositivo | L + H_D→D+F_D+IMG_D \| ∅ → converge | §9.1 |
-| 3 | Cita en un dispositivo | L + H_C→C+T_C \| ∅ → converge | §9.2 |
-| 4 | Anotación en un dispositivo | L + H_N→N+T_N \| ∅ → converge | §9.3 |
-| 5 | Todos los grupos en un dispositivo | L + D + C + N \| ∅ → converge | §9.4 |
-| 6 | Sync bidireccional normal | A tiene L, B tiene L + datos → ambos completos | §9.5 |
-| 7 | Sync repetida sin cambios | Idempotencia — sync dos veces no produce cambios nuevos | §12, T119 |
+| 2 | Diccionario | L + H_D→D+F_D+IMG_D \| ∅ → converge | §9.1 |
+| 3 | Cita | L + H_C→C+T_C \| ∅ → converge | §9.2 |
+| 4 | Anotación | L + H_N→N+T_N \| ∅ → converge | §9.3 |
+| 5 | Todos los grupos | L + D + C + N \| ∅ → converge | §9.4 |
+| 6 | Bidireccional parcial | A tiene L, B tiene L + datos → ambos completos (datos nuevos desde desktop) | §9.5 |
+| 7 | Idempotencia | Sync repetida sin cambios no produce cambios nuevos | §12, T119 |
 | 8 | Dato creado y sync inmediata | Crear D/F_D/C/N → sync → llega al otro lado | §9.x |
+
+### Bloque B — Dirección M→O (Android → desktop)
+
+Espejo del Bloque A, pero los datos se crean en Android y se sincronizan hacia desktop.
+
+| # | Grupo | Casos | Ref. |
+|---|-------|-------|------|
+| 1M | Sync de libro básico | M: L \| O: ∅ → sync → O tiene L | §8.2 (invertido) |
+| 2M | Diccionario | M: L + H_D→D+F_D+IMG_D \| O: ∅ → sync → O tiene todo | §9.1 (invertido) |
+| 3M | Cita | M: L + H_C→C+T_C \| O: ∅ → sync → O tiene todo | §9.2 (invertido) |
+| 4M | Anotación | M: L + H_N→N+T_N \| O: ∅ → sync → O tiene todo | §9.3 (invertido) |
+| 5M | Todos los grupos | M: L + D + C + N \| O: ∅ → sync → O tiene todo | §9.4 (invertido) |
+| 6M | Bidireccional parcial | M tiene L, O tiene L + datos → sync → ambos completos (datos nuevos desde Android) | §9.5 (invertido) |
+| 7M | Idempotencia | Sync repetida sin cambios no produce cambios nuevos | §12, T119 |
+| 8M | Dato creado y sync inmediata | Crear D/F_D/C/N en Android → sync → llega a desktop | §9.x (invertido) |
+
+> **Nota:** Los casos 1M–8M requieren que el harness pueda inyectar datos en Android y hacer sync en dirección M→O. Sin esa capacidad, estos casos no pueden ejecutarse.
 
 ## 🥈 Capa 2 — Frecuente (ediciones y borrados normales)
 
@@ -2365,10 +2409,10 @@ El usuario edita lo que recogió o borra un libro.
 
 | # | Grupo | Casos | Ref. |
 |---|-------|-------|------|
-| 9 | Editar campo en UN dispositivo | Cambiar definición, comentario, color, título | §13.1 |
+| 9 | Editar campo en UN dispositivo | Cambiar título, autor, portada; definición/curiosidad/frase/imagen de diccionario; texto de anotación | §13.1 |
 | 10 | Borrar libro conserva datos | delete L → D/C/N sobreviven | §14.1-14.4 |
 | 11 | Datos sin libro (detached) | D/F_D/IMG_D, C, N sin L → sobreviven | §10.1-10.5 |
-| 12 | Editar dato conservado sin libro | Editar D detached, C detached, N detached | §17.5, §18.3 |
+| 12 | Editar dato conservado sin libro | Editar definición/imagen de D detached; editar N detached. C no se edita (es textual). T_N no se edita (es el texto base). | §17.5, §18.3 |
 | 13 | Reimportar libro tras borrarlo | delete L → reimport → sync → L vuelve | T005-T006 |
 | 14 | Borrar highlight y conservar dato | delete H_D → D permanece | §14.8-14.9 |
 
@@ -2381,7 +2425,7 @@ Dos dispositivos, uso normal, pero sin coordinación.
 | 15 | Mismo libro desde cada dispositivo | mismo ID no duplica, mismo hash distinto ID | §8.4-8.6 |
 | 16 | Misma palabra desde dos dispositivos | D("zozobrar") desde L1 y L2 → una entrada global | §16.4 |
 | 17 | Misma cita mismo rango desde dos dispositivos | Una cita lógica, sin duplicados | §17.1 |
-| 18 | Editar highlight y dato por separado | A cambia color, B edita D → ambos sobreviven | §13.5-13.7 |
+| 18 | Editar dato con highlight fijo | A edita D, highlight permanece (color/rango fijos por tipo) | §13.5-13.7 |
 | 19 | Mismo rango, grupos distintos | H_D y H_C sobre mismo texto → conviven | §15.3 |
 | 20 | Rangos solapados | H_C 100-150 y H_N 120-180 → conviven | §15.4 |
 
@@ -2417,13 +2461,13 @@ Casos de sistema, borde, que casi ningún usuario encontrará.
 ## Orden de ejecución recomendado para ciclos harness
 
 ```txt
-Fase 1 — Capa 1 (uso diario):      ~12 casos  ← EMPEZAMOS AQUÍ
+Fase 1 — Capa 1 (uso diario):      ~16 casos  (8 O→M + 8 M→O)
 Fase 2 — Capa 2 (frecuente):        ~15 casos
 Fase 3 — Capa 3 (ocasional):        ~12 casos
 Fase 4 — Capa 4 (raro):             ~10 casos
 Fase 5 — Capa 5 (muy rebuscado):    ~40 casos
                                    ─────────
-                   Total:           ~89 casos
+                   Total:           ~93 casos
 ```
 
 Cada caso sigue el ciclo harness definido en `ciclo_harness.md`. Cuando un caso no pasa como debería, se inicia un **ciclo SDD completo** (proposal → specs → design → tasks → apply → verify → archive) con los parámetros: automático, híbrido, autochain stacked-to-main. Tras el fix, se repite el ciclo harness para confirmar.
