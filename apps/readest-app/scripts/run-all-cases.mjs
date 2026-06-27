@@ -203,11 +203,29 @@ function injectFixture(type, bookHash, extra = {}) {
 }
 
 function injectFixtureAndroid(type, bookHash, extra = {}) {
-  // Para Android: necesitamos injectar via run-as sqlite3
-  // La inyección es más directa — usamos injectRows con target android
-  // Pero el fixture script solo soporta --target desktop por ahora.
-  // Construimos manualmente.
-  return { ok: false, error: 'Android fixture injection not supported via CLI — need run-as sqlite3' };
+  // Inyecta en Android vía HTTP API (PUT /replicas/:kind)
+  // Usa el nuevo sync-dev-inject-http.mjs para fiabilidad ~95%
+  const args = ['--target', 'android-http'];
+  if (type === 'dict') {
+    args.push('--dict', extra.term || 'zozobrar');
+    if (extra.definition) args.push('--definition', extra.definition);
+  } else if (type === 'quote') {
+    args.push('--quote', extra.text || 'Frases célebres y otros menesteres');
+  } else if (type === 'note') {
+    args.push('--note', extra.text || 'Análisis del pasaje');
+  }
+  args.push('--book', bookHash);
+
+  const result = runScript('dev-sync-fixture.mjs', args, { timeout: 10_000 });
+  if (!result.ok) {
+    return { ok: false, error: result.error, output: result.output };
+  }
+  try {
+    const parsed = JSON.parse(result.output);
+    return { ok: parsed.ok !== false, ...parsed };
+  } catch (e) {
+    return { ok: false, error: `parse error: ${e.message}`, raw: result.output };
+  }
 }
 
 // ── Sync trigger ─────────────────────────────────────────────────────────────
@@ -527,16 +545,291 @@ const CASES = [
   },
 ];
 
+  // ── Bloque B: M→O (Android → Desktop) ──────────────────────────────────────
+  //
+  // Estos casos prueban la dirección inversa: datos creados en Android
+  // se replican a desktop mediante el inyector HTTP (--target android-http).
+  // Usan el mismo protocolo CRDT+HLC que el sync real.
+
+  {
+    id: 9,
+    name: '∅ | L + H_D → D + F_D + IMG_D (M→O)',
+    description: 'Android tiene libro + diccionario, Desktop vacío → sync → ambos tienen todo (M→O)',
+    run: async () => {
+      // 1. Import book en desktop primero (necesario para que exista)
+      const book = importBook();
+      if (!book.ok) return { verdict: 'FAIL', detail: `Import book failed: ${book.error}` };
+      const bookHash = book.book?.hash;
+      if (!bookHash) return { verdict: 'FAIL', detail: `No book hash: ${JSON.stringify(book)}` };
+
+      // 2. Sync para que Android tenga el libro
+      const sync1 = await triggerSync();
+      if (!sync1.ok) return { verdict: 'FAIL', detail: `First sync failed: ${sync1.error}` };
+      await new Promise(r => setTimeout(r, 3000));
+
+      // 3. Limpiar desktop (borrar solo datos de fixture, mantener libro)
+      // No necesitamos limpiar — el reset ya lo hizo al inicio del caso
+
+      // 4. Inyectar diccionario en Android vía HTTP
+      const fixture = injectFixtureAndroid('dict', bookHash, { term: 'zozobrar', definition: 'Volcar una embarcación' });
+      if (!fixture.ok) return { verdict: 'FAIL', detail: `Android fixture dict failed: ${fixture.error}` };
+
+      const pre = captureState();
+      const sync2 = await triggerSync();
+      if (!sync2.ok) return { verdict: 'FAIL', detail: `Second sync failed: ${sync2.error}` };
+
+      await new Promise(r => setTimeout(r, 2000));
+      const post = captureState();
+
+      // 5. Verificar que desktop recibió los datos de Android
+      const desktopDict = getDesktopRowCount(post, 'dictionary');
+      const androidDict = getAndroidReplicaCount(post, 'dictionary-entry');
+
+      const passed = desktopDict >= 1 && androidDict >= 1;
+      return {
+        verdict: passed ? 'PASS' : 'FAIL',
+        detail: passed
+          ? `Desktop: dict-rows=${desktopDict}; Android: dict-entries=${androidDict} — M→O diccionario OK`
+          : `Desktop dict-rows=${desktopDict}, Android dict-entries=${androidDict} (esperado ≥1 cada uno)`,
+        pre, post, bookHash, fixture,
+      };
+    },
+  },
+  {
+    id: 10,
+    name: '∅ | L + H_C → C + T_C (M→O)',
+    description: 'Android tiene libro + cita, Desktop vacío → sync → ambos tienen cita (M→O)',
+    run: async () => {
+      const book = importBook();
+      if (!book.ok) return { verdict: 'FAIL', detail: `Import book failed: ${book.error}` };
+      const bookHash = book.book?.hash;
+      if (!bookHash) return { verdict: 'FAIL', detail: `No book hash: ${JSON.stringify(book)}` };
+
+      const sync1 = await triggerSync();
+      if (!sync1.ok) return { verdict: 'FAIL', detail: `First sync failed: ${sync1.error}` };
+      await new Promise(r => setTimeout(r, 3000));
+
+      const fixture = injectFixtureAndroid('quote', bookHash, { text: 'La lectura es a la mente lo que el ejercicio al cuerpo' });
+      if (!fixture.ok) return { verdict: 'FAIL', detail: `Android fixture quote failed: ${fixture.error}` };
+
+      const pre = captureState();
+      const sync2 = await triggerSync();
+      if (!sync2.ok) return { verdict: 'FAIL', detail: `Second sync failed: ${sync2.error}` };
+
+      await new Promise(r => setTimeout(r, 2000));
+      const post = captureState();
+
+      const desktopQuotes = getDesktopRowCount(post, 'quotes');
+      const androidQuotes = getAndroidReplicaCount(post, 'quote');
+
+      const passed = desktopQuotes >= 1 && androidQuotes >= 1;
+      return {
+        verdict: passed ? 'PASS' : 'FAIL',
+        detail: passed
+          ? `Desktop: quotes-rows=${desktopQuotes}; Android: quotes=${androidQuotes} — M→O cita OK`
+          : `Desktop quotes-rows=${desktopQuotes}, Android quotes=${androidQuotes} (esperado ≥1 cada uno)`,
+        pre, post, bookHash, fixture,
+      };
+    },
+  },
+  {
+    id: 11,
+    name: '∅ | L + H_N → N + T_N (M→O)',
+    description: 'Android tiene libro + anotación, Desktop vacío → sync → ambos tienen anotación (M→O)',
+    run: async () => {
+      const book = importBook();
+      if (!book.ok) return { verdict: 'FAIL', detail: `Import book failed: ${book.error}` };
+      const bookHash = book.book?.hash;
+      if (!bookHash) return { verdict: 'FAIL', detail: `No book hash: ${JSON.stringify(book)}` };
+
+      const sync1 = await triggerSync();
+      if (!sync1.ok) return { verdict: 'FAIL', detail: `First sync failed: ${sync1.error}` };
+      await new Promise(r => setTimeout(r, 3000));
+
+      const fixture = injectFixtureAndroid('note', bookHash, { text: 'Interesante reflexión sobre la naturaleza humana' });
+      if (!fixture.ok) return { verdict: 'FAIL', detail: `Android fixture note failed: ${fixture.error}` };
+
+      const pre = captureState();
+      const sync2 = await triggerSync();
+      if (!sync2.ok) return { verdict: 'FAIL', detail: `Second sync failed: ${sync2.error}` };
+
+      await new Promise(r => setTimeout(r, 2000));
+      const post = captureState();
+
+      const desktopAnn = getDesktopRowCount(post, 'annotations');
+      const androidAnn = getAndroidReplicaCount(post, 'annotation');
+
+      const passed = desktopAnn >= 1 && androidAnn >= 1;
+      return {
+        verdict: passed ? 'PASS' : 'FAIL',
+        detail: passed
+          ? `Desktop: ann-rows=${desktopAnn}; Android: annotations=${androidAnn} — M→O anotación OK`
+          : `Desktop ann-rows=${desktopAnn}, Android annotations=${androidAnn} (esperado ≥1 cada uno)`,
+        pre, post, bookHash, fixture,
+      };
+    },
+  },
+  {
+    id: 12,
+    name: '∅ | L + todos grupos (M→O)',
+    description: 'Android tiene libro + diccionario + cita + anotación, Desktop vacío → sync → ambos tienen todo (M→O)',
+    run: async () => {
+      const book = importBook();
+      if (!book.ok) return { verdict: 'FAIL', detail: `Import book failed: ${book.error}` };
+      const bookHash = book.book?.hash;
+      if (!bookHash) return { verdict: 'FAIL', detail: `No book hash: ${JSON.stringify(book)}` };
+
+      const sync1 = await triggerSync();
+      if (!sync1.ok) return { verdict: 'FAIL', detail: `First sync failed: ${sync1.error}` };
+      await new Promise(r => setTimeout(r, 3000));
+
+      const dict = injectFixtureAndroid('dict', bookHash, { term: 'zozobrar', definition: 'Volcar una embarcación' });
+      if (!dict.ok) return { verdict: 'FAIL', detail: `Android fixture dict failed: ${dict.error}` };
+
+      const quote = injectFixtureAndroid('quote', bookHash, { text: 'La lectura es a la mente lo que el ejercicio al cuerpo' });
+      if (!quote.ok) return { verdict: 'FAIL', detail: `Android fixture quote failed: ${quote.error}` };
+
+      const note = injectFixtureAndroid('note', bookHash, { text: 'Interesante reflexión sobre la naturaleza humana' });
+      if (!note.ok) return { verdict: 'FAIL', detail: `Android fixture note failed: ${note.error}` };
+
+      const pre = captureState();
+      const sync2 = await triggerSync();
+      if (!sync2.ok) return { verdict: 'FAIL', detail: `Second sync failed: ${sync2.error}` };
+
+      await new Promise(r => setTimeout(r, 2000));
+      const post = captureState();
+
+      const androidDict = getAndroidReplicaCount(post, 'dictionary-entry');
+      const androidOcc = getAndroidReplicaCount(post, 'dictionary-occurrence');
+      const androidQuotes = getAndroidReplicaCount(post, 'quote');
+      const androidAnn = getAndroidReplicaCount(post, 'annotation');
+      const desktopDict = getDesktopRowCount(post, 'dictionary');
+      const desktopQuotes = getDesktopRowCount(post, 'quotes');
+      const desktopAnn = getDesktopRowCount(post, 'annotations');
+
+      const allAndroidPresent = androidDict >= 1 && androidOcc >= 1 && androidQuotes >= 1 && androidAnn >= 1;
+      const allDesktopPresent = desktopDict >= 1 && desktopQuotes >= 1 && desktopAnn >= 1;
+
+      const passed = allAndroidPresent && allDesktopPresent;
+      return {
+        verdict: passed ? 'PASS' : 'FAIL',
+        detail: passed
+          ? `Android: dict=${androidDict}, occ=${androidOcc}, quotes=${androidQuotes}, ann=${androidAnn} | Desktop: dict=${desktopDict}, quotes=${desktopQuotes}, ann=${desktopAnn} — M→O completo`
+          : `Android: dict=${androidDict}, occ=${androidOcc}, quotes=${androidQuotes}, ann=${androidAnn} | Desktop: dict=${desktopDict}, quotes=${desktopQuotes}, ann=${desktopAnn}`,
+        pre, post, bookHash, fixtures: { dict, quote, note },
+      };
+    },
+  },
+  {
+    id: 13,
+    name: 'A:L, B:L+H_D → convergencia bidireccional completa (O⇄M)',
+    description: 'Desktop libro + Android libro+dict → sync → ambos convergen con todos los datos (bidireccional completa)',
+    run: async () => {
+      // Prueba bidireccional REAL: Desktop tiene libro, Android tiene libro + datos
+      const book = importBook();
+      if (!book.ok) return { verdict: 'FAIL', detail: `Import book failed: ${book.error}` };
+      const bookHash = book.book?.hash;
+      if (!bookHash) return { verdict: 'FAIL', detail: `No book hash: ${JSON.stringify(book)}` };
+
+      // Sync para que Android tenga el libro
+      const sync1 = await triggerSync();
+      if (!sync1.ok) return { verdict: 'FAIL', detail: `First sync failed: ${sync1.error}` };
+      await new Promise(r => setTimeout(r, 3000));
+
+      // Inyectar dict en Android con el nuevo HTTP injector
+      const fixtureAndroid = injectFixtureAndroid('dict', bookHash, { term: 'melancolía', definition: 'Tristeza vaga y profunda' });
+      if (!fixtureAndroid.ok) return { verdict: 'FAIL', detail: `Android fixture failed: ${fixtureAndroid.error}` };
+
+      const pre = captureState();
+      const sync2 = await triggerSync();
+      if (!sync2.ok) return { verdict: 'FAIL', detail: `Second sync failed: ${sync2.error}` };
+
+      await new Promise(r => setTimeout(r, 2000));
+      const post = captureState();
+
+      const androidDict = getAndroidReplicaCount(post, 'dictionary-entry');
+      const desktopDict = getDesktopRowCount(post, 'dictionary');
+      const androidBooks = getAndroidBookCount(post);
+      const desktopBooks = getDesktopBookCount(post);
+
+      const passed = androidDict >= 1 && desktopDict >= 1 && androidBooks >= 1 && desktopBooks >= 1;
+      return {
+        verdict: passed ? 'PASS' : 'FAIL',
+        detail: passed
+          ? `Android: books=${androidBooks}, dict=${androidDict} | Desktop: books=${desktopBooks}, dict=${desktopDict} — bidireccional COMPLETA`
+          : `Android: books=${androidBooks}, dict=${androidDict} | Desktop: books=${desktopBooks}, dict=${desktopDict}`,
+        note: 'Bidireccionalidad real: libro de Desktop → Android, dict de Android → Desktop.',
+        pre, post, bookHash, fixtureAndroid,
+      };
+    },
+  },
+  {
+    id: 14,
+    name: 'Idempotencia M→O (sync repetida)',
+    description: 'Sync dos veces seguidas con datos en Android → segunda sync no produce cambios',
+    run: async () => {
+      const book = importBook();
+      if (!book.ok) return { verdict: 'FAIL', detail: `Import book failed: ${book.error}` };
+      const bookHash = book.book?.hash;
+      if (!bookHash) return { verdict: 'FAIL', detail: `No book hash: ${JSON.stringify(book)}` };
+
+      const sync1 = await triggerSync();
+      if (!sync1.ok) return { verdict: 'FAIL', detail: `First sync failed: ${sync1.error}` };
+      await new Promise(r => setTimeout(r, 3000));
+
+      // Inyectar dict + quote en Android
+      const dict = injectFixtureAndroid('dict', bookHash, { term: 'zozobrar', definition: 'Volcar una embarcación' });
+      if (!dict.ok) return { verdict: 'FAIL', detail: `Android fixture dict failed: ${dict.error}` };
+      const quote = injectFixtureAndroid('quote', bookHash, { text: 'Lectura, ejercicio mental' });
+      if (!quote.ok) return { verdict: 'FAIL', detail: `Android fixture quote failed: ${quote.error}` };
+
+      // Primera sync (Android → Desktop)
+      const sync2 = await triggerSync();
+      if (!sync2.ok) return { verdict: 'FAIL', detail: `Second sync failed: ${sync2.error}` };
+      await new Promise(r => setTimeout(r, 3000));
+      const state1 = captureState();
+
+      // Segunda sync (no debería cambiar nada)
+      const sync3 = await triggerSync();
+      if (!sync3.ok) return { verdict: 'FAIL', detail: `Third sync failed: ${sync3.error}` };
+      await new Promise(r => setTimeout(r, 3000));
+      const state2 = captureState();
+
+      // Verificar estabilidad
+      const androidDict1 = getAndroidReplicaCount(state1, 'dictionary-entry');
+      const androidDict2 = getAndroidReplicaCount(state2, 'dictionary-entry');
+      const androidQuotes1 = getAndroidReplicaCount(state1, 'quote');
+      const androidQuotes2 = getAndroidReplicaCount(state2, 'quote');
+      const desktopDict1 = getDesktopRowCount(state1, 'dictionary');
+      const desktopDict2 = getDesktopRowCount(state2, 'dictionary');
+      const desktopQuotes1 = getDesktopRowCount(state1, 'quotes');
+      const desktopQuotes2 = getDesktopRowCount(state2, 'quotes');
+
+      const androidStable = androidDict1 === androidDict2 && androidQuotes1 === androidQuotes2;
+      const desktopStable = desktopDict1 === desktopDict2 && desktopQuotes1 === desktopQuotes2;
+      const bothStable = androidStable && desktopStable;
+
+      return {
+        verdict: bothStable ? 'PASS' : 'FAIL',
+        detail: bothStable
+          ? `Sin cambios tras segunda sync M→O: Android dict=${androidDict1}, quotes=${androidQuotes1} | Desktop dict=${desktopDict1}, quotes=${desktopQuotes1}`
+          : `Cambios detectados M→O: Android dict ${androidDict1}→${androidDict2}, quotes ${androidQuotes1}→${androidQuotes2} | Desktop dict ${desktopDict1}→${desktopDict2}, quotes ${desktopQuotes1}→${desktopQuotes2}`,
+        state1, state2,
+      };
+    },
+  },
+];
+
 // ── Main runner ──────────────────────────────────────────────────────────────
 
 async function main() {
   assertHarness();
   mkdirSync(REPORTS_DIR, { recursive: true });
 
-  console.log('╔══════════════════════════════════════════════════════════╗');
-  console.log('║   Batería CRDT+HLC — Casos 2-8                         ║');
-  console.log('║   Inicio: ' + new Date().toISOString() + '              ║');
-  console.log('╚══════════════════════════════════════════════════════════╝');
+  console.log('╔══════════════════════════════════════════════════════════════════════╗');
+  console.log('║   Batería CRDT+HLC — Casos 2-14 (O→M + M→O)                       ║');
+  console.log('║   Inicio: ' + new Date().toISOString() + '                          ║');
+  console.log('╚══════════════════════════════════════════════════════════════════════╝');
   console.log('');
 
   const results = [];
