@@ -182,6 +182,7 @@ export async function captureAndroidState({ packageName, serverUrl, runAdb = def
     ? {
         status: 'pass',
         httpStatus: manifestResult.status,
+        data: manifestResult.data,
         summary: summarizeManifest(manifestResult.data),
       }
     : {

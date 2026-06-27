@@ -20,7 +20,7 @@ const DICTIONARY_OCCURRENCE_ENDPOINT = '/replicas/dictionary-occurrence';
 const QUOTE_ENDPOINT = '/replicas/quote';
 const ANNOTATION_ENDPOINT = '/replicas/annotation';
 
-const ENTRY_FIELDS = {
+export const ENTRY_FIELDS = {
   term: 'term',
   displayTerm: 'display_term',
   language: 'language',
@@ -30,7 +30,7 @@ const ENTRY_FIELDS = {
   enrichmentStatus: 'enrichment_status',
 };
 
-const OCCURRENCE_FIELDS = {
+export const OCCURRENCE_FIELDS = {
   entryId: 'entry_id',
   bookHash: 'book_hash',
   bookTitle: 'book_title',
@@ -44,7 +44,7 @@ const OCCURRENCE_FIELDS = {
   highlightNoteId: 'highlight_note_id',
 };
 
-const QUOTE_FIELDS = {
+export const QUOTE_FIELDS = {
   bookHash: 'book_hash',
   bookTitle: 'book_title',
   bookAuthor: 'book_author',
@@ -57,7 +57,7 @@ const QUOTE_FIELDS = {
   contentHash: 'content_hash',
 };
 
-const ANNOTATION_FIELDS = {
+export const ANNOTATION_FIELDS = {
   bookHash: 'book_hash',
   bookTitle: 'book_title',
   bookAuthor: 'book_author',
@@ -265,7 +265,7 @@ function applyReplicaRowsToDesktop(kind, rows, dbPath) {
   return applied;
 }
 
-function toHlc(value) {
+export function toHlc(value) {
   const numeric = typeof value === 'number' ? value : Number(value);
   const millis = Number.isFinite(numeric) ? numeric : Date.parse(String(value || Date.now()));
   return `${Math.max(0, millis).toString(16).padStart(13, '0')}-00000001-visible`;
@@ -281,7 +281,7 @@ function replicaTimestamps(row) {
   }
 }
 
-function rowToReplica(row, kind, fieldMap, fallbackUpdatedAt) {
+export function rowToReplica(row, kind, fieldMap, fallbackUpdatedAt) {
   const timestamps = replicaTimestamps(row);
   const fallbackTimestamp = toHlc(fallbackUpdatedAt ?? row.updated_at ?? row.created_at);
   const fields = {};
@@ -351,6 +351,42 @@ async function putReplicas(baseUrl, kind, endpoint, rows, replicas) {
     throw new Error(message);
   }
   replicas[kind].applied = appliedCount(data, rows.length);
+}
+
+/**
+ * Push a book's assets (EPUB, cover.png, config.json) to the Android device.
+ *
+ * The EPUB file is required — if missing, the whole function returns early.
+ * cover.png and config.json are optional — missing files are skipped with a warning.
+ *
+ * Mirrors usbBookSync.ts sendBook() lines 213-227.
+ */
+export async function pushBookAssets(transport, book, booksDir) {
+  const { join } = require('node:path');
+  const { readFileSync, existsSync } = require('node:fs');
+  const bookDir = join(booksDir, book.hash);
+
+  // Push the EPUB (required) — skip if fileName is missing
+  if (!book.fileName) {
+    console.log(`  ⚠️ Book ${book.hash}: no fileName in library entry, skipping asset push`);
+    return;
+  }
+  const epubPath = join(bookDir, book.fileName);
+  if (!existsSync(epubPath)) {
+    console.log(`  ⚠️ Book ${book.hash}: EPUB not found at ${book.fileName}, skipping asset push`);
+    return;
+  }
+  await transport.pushBookAsset(book.hash, 'book', readFileSync(epubPath));
+
+  // Push optional assets (cover.png, config.json)
+  for (const asset of ['cover.png', 'config.json']) {
+    const assetPath = join(bookDir, asset);
+    if (!existsSync(assetPath)) {
+      console.log(`  ⚠️ Book ${book.hash}: ${asset} not found, skipping`);
+      continue;
+    }
+    await transport.pushBookAsset(book.hash, asset, readFileSync(assetPath));
+  }
 }
 
 async function main() {
@@ -466,10 +502,12 @@ async function main() {
   console.log(`Remote books: ${remoteBooks.size}`);
 
   // Push new books
+  const booksDir = join(env.desktop.dataRoot, 'Readest', 'Books');
   for (const book of localLibrary) {
     if (book.deletedAt) continue;
     if (remoteBooks.has(book.hash)) continue;
     await transport.pushBookLibrary([book]);
+    await pushBookAssets(transport, book, booksDir);
     sent++;
     console.log(`Sent: ${book.hash} (${book.title})`);
   }
