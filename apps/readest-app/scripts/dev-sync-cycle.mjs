@@ -188,9 +188,132 @@ function semanticKindForCase(caseRef) {
   return undefined;
 }
 
+/**
+ * Specialized setup for Case 15 case-refs (15a-15e).
+ * Each scenario needs a different book distribution between devices:
+ *   15a: Desktop has book L, Android empty
+ *   15b: Android has book L, Desktop empty
+ *   15c: Both import same book L independently (same hash)
+ *   15d: Both have same book L, then edit titles divergently offline
+ *   15e: Desktop has AAA, Android has BBB (same title, different hash)
+ */
+async function setupCase15Ref(normalized, stateEnv, env, runId, now) {
+  if (normalized === '15a') {
+    const hash = `case15a-${runId}`;
+    const result = spawnFixture(stateEnv, [
+      '--target', 'desktop', '--case15', hash,
+      '--title', 'Alice', '--hlc', String(now),
+    ]);
+    if (!result.ok) {
+      return { ok: false, caseRef: normalized, action: 'case15a-inject', error: result.error || 'desktop inject failed' };
+    }
+    stateEnv.BIBLIOTECA_DEV_STATE_BOOK_HASH = hash;
+    return { ok: true, caseRef: normalized, action: 'case15a-desktop-inject', bookHash: hash };
+  }
+
+  if (normalized === '15b') {
+    const hash = `case15b-${runId}`;
+    const result = spawnFixture(stateEnv, [
+      '--target', 'android-http', '--case15', hash,
+      '--title', 'Alice', '--hlc', String(now),
+    ]);
+    if (!result.ok) {
+      return { ok: false, caseRef: normalized, action: 'case15b-inject', error: result.error || 'android inject failed' };
+    }
+    stateEnv.BIBLIOTECA_DEV_STATE_BOOK_HASH = hash;
+    return { ok: true, caseRef: normalized, action: 'case15b-android-inject', bookHash: hash };
+  }
+
+  if (normalized === '15c') {
+    const hash = `case15c-${runId}`;
+    const deskResult = spawnFixture(stateEnv, [
+      '--target', 'desktop', '--case15', hash,
+      '--title', 'Alice', '--hlc', String(now),
+    ]);
+    if (!deskResult.ok) {
+      return { ok: false, caseRef: normalized, action: 'case15c-desktop-inject', error: deskResult.error || 'desktop inject failed' };
+    }
+    const andResult = spawnFixture(stateEnv, [
+      '--target', 'android-http', '--case15', hash,
+      '--title', 'Alice', '--hlc', String(now),
+    ]);
+    if (!andResult.ok) {
+      return { ok: false, caseRef: normalized, action: 'case15c-android-inject', error: andResult.error || 'android inject failed' };
+    }
+    stateEnv.BIBLIOTECA_DEV_STATE_BOOK_HASH = hash;
+    return { ok: true, caseRef: normalized, action: 'case15c-both-inject', bookHash: hash };
+  }
+
+  if (normalized === '15d') {
+    const hash = `case15d-${runId}`;
+    const deskResult = spawnFixture(stateEnv, [
+      '--target', 'desktop', '--case15', hash,
+      '--title', 'Alice', '--hlc', String(now),
+    ]);
+    if (!deskResult.ok) {
+      return { ok: false, caseRef: normalized, action: 'case15d-desktop-inject', error: deskResult.error || 'desktop inject failed' };
+    }
+    const andResult = spawnFixture(stateEnv, [
+      '--target', 'android-http', '--case15', hash,
+      '--title', 'Alice', '--hlc', String(now),
+    ]);
+    if (!andResult.ok) {
+      return { ok: false, caseRef: normalized, action: 'case15d-android-inject', error: andResult.error || 'android inject failed' };
+    }
+
+    // Edit titles divergently — Android edit is newer (now+2000) so it should win
+    const deskEditNow = now + 1000;
+    spawnFixture(stateEnv, [
+      '--target', 'desktop', '--edit', `books:${hash}:title=Título A`,
+      '--hlc', String(deskEditNow),
+    ]);
+    const andEditNow = now + 2000;
+    spawnFixture(stateEnv, [
+      '--target', 'android-http', '--edit', `books:${hash}:title=Título B`,
+      '--hlc', String(andEditNow),
+    ]);
+
+    stateEnv.BIBLIOTECA_DEV_STATE_BOOK_HASH = hash;
+    return {
+      ok: true, caseRef: normalized, action: 'case15d-both-edit', bookHash: hash,
+      editTimestamps: { desktop: deskEditNow, android: andEditNow },
+    };
+  }
+
+  if (normalized === '15e') {
+    const hashAAA = `case15e-aaa-${runId}`;
+    const hashBBB = `case15e-bbb-${runId}`;
+    const deskResult = spawnFixture(stateEnv, [
+      '--target', 'desktop', '--case15', hashAAA,
+      '--title', 'Odisea', '--hlc', String(now),
+    ]);
+    if (!deskResult.ok) {
+      return { ok: false, caseRef: normalized, action: 'case15e-desktop-inject', error: deskResult.error || 'desktop inject failed' };
+    }
+    const andResult = spawnFixture(stateEnv, [
+      '--target', 'android-http', '--case15', hashBBB,
+      '--title', 'Odisea', '--hlc', String(now),
+    ]);
+    if (!andResult.ok) {
+      return { ok: false, caseRef: normalized, action: 'case15e-android-inject', error: andResult.error || 'android inject failed' };
+    }
+
+    stateEnv.BIBLIOTECA_DEV_STATE_BOOK_HASH = hashAAA;
+    return { ok: true, caseRef: normalized, action: 'case15e-both-different', bookHash: hashAAA, secondHash: hashBBB };
+  }
+
+  return { ok: true, caseRef: normalized, action: 'none' };
+}
+
 async function executePhase2CaseRef(caseRef, pre, stateEnv, env, runId) {
   const normalized = String(caseRef ?? '').trim();
   const now = Date.now();
+
+  // Case 15 needs specialized per-scenario book setup
+  if (/^15[a-e]$/.test(normalized)) {
+    return setupCase15Ref(normalized, stateEnv, env, runId, now);
+  }
+
   const liveBook = await ensurePhase2LiveBook({ caseRef: normalized, pre, stateEnv, env, now });
   if (!liveBook.ok) return { ok: false, caseRef: normalized, action: 'phase2-live-book-seed', error: liveBook.error, setup: liveBook };
 
@@ -325,6 +448,147 @@ function successful9MaAction(context, hash, title, before) {
   return actionUpdatedAt === undefined || newerThan(actionUpdatedAt, before?.updatedAt);
 }
 
+function countHashes(facts, hash) {
+  return (facts || []).filter((f) => f && (f.hash === hash || f.bookHash === hash)).length;
+}
+
+function computeCase15Verdict(normalized, pre, post, context = {}) {
+  const caseActions = context?.caseActions || [];
+
+  // --- 15a / 15b: single-source propagation ---
+  if (normalized === '15a' || normalized === '15b') {
+    const sourceFacts = normalized === '15a'
+      ? (pre?.desktop?.library?.facts || [])
+      : (pre?.android?.bookIndex?.facts || []);
+    const preFact = sourceFacts.find((f) => f?.hash);
+    let hash = preFact?.hash || preFact?.bookHash;
+    // Fallback: book was injected after pre-state capture → get hash from setup action
+    if (!hash) {
+      const caseAction = caseActions.find((a) => a.caseRef === normalized);
+      hash = caseAction?.bookHash;
+    }
+    if (!hash) return 'warn';
+
+    const desktopCount = countHashes(post?.desktop?.library?.facts, hash);
+    const androidCount = countHashes(post?.android?.bookIndex?.facts, hash);
+
+    if (desktopCount === 1 && androidCount === 1) return 'pass';
+    if (desktopCount > 1 || androidCount > 1) return 'fail';
+    return 'warn';
+  }
+
+  // --- 15c: concurrent import (same hash on both sides) ---
+  if (normalized === '15c') {
+    const preDesktopHashes = new Set(
+      (pre?.desktop?.library?.facts || []).map((f) => f?.hash).filter(Boolean),
+    );
+    let hash;
+    if (preDesktopHashes.size > 0) {
+      const commonFact = (pre?.android?.bookIndex?.facts || []).find(
+        (f) => f?.hash && preDesktopHashes.has(f.hash),
+      );
+      hash = commonFact?.hash || commonFact?.bookHash;
+    }
+    // Fallback: book was injected after pre-state capture
+    if (!hash) {
+      const caseAction = caseActions.find((a) => a.caseRef === normalized);
+      hash = caseAction?.bookHash;
+    }
+    if (!hash) return 'warn';
+
+    const desktopCount = countHashes(post?.desktop?.library?.facts, hash);
+    const androidCount = countHashes(post?.android?.bookIndex?.facts, hash);
+
+    if (desktopCount === 1 && androidCount === 1) return 'pass';
+    if (desktopCount > 1 || androidCount > 1) return 'fail';
+    return 'warn';
+  }
+
+  // --- 15d: concurrent metadata divergence ---
+  if (normalized === '15d') {
+    const preDesktopHashes = new Set(
+      (pre?.desktop?.library?.facts || []).map((f) => f?.hash).filter(Boolean),
+    );
+    let hash;
+    if (preDesktopHashes.size > 0) {
+      const preAndroidFact = (pre?.android?.bookIndex?.facts || []).find(
+        (f) => f?.hash && preDesktopHashes.has(f.hash),
+      );
+      hash = preAndroidFact?.hash || preAndroidFact?.bookHash;
+    }
+    // Fallback: book was injected after pre-state capture
+    if (!hash) {
+      const caseAction = caseActions.find((a) => a.caseRef === normalized);
+      hash = caseAction?.bookHash;
+    }
+    if (!hash) return 'warn';
+
+    const preDesktopFact = (pre?.desktop?.library?.facts || []).find(
+      (f) => f?.hash === hash || f?.bookHash === hash,
+    );
+    // preAndroidFact was already resolved above for hash extraction; find it again for comparison
+    const preAndroidFact = (pre?.android?.bookIndex?.facts || []).find(
+      (f) => f?.hash === hash || f?.bookHash === hash,
+    );
+
+    const postDesktopFact = (post?.desktop?.library?.facts || []).find(
+      (f) => f?.hash === hash || f?.bookHash === hash,
+    );
+    const postAndroidFact = (post?.android?.bookIndex?.facts || []).find(
+      (f) => f?.hash === hash || f?.bookHash === hash,
+    );
+
+    if (!postDesktopFact || !postAndroidFact) return 'warn';
+
+    const titlesMatch = String(postDesktopFact.title ?? '') !== ''
+      && postDesktopFact.title === postAndroidFact.title;
+
+    // When pre-state is empty (book injected after pre capture), skip timestamp
+    // comparison and rely solely on title convergence as the pass criterion.
+    if (!preDesktopFact || !preAndroidFact) {
+      return titlesMatch ? 'pass' : 'warn';
+    }
+
+    const desktopNewer = newerThan(postDesktopFact.updatedAt, preDesktopFact.updatedAt);
+    const androidNewer = newerThan(postAndroidFact.updatedAt, preAndroidFact.updatedAt);
+
+    if (titlesMatch && desktopNewer && androidNewer) return 'pass';
+    return 'warn';
+  }
+
+  // --- 15e: same title, different hash ---
+  if (normalized === '15e') {
+    const preDesktopFact = (pre?.desktop?.library?.facts || []).find((f) => f?.hash);
+    const preAndroidFact = (pre?.android?.bookIndex?.facts || []).find((f) => f?.hash);
+    let hashDesktop = preDesktopFact?.hash || preDesktopFact?.bookHash;
+    let hashAndroid = preAndroidFact?.hash || preAndroidFact?.bookHash;
+    // Fallback: books were injected after pre-state capture
+    if (!hashDesktop || !hashAndroid || hashDesktop === hashAndroid) {
+      const caseAction = caseActions.find((a) => a.caseRef === normalized);
+      if (caseAction?.secondHash) {
+        hashDesktop = hashDesktop || caseAction.bookHash;
+        hashAndroid = hashAndroid || caseAction.secondHash;
+      }
+    }
+    if (!hashDesktop || !hashAndroid || hashDesktop === hashAndroid) return 'warn';
+
+    const deskAAA = countHashes(post?.desktop?.library?.facts, hashDesktop);
+    const deskBBB = countHashes(post?.desktop?.library?.facts, hashAndroid);
+    const andAAA = countHashes(post?.android?.bookIndex?.facts, hashDesktop);
+    const andBBB = countHashes(post?.android?.bookIndex?.facts, hashAndroid);
+
+    const liveDesktop = (post?.desktop?.library?.facts || []).filter((f) => !f?.deletedAt).length;
+    const liveAndroid = (post?.android?.bookIndex?.facts || []).filter((f) => !f?.deletedAt).length;
+
+    if (deskAAA === 1 && deskBBB === 1 && andAAA === 1 && andBBB === 1
+      && liveDesktop >= 2 && liveAndroid >= 2) return 'pass';
+    if (deskAAA > 1 || deskBBB > 1 || andAAA > 1 || andBBB > 1) return 'fail';
+    return 'warn';
+  }
+
+  return undefined;
+}
+
 export function computeCaseAcceptanceVerdict(caseRef, pre, post, context = {}) {
   const normalized = String(caseRef ?? '').trim();
   if (!normalized) return undefined;
@@ -367,6 +631,11 @@ export function computeCaseAcceptanceVerdict(caseRef, pre, post, context = {}) {
     if (evidence?.status === 'pass' && evidence.associationDeleted === true && evidence.semanticDeleted === true) return 'pass';
     if (evidence?.status === 'fail') return 'fail';
     return 'warn';
+  }
+
+  if (/^15[a-e]$/.test(normalized)) {
+    const case15Verdict = computeCase15Verdict(normalized, pre, post, context);
+    if (case15Verdict !== undefined) return case15Verdict;
   }
 
   return undefined;

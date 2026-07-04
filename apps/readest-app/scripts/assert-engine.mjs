@@ -335,6 +335,69 @@ export function assertCase15({ desktop = {}, android = {} }) {
 }
 
 /**
+ * Assert that a specific number of books exist on a given side (live books only, i.e. deletedAt is null/undefined).
+ * @param {number} expected - Expected book count
+ * @param {object} deviceState - State object for one device ({ books?: Array<{hash?, deletedAt?}> })
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertBookCount(expected, deviceState) {
+  const failures = [];
+  const books = Array.isArray(deviceState?.books) ? deviceState.books : [];
+  const liveBooks = books.filter((b) => b && b.deletedAt == null);
+  const count = liveBooks.length;
+  if (count !== expected) {
+    failures.push({
+      invariant: 'book-count',
+      expected,
+      actual: count,
+      totalBooks: books.length,
+      deletedBooks: books.length - count,
+    });
+  }
+  return {
+    verdict: failures.length === 0 ? 'PASS' : 'FAIL',
+    failures,
+  };
+}
+
+/**
+ * Assert that a book with the given hash has a specific metadata field value.
+ * @param {string} hash - Book hash to look up
+ * @param {string} field - Metadata field name (e.g. 'title')
+ * @param {*} expectedValue - Expected field value
+ * @param {object} deviceState - State object ({ books?: Array<{hash?, bookHash?, ...}> })
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertMetadata(hash, field, expectedValue, deviceState) {
+  const failures = [];
+  const books = Array.isArray(deviceState?.books) ? deviceState.books : [];
+  const book = books.find((b) => b && (b.hash === hash || b.bookHash === hash));
+  if (!book) {
+    failures.push({
+      invariant: 'book-not-found',
+      hash,
+      field,
+      expectedValue,
+    });
+  } else {
+    const actualValue = book[field];
+    if (actualValue !== expectedValue) {
+      failures.push({
+        invariant: 'metadata-mismatch',
+        hash,
+        field,
+        expected: expectedValue,
+        actual: actualValue,
+      });
+    }
+  }
+  return {
+    verdict: failures.length === 0 ? 'PASS' : 'FAIL',
+    failures,
+  };
+}
+
+/**
  * Assert Case 16 convergence: same normalized dictionary term+language appears at most once per side.
  * Uses dictionaryEntryIdentityKey for semantic identity matching.
  *

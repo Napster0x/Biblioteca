@@ -7,6 +7,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  assertBookCount,
+  assertMetadata,
+} from '../assert-engine.mjs';
+
+import {
   classifyReliabilityFailure,
   computeCaseAcceptanceVerdict,
   computeReliabilityReport,
@@ -350,5 +355,224 @@ describe('dev-sync-cycle reliability repeat reporting', () => {
     assert.equal(result.seeded, true);
     assert.equal(result.bookHash, 'android-seeded');
     assert.equal(stateEnv.BIBLIOTECA_DEV_STATE_BOOK_HASH, 'android-seeded');
+  });
+});
+
+describe('assertBookCount', () => {
+  it('passes when live book count matches expected', () => {
+    const result = assertBookCount(3, {
+      books: [
+        { hash: 'a' },
+        { hash: 'b' },
+        { hash: 'c' },
+      ],
+    });
+    assert.equal(result.verdict, 'PASS');
+    assert.deepEqual(result.failures, []);
+  });
+
+  it('passes when zero books and expected is zero', () => {
+    const result = assertBookCount(0, { books: [] });
+    assert.equal(result.verdict, 'PASS');
+    assert.deepEqual(result.failures, []);
+  });
+
+  it('fails when count does not match expected', () => {
+    const result = assertBookCount(2, {
+      books: [
+        { hash: 'a' },
+        { hash: 'b' },
+        { hash: 'c' },
+      ],
+    });
+    assert.equal(result.verdict, 'FAIL');
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].invariant, 'book-count');
+    assert.equal(result.failures[0].expected, 2);
+    assert.equal(result.failures[0].actual, 3);
+  });
+
+  it('excludes deleted books from count', () => {
+    const result = assertBookCount(3, {
+      books: [
+        { hash: 'a' },
+        { hash: 'b', deletedAt: null },
+        { hash: 'c', deletedAt: 1700000000000 },
+        { hash: 'd', deletedAt: undefined },
+      ],
+    });
+    assert.equal(result.verdict, 'PASS');
+    assert.deepEqual(result.failures, []);
+  });
+
+  it('handles missing books array gracefully', () => {
+    const result = assertBookCount(0, {});
+    assert.equal(result.verdict, 'PASS');
+  });
+});
+
+describe('assertMetadata', () => {
+  it('passes when book hash matches and field value matches', () => {
+    const result = assertMetadata('abc', 'title', 'Alice', {
+      books: [{ hash: 'abc', title: 'Alice' }],
+    });
+    assert.equal(result.verdict, 'PASS');
+    assert.deepEqual(result.failures, []);
+  });
+
+  it('matches by bookHash field as well', () => {
+    const result = assertMetadata('abc', 'author', 'Lewis', {
+      books: [{ bookHash: 'abc', author: 'Lewis' }],
+    });
+    assert.equal(result.verdict, 'PASS');
+    assert.deepEqual(result.failures, []);
+  });
+
+  it('fails when book is not found', () => {
+    const result = assertMetadata('missing', 'title', 'Alice', {
+      books: [{ hash: 'abc', title: 'Alice' }],
+    });
+    assert.equal(result.verdict, 'FAIL');
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].invariant, 'book-not-found');
+  });
+
+  it('fails when field value does not match', () => {
+    const result = assertMetadata('abc', 'title', 'Bob', {
+      books: [{ hash: 'abc', title: 'Alice' }],
+    });
+    assert.equal(result.verdict, 'FAIL');
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].invariant, 'metadata-mismatch');
+    assert.equal(result.failures[0].expected, 'Bob');
+    assert.equal(result.failures[0].actual, 'Alice');
+  });
+
+  it('handles missing books array gracefully', () => {
+    const result = assertMetadata('abc', 'title', 'Alice', {});
+    assert.equal(result.verdict, 'FAIL');
+    assert.equal(result.failures[0].invariant, 'book-not-found');
+  });
+});
+
+describe('case-15 computeCaseAcceptanceVerdict', () => {
+  it('15a passes when desktop book propagates to both sides', () => {
+    const pre = {
+      desktop: { library: { facts: [{ hash: 'book-1', title: 'Book', updatedAt: '2026-01-01T00:00:00.000Z' }] } },
+      android: { bookIndex: { facts: [] } },
+    };
+    const post = {
+      desktop: { library: { facts: [{ hash: 'book-1', title: 'Book', updatedAt: '2026-07-02T00:00:00.000Z' }] } },
+      android: { bookIndex: { facts: [{ hash: 'book-1', title: 'Book', updatedAt: 1782950400000 }] } },
+    };
+    assert.equal(computeCaseAcceptanceVerdict('15a', pre, post), 'pass');
+  });
+
+  it('15a returns warn when android does not get the book', () => {
+    const pre = {
+      desktop: { library: { facts: [{ hash: 'book-1', title: 'Book' }] } },
+      android: { bookIndex: { facts: [] } },
+    };
+    const post = {
+      desktop: { library: { facts: [{ hash: 'book-1', title: 'Book' }] } },
+      android: { bookIndex: { facts: [] } },
+    };
+    assert.equal(computeCaseAcceptanceVerdict('15a', pre, post), 'warn');
+  });
+
+  it('15a returns fail on duplicate hash on either side', () => {
+    const pre = {
+      desktop: { library: { facts: [{ hash: 'book-1', title: 'Book' }] } },
+      android: { bookIndex: { facts: [] } },
+    };
+    const post = {
+      desktop: { library: { facts: [{ hash: 'book-1' }, { hash: 'book-1' }] } },
+      android: { bookIndex: { facts: [{ hash: 'book-1' }] } },
+    };
+    assert.equal(computeCaseAcceptanceVerdict('15a', pre, post), 'fail');
+  });
+
+  it('15b passes when android book propagates to both sides', () => {
+    const pre = {
+      desktop: { library: { facts: [] } },
+      android: { bookIndex: { facts: [{ hash: 'book-1', title: 'Book', updatedAt: 1782900000000 }] } },
+    };
+    const post = {
+      desktop: { library: { facts: [{ hash: 'book-1', title: 'Book', updatedAt: '2026-07-02T00:00:00.000Z' }] } },
+      android: { bookIndex: { facts: [{ hash: 'book-1', title: 'Book', updatedAt: 1782950400000 }] } },
+    };
+    assert.equal(computeCaseAcceptanceVerdict('15b', pre, post), 'pass');
+  });
+
+  it('15c passes when both had same book and each has one copy after sync', () => {
+    const pre = {
+      desktop: { library: { facts: [{ hash: 'book-1', title: 'Same' }] } },
+      android: { bookIndex: { facts: [{ hash: 'book-1', title: 'Same' }] } },
+    };
+    const post = {
+      desktop: { library: { facts: [{ hash: 'book-1', title: 'Same' }] } },
+      android: { bookIndex: { facts: [{ hash: 'book-1', title: 'Same' }] } },
+    };
+    assert.equal(computeCaseAcceptanceVerdict('15c', pre, post), 'pass');
+  });
+
+  it('15c returns warn when a side has no common hash', () => {
+    const pre = {
+      desktop: { library: { facts: [] } },
+      android: { bookIndex: { facts: [] } },
+    };
+    const post = {
+      desktop: { library: { facts: [] } },
+      android: { bookIndex: { facts: [] } },
+    };
+    assert.equal(computeCaseAcceptanceVerdict('15c', pre, post), 'warn');
+  });
+
+  it('15d passes when titles converge and both updatedAt are newer', () => {
+    const pre = {
+      desktop: { library: { facts: [{ hash: 'book-1', title: 'Old', updatedAt: 1782900000000 }] } },
+      android: { bookIndex: { facts: [{ hash: 'book-1', title: 'Old', updatedAt: 1782900000000 }] } },
+    };
+    const post = {
+      desktop: { library: { facts: [{ hash: 'book-1', title: 'NewTitle', updatedAt: 1783000000000 }] } },
+      android: { bookIndex: { facts: [{ hash: 'book-1', title: 'NewTitle', updatedAt: 1783000000000 }] } },
+    };
+    assert.equal(computeCaseAcceptanceVerdict('15d', pre, post), 'pass');
+  });
+
+  it('15d returns warn when titles do not match', () => {
+    const pre = {
+      desktop: { library: { facts: [{ hash: 'book-1', title: 'Old', updatedAt: 1782900000000 }] } },
+      android: { bookIndex: { facts: [{ hash: 'book-1', title: 'Old', updatedAt: 1782900000000 }] } },
+    };
+    const post = {
+      desktop: { library: { facts: [{ hash: 'book-1', title: 'DesktopTitle', updatedAt: 1783000000000 }] } },
+      android: { bookIndex: { facts: [{ hash: 'book-1', title: 'AndroidTitle', updatedAt: 1783000000000 }] } },
+    };
+    assert.equal(computeCaseAcceptanceVerdict('15d', pre, post), 'warn');
+  });
+
+  it('15e passes when both hashes appear on both sides', () => {
+    const pre = {
+      desktop: { library: { facts: [{ hash: 'AAA', title: 'Same' }] } },
+      android: { bookIndex: { facts: [{ hash: 'BBB', title: 'Same' }] } },
+    };
+    const post = {
+      desktop: { library: { facts: [{ hash: 'AAA', title: 'Same' }, { hash: 'BBB', title: 'Same' }] } },
+      android: { bookIndex: { facts: [{ hash: 'AAA', title: 'Same' }, { hash: 'BBB', title: 'Same' }] } },
+    };
+    assert.equal(computeCaseAcceptanceVerdict('15e', pre, post), 'pass');
+  });
+
+  it('15e returns warn when data is missing', () => {
+    const pre = {
+      desktop: { library: { facts: [{ hash: 'AAA', title: 'Same' }] } },
+      android: { bookIndex: { facts: [{ hash: 'BBB', title: 'Same' }] } },
+    };
+    const post = {
+      desktop: { library: { facts: [{ hash: 'AAA' }] } },
+      android: { bookIndex: { facts: [{ hash: 'BBB' }] } },
+    };
+    assert.equal(computeCaseAcceptanceVerdict('15e', pre, post), 'warn');
   });
 });
