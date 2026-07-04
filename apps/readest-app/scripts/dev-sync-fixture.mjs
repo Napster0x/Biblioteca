@@ -18,6 +18,7 @@
  * When target is `android-http`, the functions use `injectReplicasViaHttp`
  * instead of `injectRows`, sending data via PUT /replicas/:kind.
  */
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -195,6 +196,7 @@ export async function injectDictionary({ target, bookHash, bookTitle, term, defi
 export async function injectQuote({ target, bookHash, bookTitle, text, comment: _comment, cfi, injectOpts, overrideTimestamp, hlcTimestamp }) {
   const quoteId = uid('quote');
   const now = overrideTimestamp ?? hlcTimestamp ?? Date.now();
+  const contentHash = text ? createHash('md5').update(text).digest('hex') : null;
 
   // ── android-http path ──────────────────────────────────────────────────
   if (target === 'android-http') {
@@ -206,6 +208,7 @@ export async function injectQuote({ target, bookHash, bookTitle, text, comment: 
       id: quoteId, text: text,
       book_hash: bookHash, book_title: bookTitle || 'Test Book',
       cfi: cfi || '/6/4[section]!/10/2:0',
+      content_hash: contentHash,
       created_at: now, updated_at: now, deleted_at: null,
       replica_timestamps: JSON.stringify({ text: `T${now}` }),
     }], fields, { hlcTimestamp: now });
@@ -227,6 +230,7 @@ export async function injectQuote({ target, bookHash, bookTitle, text, comment: 
       id: quoteId, text: text,
       book_hash: bookHash, book_title: bookTitle || 'Test Book',
       cfi: cfi || '/6/4[section]!/10/2:0',
+      content_hash: contentHash,
       created_at: now, updated_at: now, deleted_at: null,
       replica_timestamps: JSON.stringify({ text: `T${now}` }),
     }],
