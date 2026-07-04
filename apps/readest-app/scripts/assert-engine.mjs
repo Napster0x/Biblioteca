@@ -80,17 +80,93 @@ export function compareSnapshots(pre, post, expectDelta) {
 }
 
 const ENTITY_CONFIG = [
+  { key: 'books', entity: 'book' },
+  { key: 'dictionaryEntries', entity: 'dictionary-entry' },
   { key: 'dictionaryOccurrences', entity: 'dictionary-occurrence' },
   { key: 'quotes', entity: 'quote' },
   { key: 'annotations', entity: 'annotation' },
+  { key: 'bookNotes', entity: 'book-note' },
 ];
+
+function normalizeIdentityPart(value) {
+  return String(value ?? '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function firstValue(row, names) {
+  for (const name of names) {
+    const value = row?.[name];
+    if (value !== undefined && value !== null && value !== '') return value;
+    const envelopeValue = row?.fields_jsonb?.[name]?.v;
+    if (envelopeValue !== undefined && envelopeValue !== null && envelopeValue !== '') return envelopeValue;
+  }
+  return undefined;
+}
+
+export function bookHashIdentityKey(row) {
+  const hash = firstValue(row, ['hash', 'bookHash', 'book_hash']);
+  return hash ? `book:${normalizeIdentityPart(hash)}` : '';
+}
+
+export function dictionaryEntryIdentityKey(row) {
+  const term = normalizeIdentityPart(firstValue(row, ['term', 'word', 'selectedText', 'selected_text', 'text']));
+  const language = normalizeIdentityPart(firstValue(row, ['language', 'lang', 'locale']));
+  return term ? `dictionary-entry:${term}|${language}` : '';
+}
+
+export function dictionaryOccurrenceIdentityKey(row) {
+  const entryKey = normalizeIdentityPart(firstValue(row, ['entryKey', 'dictionaryEntryId', 'dictionary_entry_id']) ?? dictionaryEntryIdentityKey(row));
+  const bookHash = normalizeIdentityPart(firstValue(row, ['bookHash', 'book_hash', 'hash']));
+  const cfi = normalizeIdentityPart(firstValue(row, ['cfi', 'range']));
+  const selectedText = normalizeIdentityPart(firstValue(row, ['selectedText', 'selected_text', 'context', 'text']));
+  return entryKey || bookHash || cfi || selectedText ? `dictionary-occurrence:${entryKey}|${bookHash}|${cfi}|${selectedText}` : '';
+}
+
+export function quoteIdentityKey(row) {
+  const bookHash = normalizeIdentityPart(firstValue(row, ['bookHash', 'book_hash', 'hash']));
+  const cfi = normalizeIdentityPart(firstValue(row, ['cfi', 'range']));
+  const text = normalizeIdentityPart(firstValue(row, ['text', 'selectedText', 'selected_text', 'contentHash', 'content_hash']));
+  return bookHash || cfi || text ? `quote:${bookHash}|${cfi}|${text}` : '';
+}
+
+export function annotationIdentityKey(row) {
+  const bookHash = normalizeIdentityPart(firstValue(row, ['bookHash', 'book_hash', 'hash']));
+  const cfi = normalizeIdentityPart(firstValue(row, ['cfi', 'range']));
+  const text = normalizeIdentityPart(firstValue(row, ['text', 'selectedText', 'selected_text']));
+  return bookHash || cfi || text ? `annotation:${bookHash}|${cfi}|${text}` : '';
+}
+
+export function bookNoteIdentityKey(row) {
+  const bookHash = normalizeIdentityPart(firstValue(row, ['bookHash', 'book_hash', 'hash']));
+  const id = normalizeIdentityPart(firstValue(row, ['id', 'noteId']));
+  const type = normalizeIdentityPart(firstValue(row, ['type', 'kind']));
+  const cfi = normalizeIdentityPart(firstValue(row, ['cfi', 'range']));
+  const group = [
+    ['dictionaryEntryId', 'dictionary'],
+    ['citeId', 'quote'],
+    ['annotationId', 'annotation'],
+  ].find(([field]) => firstValue(row, [field]) !== undefined);
+  const groupKey = group ? `${group[1]}:${normalizeIdentityPart(firstValue(row, [group[0]]))}` : 'none';
+  return bookHash || id || type || cfi ? `book-note:${bookHash}|${id}|${type}|${cfi}|${groupKey}` : '';
+}
 
 function rowsFor(state, key) {
   return Array.isArray(state?.[key]) ? state[key] : [];
 }
 
-function logicalKey(row) {
-  return row.logicalKey ?? [row.bookHash, row.cfi, row.term ?? row.text ?? row.selectedText].filter(Boolean).join(':');
+function logicalKey(row, entity) {
+  if (row?.logicalKey) return row.logicalKey;
+  if (entity === 'book') return bookHashIdentityKey(row);
+  if (entity === 'dictionary-entry') return dictionaryEntryIdentityKey(row);
+  if (entity === 'dictionary-occurrence') return dictionaryOccurrenceIdentityKey(row);
+  if (entity === 'quote') return quoteIdentityKey(row);
+  if (entity === 'annotation') return annotationIdentityKey(row);
+  if (entity === 'book-note') return bookNoteIdentityKey(row);
+  return [row.bookHash, row.cfi, row.term ?? row.text ?? row.selectedText].filter(Boolean).join(':');
 }
 
 function isDeleted(row) {
@@ -104,7 +180,7 @@ function compareHlc(a, b) {
 function duplicateFailures(rows, entity) {
   const counts = new Map();
   for (const row of rows) {
-    const key = logicalKey(row);
+    const key = logicalKey(row, entity);
     if (!key) continue;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
@@ -120,8 +196,8 @@ function duplicateFailures(rows, entity) {
 }
 
 function convergenceFailures(desktopRows, androidRows, entity) {
-  const desktopKeys = new Set(desktopRows.map(logicalKey).filter(Boolean));
-  const androidKeys = new Set(androidRows.map(logicalKey).filter(Boolean));
+  const desktopKeys = new Set(desktopRows.map((row) => logicalKey(row, entity)).filter(Boolean));
+  const androidKeys = new Set(androidRows.map((row) => logicalKey(row, entity)).filter(Boolean));
   const failures = [];
   for (const key of desktopKeys) {
     if (!androidKeys.has(key)) {
@@ -136,10 +212,10 @@ function convergenceFailures(desktopRows, androidRows, entity) {
   return failures;
 }
 
-function latestByKey(rows) {
+function latestByKey(rows, entity) {
   const map = new Map();
   for (const row of rows) {
-    const key = logicalKey(row);
+    const key = logicalKey(row, entity);
     if (!key) continue;
     const current = map.get(key);
     if (!current || compareHlc(row.hlc, current.hlc) > 0) map.set(key, row);
@@ -148,8 +224,8 @@ function latestByKey(rows) {
 }
 
 function hlcAndTombstoneFailures(desktopRows, androidRows, entity) {
-  const desktop = latestByKey(desktopRows);
-  const android = latestByKey(androidRows);
+  const desktop = latestByKey(desktopRows, entity);
+  const android = latestByKey(androidRows, entity);
   const failures = [];
   for (const [key, dRow] of desktop.entries()) {
     const aRow = android.get(key);
@@ -169,10 +245,10 @@ function hlcAndTombstoneFailures(desktopRows, androidRows, entity) {
 }
 
 function semanticGroupFailures(desktopRows, androidRows, entity) {
-  const android = latestByKey(androidRows);
+  const android = latestByKey(androidRows, entity);
   const failures = [];
   for (const row of desktopRows) {
-    const key = logicalKey(row);
+    const key = logicalKey(row, entity);
     const other = android.get(key);
     if (!key || !other) continue;
     if (row.semanticGroup && other.semanticGroup && row.semanticGroup !== other.semanticGroup) {
