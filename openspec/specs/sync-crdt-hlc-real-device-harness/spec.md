@@ -32,13 +32,29 @@ The system MUST distinguish manual responsibilities from safe CLI automation. Hu
 
 ### Requirement: Real-device Readiness and Discovery Diagnostics
 
-The system MUST use the availability of continuously USB-connected real devices for validation when useful. Doctor diagnostics MUST check ADB device identity, serial-scoped forwarding, desktop health, Android health, manifest/replica visibility, sync trigger reachability, and discovery/toggle consistency where observable.
+The system MUST use continuously USB-connected real devices for validation when useful. Doctor diagnostics MUST check ADB device identity, selected package id, app process/PID presence, serial-scoped forwarding, desktop health, Android health, HTTP failure class, manifest/replica visibility, sync trigger reachability, and discovery/toggle consistency where observable. HTTP diagnostics MUST distinguish app process absent, port refused, and timeout.
+(Previously: doctor checked general ADB, forwarding, health, sync, discovery, and toggle readiness without explicit package/process or refused-vs-timeout classification.)
 
 #### Scenario: TDD diagnoses inconsistent readiness
+
 - GIVEN endpoints are reachable but peer discovery or toggle state is unavailable or contradictory
 - WHEN doctor runs
 - THEN it reports `WARN` or `AMBIGUOUS` with the inconsistent evidence paths
 - AND it MUST NOT claim real sync readiness as `PASS`
+
+#### Scenario: Doctor reports absent app process
+
+- GIVEN the selected package has no running Android PID
+- WHEN doctor probes Android local sync through forwarded port
+- THEN it reports `FAIL` with failure class `app-process-absent`
+- AND it MUST NOT misclassify the failure as sync logic divergence
+
+#### Scenario: Doctor separates refused from timeout
+
+- GIVEN the selected Android process and serial-scoped forward are known
+- WHEN the forwarded endpoint refuses the connection or times out
+- THEN doctor reports `port-refused` or `timeout` respectively
+- AND evidence includes selected package, PID state, serial, and local port
 
 ### Requirement: Safe Process and Environment Orchestration
 
@@ -452,3 +468,245 @@ Pull evidence counts MUST reflect filtered replicas only. Before applying pulled
 - GIVEN Desktop `_replicas` empty (clean state)
 - WHEN first sync pulls Android replicas
 - THEN `pulled > 0` for all kinds with Android data
+
+### Requirement: Android Local Sync Server Lifecycle
+
+While the Android app process is active, the system MUST ensure local sync server startup is stable, idempotent, and observable. Repeated startup attempts MUST reuse or confirm the active listener instead of creating conflicting listeners. Startup, skip, health-check, and failure outcomes MUST emit actionable evidence for diagnostics.
+
+#### Scenario: Active app starts local sync once
+
+- GIVEN the Android app process is active and local sync is enabled
+- WHEN the lifecycle ensure path runs more than once
+- THEN exactly one usable local sync listener is available
+- AND evidence identifies whether the server was started or already active
+
+#### Scenario: Startup failure is diagnosable
+
+- GIVEN the Android app process is active but the local sync listener cannot become healthy
+- WHEN startup verification runs
+- THEN the result is `FAIL` or `AMBIGUOUS`
+- AND evidence includes the startup stage and health-check outcome
+
+### Requirement: Android Package Targeting Documentation
+
+The harness MUST document and report the selected Android package id before device checks. Package selection MUST be explicit enough to avoid targeting the wrong installed app variant.
+
+#### Scenario: Selected package is visible
+
+- GIVEN package candidates are installed on a connected Android device
+- WHEN doctor or preflight runs
+- THEN output names the selected package id and device serial
+- AND documentation explains how to override or correct the selection
+
+#### Scenario: No package candidate blocks readiness
+
+- GIVEN no supported Android package id is installed
+- WHEN doctor or preflight runs
+- THEN the result is `FAIL`
+- AND Phase 2 case execution MUST NOT begin
+
+### Requirement: Phase 2 Preflight Gate
+
+Before any Phase 2 case execution, the harness MUST run a preflight that proves package selection, app process presence, serial-scoped forwarding, Android health, desktop health, local sync reachability, manifest availability, and replica API readiness. Phase 2 MUST NOT run when preflight is not `PASS`. After any clean/reinitialize sequence, this preflight MUST run before each case starts.
+(Previously: preflight ran before Phase 2 and checked basic readiness, but did not explicitly follow clean/reinit before each case or require manifest/replica API readiness.)
+
+#### Scenario: Successful preflight unlocks cases
+
+- GIVEN the selected Android app process is active and both endpoints are healthy
+- WHEN preflight runs before Phase 2 after clean/reinit
+- THEN it reports `PASS` with package, PID, forward, health, manifest, and replica API evidence
+- AND Phase 2 case execution may start
+
+#### Scenario: Failed preflight blocks cases
+
+- GIVEN any required preflight check fails or is ambiguous
+- WHEN Phase 2 is requested
+- THEN the harness stops before case actions
+- AND diagnosis names the failed readiness domain
+
+#### Scenario: Preflight is repeated per case after clean
+
+- GIVEN multiple Phase 2 cases each request clean/reinit
+- WHEN the harness prepares the next case
+- THEN clean/reinit completes first and preflight runs again
+- AND the case MUST NOT start without a fresh `PASS`
+
+### Requirement: Book Metadata Update Detection in pushBooks
+
+When pushBooks() processes a book whose hash already exists in the remote manifest, the system MUST compare `updatedAt` timestamps. If local `book.updatedAt > remoteBook.updatedAt`, the system MUST push the library entry metadata via `transport.pushBookLibrary([book])`. The system MUST track these pushes in the `updated` counter separate from `sent`.
+
+#### Scenario: Title edit pushes metadata to Android
+
+- GIVEN desktop has a book synced to Android with `remoteBook.updatedAt = 100` and the user edits the book title, bumping `book.updatedAt` to `101`
+- WHEN pushBooks() runs against the remote manifest
+- THEN the book's library entry is pushed to Android via `/books/index`
+- AND the return value increments the `updated` counter
+
+#### Scenario: Author edit also triggers update
+
+- GIVEN a synced book where local `updatedAt > remote.updatedAt` due to an author field change
+- WHEN pushBooks() runs
+- THEN the book library entry is pushed with the updated author metadata
+
+#### Scenario: No-op sync skips unchanged books
+
+- GIVEN local and remote `updatedAt` are equal and the book hash exists on remote
+- WHEN pushBooks() runs
+- THEN the book is skipped (neither `sent` nor `updated`)
+- AND existing hash-based skip behavior for truly identical books is preserved
+
+### Requirement: Android Clean with pm clear
+
+The Android clean mechanism MUST use `adb shell pm clear <package>` as its primary clean operation. This MUST purge `shared_prefs/`, `app_webview/`, `cache/`, and any other app-private directories. After `pm clear`, clean MUST leave Android ready for the next case, not merely erased: it MUST re-inject local sync settings, start the app, restore or verify the forwarded port when needed, wait for `/health`, wait for `/books/manifest`, verify required replica APIs, and only then return success. All readiness waits MUST be bounded; commands MUST NOT wait indefinitely.
+(Previously: clean used `pm clear`, verified empty app-private state, and re-injected `settings.json`, but readiness after clear was not required before success.)
+
+#### Scenario: Clean leaves Android in known-empty and ready state
+
+- GIVEN a connected Android device with the app package installed and residual sync data present
+- WHEN the clean mechanism runs via `dev:sync:clean` or equivalent
+- THEN `adb shell pm clear <package>` executes and returns success
+- AND subsequent state capture confirms `shared_prefs/`, `app_webview/`, and `cache/` are empty
+- AND settings, app process, forward, health, manifest, and replica API checks are ready before success
+
+#### Scenario: Reinitialize restores local sync after pm clear
+
+- GIVEN `pm clear` removed app-private settings and stopped the app process
+- WHEN clean continues reinitialization
+- THEN local sync settings are present, the app is running, `/health` passes, `/books/manifest` is reachable, and replica APIs are usable
+
+#### Scenario: Readiness timeout fails before case execution
+
+- GIVEN clean cannot restore health, manifest, forward, app process, or replica API readiness within the bounded timeout
+- WHEN the clean command evaluates readiness
+- THEN it reports `FAIL` with actionable diagnostics naming the failed stage and evidence
+- AND no Phase 2 or mirror case execution starts
+
+### Requirement: Book tombstone reimport ordering
+
+The harness MUST treat book tombstones and same-hash reimports as timestamp-ordered book-library facts. A newer legitimate reimport MUST resurrect the book; an older tombstone MUST NOT hide or re-delete that reimport.
+
+#### Scenario: 13a O→M newer same-hash desktop reimport resurrects book
+
+- GIVEN desktop has a tombstoned book entry and the same EPUB hash is reimported with `updatedAt` newer than `deletedAt`
+- WHEN desktop prepares and syncs to Android
+- THEN the desktop book entry is live with `deletedAt` cleared
+- AND Android receives the resurrected or updated live book entry
+
+#### Scenario: Older tombstone loses to newer reimport
+
+- GIVEN a live desktop reimport has an `updatedAt` newer than a known book tombstone
+- WHEN tombstone reconciliation runs during sync
+- THEN the book remains live on desktop and Android
+- AND the older tombstone MUST NOT be propagated as the winning state
+
+### Requirement: Remote book tombstones are merged before local book push
+
+Before pushing desktop book-library state, sync MUST evaluate Android `/books/index` book tombstones. A newer Android-originated book tombstone MUST be applied to desktop first so stale local book state cannot accidentally resurrect the book.
+
+#### Scenario: Remote tombstone blocks accidental resurrection
+
+- GIVEN Android `/books/index` contains a tombstone newer than desktop's local live book entry
+- WHEN desktop-to-Android sync starts
+- THEN desktop records the book as tombstoned before any book push decision
+- AND sync MUST NOT push the stale live book as a resurrection
+
+#### Scenario: Newer local reimport may still beat older remote tombstone
+
+- GIVEN desktop has a live reimport with `updatedAt` newer than Android's book tombstone
+- WHEN sync reconciles remote tombstones before push
+- THEN the desktop reimport remains the winning book state
+- AND Android receives the live reimported book entry
+
+### Requirement: Android book delete propagates without D/C/N loss
+
+For Phase 2 cases `10Ma`, `10Mb`, and `10Mc`, an Android-originated book delete MUST converge to a desktop book tombstone. Dictionary, citation/quote, and note/annotation data (D/C/N) MUST survive as independent semantic data.
+
+#### Scenario: 10Ma M→O Android book delete creates desktop tombstone
+
+- GIVEN Android deletes a synced book and exposes a newer book tombstone
+- WHEN desktop syncs from Android
+- THEN desktop `library.json` records the book tombstone
+- AND the book is not restored by stale desktop state
+
+#### Scenario: 10Mb M→O preserves dictionary and citation data
+
+- GIVEN dictionary and citation/quote rows exist for the deleted book
+- WHEN the Android book tombstone propagates to desktop
+- THEN dictionary rows remain present and assertable
+- AND citation/quote rows remain present and assertable
+
+#### Scenario: 10Mc M→O preserves note and annotation data
+
+- GIVEN note/annotation rows exist for the deleted book
+- WHEN the Android book tombstone propagates to desktop
+- THEN note/annotation rows remain present and assertable
+- AND reports MUST NOT classify D/C/N survival as book resurrection
+
+### Requirement: Android Book Metadata Edit Case 9Ma
+
+The harness MUST support Phase 2 case `9Ma` through an Android-originated book metadata edit using the safe HTTP/fixture path. It MUST prove the edited metadata has a newer timestamp/HLC than the previous book fact, converges to desktop, and is not masked by stale local state.
+
+#### Scenario: 9Ma Android metadata edit converges
+- GIVEN a synced EPUB-backed book exists on desktop and Android
+- WHEN Android edits book metadata for `9Ma` through the harness action
+- THEN desktop and Android show the edited metadata with newer timestamp/HLC ordering
+- AND the report cites before/after book evidence for both devices
+
+#### Scenario: 9Ma blocked diagnostics
+- GIVEN Android book index update, fixture data, or timestamp evidence is unavailable
+- WHEN `9Ma` runs
+- THEN the harness reports `BLOCKED`, `FAIL`, or `AMBIGUOUS` with the failed capability and evidence path
+- AND it MUST NOT report `PASS`
+
+### Requirement: Android Import and Same-hash Reimport Case 13Ma
+
+The harness MUST support Phase 2 case `13Ma` for Android EPUB/book import and reimport. Same-hash reimport after a tombstone MUST be safe: a newer live reimport SHALL resurrect the book, while older tombstones SHALL NOT win.
+
+#### Scenario: 13Ma same-hash reimport after tombstone passes
+- GIVEN Android has a tombstoned book entry for a known EPUB hash
+- WHEN Android reimports the same EPUB hash with a newer live timestamp
+- THEN desktop and Android converge on the live book entry
+- AND evidence shows the tombstone lost by timestamp/HLC ordering
+
+#### Scenario: 13Ma no false PASS on unsafe import evidence
+- GIVEN asset copy, book index, hash, or tombstone ordering evidence is missing
+- WHEN `13Ma` is evaluated
+- THEN the harness reports non-success with the missing evidence class
+- AND it MUST NOT infer resurrection from counts alone
+
+### Requirement: Semantic Highlight Delete Cases 14
+
+The harness MUST support semantic BookNote/highlight delete tooling for `14a`, `14b`, `14c`, `14Ma`, `14Mb`, and `14Mc`. Deleting a highlight association MUST delete only its associated dictionary, quote, or annotation semantic data, using safe target resolution that prevents unrelated row deletion.
+
+#### Scenario: Associated semantic data is deleted
+- GIVEN a dictionary, quote, or annotation highlight association has a resolved semantic target
+- WHEN the user deletes that highlight association through a `14*` or `14M*` action
+- THEN the associated semantic data is deleted or tombstoned on the source device
+- AND convergence proves the deletion on the peer device
+
+#### Scenario: Ambiguous target prevents deletion
+- GIVEN target resolution matches zero or multiple semantic rows
+- WHEN a `14*` delete action is requested
+- THEN the harness reports `BLOCKED` or `FAIL` with target-resolution diagnostics
+- AND it MUST NOT delete unrelated dictionary, quote, or annotation rows
+
+#### Scenario: No false PASS for association-only removal
+- GIVEN the highlight association is gone but associated semantic data remains live
+- WHEN the case report is generated
+- THEN the verdict is `FAIL`
+- AND diagnosis names the surviving semantic data kind and target id
+
+### Requirement: Bounded Real-device Reliability Classification
+
+The capability suite MUST demonstrate greater than `80%` real-device reliability over bounded repeated runs. Each attempt MUST be time-bounded and classified as harness, environment, product, or unknown failure; non-success attempts SHALL reduce the measured reliability.
+
+#### Scenario: Reliability threshold passes with evidence
+- GIVEN a bounded repeated run set for the Phase 2 capability suite
+- WHEN definitive successful attempts exceed `80%`
+- THEN the report states `PASS` with numerator, denominator, case list, and evidence paths
+
+#### Scenario: Reliability below threshold diagnoses failures
+- GIVEN repeated runs complete but success rate is `<=80%`
+- WHEN the reliability report is produced
+- THEN the report is `FAIL` with per-attempt failure classification
+- AND it MUST NOT hide blocked, ambiguous, timeout, or environment failures from the denominator

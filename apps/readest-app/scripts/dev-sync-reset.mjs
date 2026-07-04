@@ -4,6 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { reinitializeAndroidAfterClean } from './android-clean-reinit.mjs';
 import {
   CONFIRM_TOKEN,
   DESKTOP_DEV_MARKER_FILE,
@@ -167,9 +169,13 @@ function cleanFileSystem({ root, candidates, dryRun }) {
 
 // ── android-db helpers ────────────────────────────────────
 
-function adbAvailable() {
+function defaultRunAdb(args) {
+  return execFileSync('adb', args, { stdio: 'pipe', encoding: 'utf8', timeout: 10_000 });
+}
+
+async function adbAvailable(runAdb = defaultRunAdb) {
   try {
-    execFileSync('adb', ['version'], { stdio: 'pipe', encoding: 'utf8' });
+    await runAdb(['version']);
     return true;
   } catch {
     return false;
@@ -214,9 +220,18 @@ async function clearAndroidRuntimeState({ dryRun }) {
   }
 }
 
-async function cleanAndroid({ dryRun }) {
-  const androidPackage = SYNC_ENV.android.packageName;
-  const readestDir = SYNC_ENV.android.readestDir;
+export async function cleanAndroid({
+  dryRun,
+  env = SYNC_ENV,
+  runAdb = defaultRunAdb,
+  fetch: fetchImpl = globalThis.fetch,
+  sleep,
+  reinitializeTimeoutMs = Number(process.env.BIBLIOTECA_ANDROID_REINIT_TIMEOUT_MS || 30_000),
+  reinitializeIntervalMs = Number(process.env.BIBLIOTECA_ANDROID_REINIT_INTERVAL_MS || 1_000),
+} = {}) {
+  const androidPackage = env.android.packageName;
+  const readestDir = env.android.readestDir;
+  const serialArgs = env.android.serial ? ['-s', env.android.serial] : [];
   const targets = [
     'annotations.db',
     'annotations.db-wal',
@@ -243,12 +258,17 @@ async function cleanAndroid({ dryRun }) {
     preserved: [],
     errors: [],
     counts: { requested: targets.length, deleted: 0, remaining: 0 },
-    adbAvailable: adbAvailable(),
+    adbAvailable: await adbAvailable(runAdb),
+    pmClearDone: false,
+    reinitialize: { attempted: false, ok: dryRun, diagnostics: [], stages: [] },
     runtimeReset: { attempted: false, ok: dryRun, endpoint: '/__dev/reset', status: dryRun ? 0 : undefined, restartRequired: false },
   };
 
   if (dryRun) {
-    result.preserved = targets.map((path) => `adb shell run-as ${androidPackage} rm -rf ${path}`);
+    result.preserved = [
+      `adb shell pm clear ${androidPackage}`,
+      ...targets.map((path) => `adb shell run-as ${androidPackage} rm -rf ${path}`),
+    ];
     return result;
   }
 
@@ -256,11 +276,48 @@ async function cleanAndroid({ dryRun }) {
     throw new Error('ADB is not available — cannot clean android-db. Install Android SDK platform-tools.');
   }
 
+  // Primary: adb shell pm clear <package> — nuclear clean that purges all app data
+  try {
+    await runAdb([...serialArgs, 'shell', 'pm', 'clear', androidPackage]);
+    result.pmClearDone = true;
+    result.deleted.push(`pm clear ${androidPackage}`);
+    result.reinitialize = {
+      attempted: true,
+      ...(await reinitializeAndroidAfterClean({
+        env,
+        runAdb,
+        fetch: fetchImpl,
+        sleep,
+        timeoutMs: reinitializeTimeoutMs,
+        intervalMs: reinitializeIntervalMs,
+      })),
+    };
+    if (!result.reinitialize.ok) {
+      const diagnostic = result.reinitialize.diagnostics?.[0] || {};
+      result.errors.push({
+        command: 'android reinitialize after pm clear',
+        stage: diagnostic.stage,
+        class: diagnostic.class,
+        message: diagnostic.message || 'Android did not become ready after pm clear',
+      });
+    }
+    result.counts.deleted = result.deleted.length;
+    result.counts.remaining = result.errors.length;
+    return result;
+  } catch (err) {
+    result.errors.push({
+      command: `pm clear ${androidPackage}`,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    // pm clear failed — fall through to file-by-file cleanup
+  }
+
+  // Fallback: file-by-file cleanup via run-as rm -rf for each target
   const commands = targets.map((path) => `run-as ${androidPackage} rm -rf ${path}`);
 
   for (const cmd of commands) {
     try {
-      execFileSync('adb', ['shell', cmd], { stdio: 'pipe', encoding: 'utf8' });
+      await runAdb([...serialArgs, 'shell', cmd]);
       result.deleted.push(cmd);
     } catch (err) {
       // If run-as fails, the app might not be installed or is a release build
@@ -268,6 +325,7 @@ async function cleanAndroid({ dryRun }) {
     }
   }
 
+  // Runtime reset only needed in fallback path (pm clear already nuked in-memory state)
   result.runtimeReset = await clearAndroidRuntimeState({ dryRun });
   if (!result.runtimeReset.ok) {
     result.errors.push({
@@ -284,7 +342,7 @@ async function cleanAndroid({ dryRun }) {
 
 // ── single-target run ─────────────────────────────────────
 
-async function runTarget(target, dryRun, confirm) {
+async function runTarget(target, dryRun) {
   if (target === 'android-db') {
     return cleanAndroid({ dryRun });
   }
@@ -316,7 +374,7 @@ async function main() {
 
   if (target === 'all') {
     const targets = ['tmp', 'desktop-db', 'android-db'];
-    const results = await Promise.all(targets.map((t) => runTarget(t, dryRun, confirm)));
+    const results = await Promise.all(targets.map((t) => runTarget(t, dryRun)));
     const ok = results.every((item) => item.errors.length === 0);
     console.log(
       JSON.stringify({ ok, target: 'all', dryRun, targets: results }, null, 2),
@@ -325,13 +383,15 @@ async function main() {
     return;
   }
 
-  const result = await runTarget(target, dryRun, confirm);
+  const result = await runTarget(target, dryRun);
   const ok = result.errors.length === 0;
   console.log(JSON.stringify({ ok, dryRun, ...result }, null, 2));
   if (!ok) process.exitCode = 1;
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}

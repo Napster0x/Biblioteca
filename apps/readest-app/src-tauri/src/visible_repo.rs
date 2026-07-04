@@ -149,7 +149,9 @@ impl LibsqlVisibleRepo {
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
 
-        let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare pull: {e}"))?;
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| format!("prepare pull: {e}"))?;
 
         let row_iter = stmt
             .query_map(param_refs.as_slice(), |row| {
@@ -176,24 +178,22 @@ impl LibsqlVisibleRepo {
         Ok(result)
     }
 
-    fn seed_replicas_from_visible(
-        &self,
-        conn: &Connection,
-        kind: &str,
-    ) -> Result<(), String> {
+    fn seed_replicas_from_visible(&self, conn: &Connection, kind: &str) -> Result<(), String> {
         // Helper: build a ReplicaRow with real HLCs. Phantom rows (null id) are
         // returned as None and filtered out after collection.
-        let replica_rows: Vec<ReplicaRow> = match kind {
-            "annotation" => {
-                let seed = || -> Result<Vec<ReplicaRow>, String> {
-                    let mut stmt = conn
+        let replica_rows: Vec<ReplicaRow> =
+            match kind {
+                "annotation" => {
+                    let seed =
+                        || -> Result<Vec<ReplicaRow>, String> {
+                            let mut stmt = conn
                         .prepare(
                             "SELECT id, book_hash, book_title, book_author, cfi, section_href, \
                              page, text, note, style, color, created_at, updated_at, deleted_at \
                              FROM annotations ORDER BY updated_at, created_at",
                         )
                         .map_err(|e| format!("prepare annotations: {e}"))?;
-                    let rows = stmt
+                            let rows = stmt
                         .query_map([], |row| {
                             let id: Option<String> = row.get(0)?;
                             let Some(id) = id else {
@@ -235,13 +235,14 @@ impl LibsqlVisibleRepo {
                             }))
                         })
                         .map_err(|e| format!("scan annotations: {e}"))?;
-                    Ok(rows.filter_map(|r| r.ok().flatten()).collect())
-                };
-                seed().unwrap_or_default()
-            }
-            "quote" => {
-                let seed = || -> Result<Vec<ReplicaRow>, String> {
-                    let mut stmt = conn
+                            Ok(rows.filter_map(|r| r.ok().flatten()).collect())
+                        };
+                    seed().unwrap_or_default()
+                }
+                "quote" => {
+                    let seed =
+                        || -> Result<Vec<ReplicaRow>, String> {
+                            let mut stmt = conn
                         .prepare(
                             "SELECT id, book_hash, book_title, book_author, cfi, section_href, \
                              page, text, context_before, context_after, content_hash, \
@@ -249,7 +250,7 @@ impl LibsqlVisibleRepo {
                              FROM quotes ORDER BY updated_at, created_at",
                         )
                         .map_err(|e| format!("prepare quotes: {e}"))?;
-                    let rows = stmt
+                            let rows = stmt
                         .query_map([], |row| {
                             let id: Option<String> = row.get(0)?;
                             let Some(id) = id else {
@@ -292,130 +293,138 @@ impl LibsqlVisibleRepo {
                             }))
                         })
                         .map_err(|e| format!("scan quotes: {e}"))?;
-                    Ok(rows.filter_map(|r| r.ok().flatten()).collect())
-                };
-                seed().unwrap_or_default()
-            }
-            "dictionary-entry" => {
-                let seed_entries = || -> Result<Vec<ReplicaRow>, String> {
-                    let mut stmt = conn
-                        .prepare(
-                            "SELECT id, term, display_term, language, definition, \
+                            Ok(rows.filter_map(|r| r.ok().flatten()).collect())
+                        };
+                    seed().unwrap_or_default()
+                }
+                "dictionary-entry" => {
+                    let seed_entries = || -> Result<Vec<ReplicaRow>, String> {
+                        let mut stmt = conn
+                            .prepare(
+                                "SELECT id, term, display_term, language, definition, \
                              image_path, curiosity, enrichment_status, \
                              created_at, updated_at, deleted_at \
                              FROM dictionary_entries ORDER BY updated_at, created_at",
-                        )
-                        .map_err(|e| format!("prepare entries: {e}"))?;
-                    let rows = stmt
-                        .query_map([], |row| {
-                            let id: Option<String> = row.get(0)?;
-                            let Some(id) = id else {
-                                return Ok(None);
-                            };
-                            let created_ts: Option<i64> = row.get(8)?;
-                            let updated_ts: Option<i64> = row.get(9)?;
-                            let deleted_ts: Option<i64> = row.get(10)?;
+                            )
+                            .map_err(|e| format!("prepare entries: {e}"))?;
+                        let rows = stmt
+                            .query_map([], |row| {
+                                let id: Option<String> = row.get(0)?;
+                                let Some(id) = id else {
+                                    return Ok(None);
+                                };
+                                let created_ts: Option<i64> = row.get(8)?;
+                                let updated_ts: Option<i64> = row.get(9)?;
+                                let deleted_ts: Option<i64> = row.get(10)?;
 
-                            let hlc_base = updated_ts.or(created_ts).unwrap_or(0);
-                            let hlc = make_hlc(hlc_base);
+                                let hlc_base = updated_ts.or(created_ts).unwrap_or(0);
+                                let hlc = make_hlc(hlc_base);
 
-                            let field_keys: [(usize, &str); 7] = [
-                                (1, "term"), (2, "displayTerm"),
-                                (3, "language"), (4, "definition"),
-                                (5, "imagePath"), (6, "curiosity"),
-                                (7, "enrichmentStatus"),
-                            ];
-                            let mut fields = serde_json::json!({});
-                            for (col, key) in field_keys.iter() {
-                                if let Some(v) = col_str(row, *col)? {
-                                    fields[key] = serde_json::json!(
-                                        {"v": v, "t": &hlc, "s": "visible"}
-                                    );
+                                let field_keys: [(usize, &str); 7] = [
+                                    (1, "term"),
+                                    (2, "displayTerm"),
+                                    (3, "language"),
+                                    (4, "definition"),
+                                    (5, "imagePath"),
+                                    (6, "curiosity"),
+                                    (7, "enrichmentStatus"),
+                                ];
+                                let mut fields = serde_json::json!({});
+                                for (col, key) in field_keys.iter() {
+                                    if let Some(v) = col_str(row, *col)? {
+                                        fields[key] = serde_json::json!(
+                                            {"v": v, "t": &hlc, "s": "visible"}
+                                        );
+                                    }
                                 }
-                            }
 
-                            Ok(Some(ReplicaRow {
-                                replica_id: {
-                                    let clean = extract_item_id(&id, "dictionary-entry");
-                                    format!("dictionary-entry:{clean}")
-                                },
-                                kind: "dictionary-entry".into(),
-                                user_id: "visible".into(),
-                                fields_jsonb: fields,
-                                manifest_jsonb: None,
-                                deleted_at_ts: deleted_ts.map(|ts| make_hlc(ts)),
-                                reincarnation: None,
-                                updated_at_ts: hlc,
-                                schema_version: 1,
-                            }))
-                        })
-                        .map_err(|e| format!("scan entries: {e}"))?;
-                    Ok(rows.filter_map(|r| r.ok().flatten()).collect())
-                };
-                seed_entries().unwrap_or_default()
-            }
-            "dictionary-occurrence" => {
-                let seed_occurrences = || -> Result<Vec<ReplicaRow>, String> {
-                    let mut stmt = conn
-                        .prepare(
-                            "SELECT id, entry_id, book_hash, book_title, book_author, \
+                                Ok(Some(ReplicaRow {
+                                    replica_id: {
+                                        let clean = extract_item_id(&id, "dictionary-entry");
+                                        format!("dictionary-entry:{clean}")
+                                    },
+                                    kind: "dictionary-entry".into(),
+                                    user_id: "visible".into(),
+                                    fields_jsonb: fields,
+                                    manifest_jsonb: None,
+                                    deleted_at_ts: deleted_ts.map(|ts| make_hlc(ts)),
+                                    reincarnation: None,
+                                    updated_at_ts: hlc,
+                                    schema_version: 1,
+                                }))
+                            })
+                            .map_err(|e| format!("scan entries: {e}"))?;
+                        Ok(rows.filter_map(|r| r.ok().flatten()).collect())
+                    };
+                    seed_entries().unwrap_or_default()
+                }
+                "dictionary-occurrence" => {
+                    let seed_occurrences = || -> Result<Vec<ReplicaRow>, String> {
+                        let mut stmt = conn
+                            .prepare(
+                                "SELECT id, entry_id, book_hash, book_title, book_author, \
                              cfi, section_href, page, selected_text, context_before, \
                              context_after, highlight_note_id, created_at, deleted_at \
                              FROM dictionary_occurrences ORDER BY created_at",
-                        )
-                        .map_err(|e| format!("prepare occurrences: {e}"))?;
-                    let rows = stmt
-                        .query_map([], |row| {
-                            let id: Option<String> = row.get(0)?;
-                            let Some(id) = id else {
-                                return Ok(None);
-                            };
-                            let created_ts: Option<i64> = row.get(12)?;
-                            let deleted_ts: Option<i64> = row.get(13)?;
+                            )
+                            .map_err(|e| format!("prepare occurrences: {e}"))?;
+                        let rows = stmt
+                            .query_map([], |row| {
+                                let id: Option<String> = row.get(0)?;
+                                let Some(id) = id else {
+                                    return Ok(None);
+                                };
+                                let created_ts: Option<i64> = row.get(12)?;
+                                let deleted_ts: Option<i64> = row.get(13)?;
 
-                            // occurrences have NO updated_at — use created_at
-                            let hlc_base = created_ts.unwrap_or(0);
-                            let hlc = make_hlc(hlc_base);
+                                // occurrences have NO updated_at — use created_at
+                                let hlc_base = created_ts.unwrap_or(0);
+                                let hlc = make_hlc(hlc_base);
 
-                            let field_keys: [(usize, &str); 11] = [
-                                (1, "entryId"), (2, "bookHash"),
-                                (3, "bookTitle"), (4, "bookAuthor"),
-                                (5, "cfi"), (6, "sectionHref"),
-                                (7, "page"), (8, "selectedText"),
-                                (9, "contextBefore"), (10, "contextAfter"),
-                                (11, "highlightNoteId"),
-                            ];
-                            let mut fields = serde_json::json!({});
-                            for (col, key) in field_keys.iter() {
-                                if let Some(v) = col_str(row, *col)? {
-                                    fields[key] = serde_json::json!(
-                                        {"v": v, "t": &hlc, "s": "visible"}
-                                    );
+                                let field_keys: [(usize, &str); 11] = [
+                                    (1, "entryId"),
+                                    (2, "bookHash"),
+                                    (3, "bookTitle"),
+                                    (4, "bookAuthor"),
+                                    (5, "cfi"),
+                                    (6, "sectionHref"),
+                                    (7, "page"),
+                                    (8, "selectedText"),
+                                    (9, "contextBefore"),
+                                    (10, "contextAfter"),
+                                    (11, "highlightNoteId"),
+                                ];
+                                let mut fields = serde_json::json!({});
+                                for (col, key) in field_keys.iter() {
+                                    if let Some(v) = col_str(row, *col)? {
+                                        fields[key] = serde_json::json!(
+                                            {"v": v, "t": &hlc, "s": "visible"}
+                                        );
+                                    }
                                 }
-                            }
 
-                            Ok(Some(ReplicaRow {
-                                replica_id: {
-                                    let clean = extract_item_id(&id, "dictionary-occurrence");
-                                    format!("dictionary-occurrence:{clean}")
-                                },
-                                kind: "dictionary-occurrence".into(),
-                                user_id: "visible".into(),
-                                fields_jsonb: fields,
-                                manifest_jsonb: None,
-                                deleted_at_ts: deleted_ts.map(|ts| make_hlc(ts)),
-                                reincarnation: None,
-                                updated_at_ts: hlc,
-                                schema_version: 1,
-                            }))
-                        })
-                        .map_err(|e| format!("scan occurrences: {e}"))?;
-                    Ok(rows.filter_map(|r| r.ok().flatten()).collect())
-                };
-                seed_occurrences().unwrap_or_default()
-            }
-            _ => return Ok(()), // unknown kind — no visible tables
-        };
+                                Ok(Some(ReplicaRow {
+                                    replica_id: {
+                                        let clean = extract_item_id(&id, "dictionary-occurrence");
+                                        format!("dictionary-occurrence:{clean}")
+                                    },
+                                    kind: "dictionary-occurrence".into(),
+                                    user_id: "visible".into(),
+                                    fields_jsonb: fields,
+                                    manifest_jsonb: None,
+                                    deleted_at_ts: deleted_ts.map(|ts| make_hlc(ts)),
+                                    reincarnation: None,
+                                    updated_at_ts: hlc,
+                                    schema_version: 1,
+                                }))
+                            })
+                            .map_err(|e| format!("scan occurrences: {e}"))?;
+                        Ok(rows.filter_map(|r| r.ok().flatten()).collect())
+                    };
+                    seed_occurrences().unwrap_or_default()
+                }
+                _ => return Ok(()), // unknown kind — no visible tables
+            };
 
         // HLC-wins upsert: only overwrite when incoming HLC > existing.
         for row in &replica_rows {
@@ -490,9 +499,7 @@ fn make_hlc(ts_ms: i64) -> String {
 fn col_str(row: &rusqlite::Row, idx: usize) -> rusqlite::Result<Option<String>> {
     match row.get_ref(idx)? {
         rusqlite::types::ValueRef::Null => Ok(None),
-        rusqlite::types::ValueRef::Text(s) => {
-            Ok(Some(String::from_utf8_lossy(s).into_owned()))
-        }
+        rusqlite::types::ValueRef::Text(s) => Ok(Some(String::from_utf8_lossy(s).into_owned())),
         rusqlite::types::ValueRef::Integer(i) => Ok(Some(i.to_string())),
         rusqlite::types::ValueRef::Real(f) => Ok(Some(f.to_string())),
         rusqlite::types::ValueRef::Blob(_) => Ok(None),
@@ -587,10 +594,7 @@ fn merge_fields_jsonb(
     if let Some(incoming_obj) = incoming.as_object() {
         for (key, incoming_env) in incoming_obj {
             let existing_env = merged.get(key);
-            let incoming_t = incoming_env
-                .get("t")
-                .and_then(|t| t.as_str())
-                .unwrap_or("");
+            let incoming_t = incoming_env.get("t").and_then(|t| t.as_str()).unwrap_or("");
             let should_overwrite = match existing_env {
                 None => true,
                 Some(env) => {
@@ -1113,15 +1117,14 @@ impl VisibleRepository for LibsqlVisibleRepo {
                 // accept the live row as long as its HLC is strictly higher than
                 // the tombstone's deleted_at HLC OR the incoming row has field-level
                 // timestamps that are newer than the delete.
-                    let is_existing_tombstone = existing_deleted.is_some();
+                let is_existing_tombstone = existing_deleted.is_some();
                 let is_incoming_live = row.deleted_at_ts.is_none();
 
                 if is_existing_tombstone && is_incoming_live {
                     // Tombstone resurrection: accept a live row when its HLC is
                     // strictly higher than the tombstone's deleted_at_ts, OR when
                     // any incoming field HLC is newer than the delete HLC.
-                    let tombstone_hlc: &str =
-                        existing_deleted.as_deref().unwrap_or(existing_hlc);
+                    let tombstone_hlc: &str = existing_deleted.as_deref().unwrap_or(existing_hlc);
                     let fields_have_newer = row.fields_jsonb.as_object().map_or(false, |obj| {
                         obj.values().any(|v| {
                             v.as_object()
@@ -1940,7 +1943,14 @@ mod tests {
             conn.execute(
                 "INSERT INTO annotations (id, book_hash, text, note, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params!["ann-1", "hashABC", "hello world", "my note", created_ts, updated_ts],
+                rusqlite::params![
+                    "ann-1",
+                    "hashABC",
+                    "hello world",
+                    "my note",
+                    created_ts,
+                    updated_ts
+                ],
             )
             .unwrap();
         }
@@ -1969,9 +1979,11 @@ mod tests {
             assert_eq!(kind, "annotation");
             assert_eq!(hlc, expected_hlc);
 
-            let fields: serde_json::Value =
-                serde_json::from_str(&fields_raw).unwrap();
-            let text = fields.get("text").and_then(|e| e.get("v")).and_then(|v| v.as_str());
+            let fields: serde_json::Value = serde_json::from_str(&fields_raw).unwrap();
+            let text = fields
+                .get("text")
+                .and_then(|e| e.get("v"))
+                .and_then(|v| v.as_str());
             assert_eq!(text, Some("hello world"));
         }
     }
@@ -2070,7 +2082,8 @@ mod tests {
         {
             let conns = repo.conn_for_kind("dictionary-occurrence").unwrap();
             let conn = conns.get("dictionary-occurrence").unwrap();
-            repo.seed_replicas_from_visible(conn, "dictionary-occurrence").unwrap();
+            repo.seed_replicas_from_visible(conn, "dictionary-occurrence")
+                .unwrap();
         }
 
         // Verify HLC derives from created_at
@@ -2236,9 +2249,19 @@ mod tests {
                  section_href, page, text, note, style, color, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 rusqlite::params![
-                    "annot-rt", "hashABC", "My Book", "John Doe",
-                    "/4/2/1", "/chapter1.html", 42i64, "highlighted text",
-                    "My note", "underline", "blue", 1000i64, updated_ts,
+                    "annot-rt",
+                    "hashABC",
+                    "My Book",
+                    "John Doe",
+                    "/4/2/1",
+                    "/chapter1.html",
+                    42i64,
+                    "highlighted text",
+                    "My note",
+                    "underline",
+                    "blue",
+                    1000i64,
+                    updated_ts,
                 ],
             )
             .unwrap();
@@ -2259,7 +2282,10 @@ mod tests {
         assert_eq!(super::field_str(f, "bookTitle").unwrap(), "My Book");
         assert_eq!(super::field_str(f, "bookAuthor").unwrap(), "John Doe");
         assert_eq!(super::field_str(f, "cfi").unwrap(), "/4/2/1");
-        assert_eq!(super::field_str(f, "sectionHref").unwrap(), "/chapter1.html");
+        assert_eq!(
+            super::field_str(f, "sectionHref").unwrap(),
+            "/chapter1.html"
+        );
         assert_eq!(super::field_str(f, "page").unwrap(), "42");
         assert_eq!(super::field_str(f, "text").unwrap(), "highlighted text");
         assert_eq!(super::field_str(f, "note").unwrap(), "My note");
@@ -2293,10 +2319,19 @@ mod tests {
                  created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 rusqlite::params![
-                    "qt-rt", "hashXYZ", "Great Book", "Jane Smith",
-                    "/6/4/1", "/ch2.html", 10i64, "To be or not to be",
-                    "before text", "after text", "content-hash-123",
-                    500i64, updated_ts,
+                    "qt-rt",
+                    "hashXYZ",
+                    "Great Book",
+                    "Jane Smith",
+                    "/6/4/1",
+                    "/ch2.html",
+                    10i64,
+                    "To be or not to be",
+                    "before text",
+                    "after text",
+                    "content-hash-123",
+                    500i64,
+                    updated_ts,
                 ],
             )
             .unwrap();
@@ -2320,7 +2355,10 @@ mod tests {
         assert_eq!(super::field_str(f, "text").unwrap(), "To be or not to be");
         assert_eq!(super::field_str(f, "contextBefore").unwrap(), "before text");
         assert_eq!(super::field_str(f, "contextAfter").unwrap(), "after text");
-        assert_eq!(super::field_str(f, "contentHash").unwrap(), "content-hash-123");
+        assert_eq!(
+            super::field_str(f, "contentHash").unwrap(),
+            "content-hash-123"
+        );
     }
 
     /// CRT-4: Full roundtrip for dictionary-entry — all fields map correctly.
@@ -2349,9 +2387,16 @@ mod tests {
                   enrichment_status, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
-                    "dict-rt", "hello", "Hello", "en", "A greeting",
-                    "/img/hello.png", "From Old English", "enriched",
-                    500i64, updated_ts,
+                    "dict-rt",
+                    "hello",
+                    "Hello",
+                    "en",
+                    "A greeting",
+                    "/img/hello.png",
+                    "From Old English",
+                    "enriched",
+                    500i64,
+                    updated_ts,
                 ],
             )
             .unwrap();
@@ -2371,7 +2416,10 @@ mod tests {
         assert_eq!(super::field_str(f, "language").unwrap(), "en");
         assert_eq!(super::field_str(f, "definition").unwrap(), "A greeting");
         assert_eq!(super::field_str(f, "imagePath").unwrap(), "/img/hello.png");
-        assert_eq!(super::field_str(f, "curiosity").unwrap(), "From Old English");
+        assert_eq!(
+            super::field_str(f, "curiosity").unwrap(),
+            "From Old English"
+        );
         assert_eq!(super::field_str(f, "enrichmentStatus").unwrap(), "enriched");
     }
 
@@ -2454,15 +2502,27 @@ mod tests {
             let conns = repo.conn_for_kind("annotation").unwrap();
             let conn = conns.get("annotation").unwrap();
             let text: String = conn
-                .query_row("SELECT text FROM annotations WHERE id = ?1", ["fc-1"], |r| r.get(0))
+                .query_row(
+                    "SELECT text FROM annotations WHERE id = ?1",
+                    ["fc-1"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(text, "hello");
             let note: String = conn
-                .query_row("SELECT note FROM annotations WHERE id = ?1", ["fc-1"], |r| r.get(0))
+                .query_row(
+                    "SELECT note FROM annotations WHERE id = ?1",
+                    ["fc-1"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(note, "world");
             let color: String = conn
-                .query_row("SELECT color FROM annotations WHERE id = ?1", ["fc-1"], |r| r.get(0))
+                .query_row(
+                    "SELECT color FROM annotations WHERE id = ?1",
+                    ["fc-1"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(color, "red");
         }
@@ -2528,7 +2588,10 @@ mod tests {
             );
             let text_env = fields.get("text").unwrap();
             let text_t = text_env.get("t").and_then(|t| t.as_str()).unwrap();
-            assert_eq!(text_t, "T500", "HLC of surviving field must be T500 (original)");
+            assert_eq!(
+                text_t, "T500",
+                "HLC of surviving field must be T500 (original)"
+            );
         }
 
         // Verify app table also kept the high-priority text
@@ -2536,7 +2599,11 @@ mod tests {
             let conns = repo.conn_for_kind("annotation").unwrap();
             let conn = conns.get("annotation").unwrap();
             let text: String = conn
-                .query_row("SELECT text FROM annotations WHERE id = ?1", ["fc-2"], |r| r.get(0))
+                .query_row(
+                    "SELECT text FROM annotations WHERE id = ?1",
+                    ["fc-2"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(text, "high-priority");
         }
@@ -2607,15 +2674,27 @@ mod tests {
             let conns = repo.conn_for_kind("annotation").unwrap();
             let conn = conns.get("annotation").unwrap();
             let text: String = conn
-                .query_row("SELECT text FROM annotations WHERE id = ?1", ["fc-3"], |r| r.get(0))
+                .query_row(
+                    "SELECT text FROM annotations WHERE id = ?1",
+                    ["fc-3"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(text, "survive me");
             let note: String = conn
-                .query_row("SELECT note FROM annotations WHERE id = ?1", ["fc-3"], |r| r.get(0))
+                .query_row(
+                    "SELECT note FROM annotations WHERE id = ?1",
+                    ["fc-3"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(note, "keep me");
             let color: String = conn
-                .query_row("SELECT color FROM annotations WHERE id = ?1", ["fc-3"], |r| r.get(0))
+                .query_row(
+                    "SELECT color FROM annotations WHERE id = ?1",
+                    ["fc-3"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(color, "blue");
         }
@@ -2708,10 +2787,22 @@ mod tests {
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .unwrap();
-            assert_eq!(text_val, "original", "text must survive tombstone resurrection");
-            assert_eq!(note_val, "original note", "note must survive tombstone resurrection");
-            assert_eq!(color_val, "green", "new color must be merged on resurrection");
-            assert!(deleted_val.is_none(), "deleted_at must be cleared on resurrection");
+            assert_eq!(
+                text_val, "original",
+                "text must survive tombstone resurrection"
+            );
+            assert_eq!(
+                note_val, "original note",
+                "note must survive tombstone resurrection"
+            );
+            assert_eq!(
+                color_val, "green",
+                "new color must be merged on resurrection"
+            );
+            assert!(
+                deleted_val.is_none(),
+                "deleted_at must be cleared on resurrection"
+            );
         }
     }
 
@@ -2744,9 +2835,19 @@ mod tests {
                   created_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 rusqlite::params![
-                    "occ-rt", "dict-99", "hashOCC", "Dict Book", "Author X",
-                    "/1/2/3", "/ch3.html", 7i64, "selected", "before", "after",
-                    "hl-note-1", created_ts,
+                    "occ-rt",
+                    "dict-99",
+                    "hashOCC",
+                    "Dict Book",
+                    "Author X",
+                    "/1/2/3",
+                    "/ch3.html",
+                    7i64,
+                    "selected",
+                    "before",
+                    "after",
+                    "hl-note-1",
+                    created_ts,
                 ],
             )
             .unwrap();
@@ -2782,30 +2883,15 @@ mod tests {
     #[test]
     fn normalize_dictionary_term_nfc_lowercase_soft_hyphen() {
         // Same case → lowercased
-        assert_eq!(
-            super::normalize_dictionary_term("Zozobrar"),
-            "zozobrar"
-        );
+        assert_eq!(super::normalize_dictionary_term("Zozobrar"), "zozobrar");
         // Accented → NFC decomposed + lowercased
-        assert_eq!(
-            super::normalize_dictionary_term("Café"),
-            "café"
-        );
+        assert_eq!(super::normalize_dictionary_term("Café"), "café");
         // Soft hyphen (U+00AD) removed
-        assert_eq!(
-            super::normalize_dictionary_term("hell\u{00AD}o"),
-            "hello"
-        );
+        assert_eq!(super::normalize_dictionary_term("hell\u{00AD}o"), "hello");
         // Multi-word string — only NFC + lowercase + soft-hyphen, no multi-word logic
-        assert_eq!(
-            super::normalize_dictionary_term("Río Grande"),
-            "río grande"
-        );
+        assert_eq!(super::normalize_dictionary_term("Río Grande"), "río grande");
         // Already lowercase stays lowercase
-        assert_eq!(
-            super::normalize_dictionary_term("zozobrar"),
-            "zozobrar"
-        );
+        assert_eq!(super::normalize_dictionary_term("zozobrar"), "zozobrar");
     }
 
     /// SID-1: Dictionary dedup — push 2 rows with same term+language,
@@ -2911,7 +2997,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1, "same book_hash+content_hash should merge into ONE quote");
+        assert_eq!(
+            count, 1,
+            "same book_hash+content_hash should merge into ONE quote"
+        );
     }
 
     /// SID-3: Annotation dedup — push 2 rows same book_hash+cfi,
@@ -2960,7 +3049,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1, "same book_hash+cfi should merge into ONE annotation");
+        assert_eq!(
+            count, 1,
+            "same book_hash+cfi should merge into ONE annotation"
+        );
     }
 
     /// SID-1: Occurrence no-dedup — push 2 occurrences, assert both survive.
@@ -3010,8 +3102,16 @@ mod tests {
         };
 
         // Push two occurrences
-        repo.push("dictionary-occurrence", &[make_occ("occ-1", "dict-parent", "T200")]).unwrap();
-        repo.push("dictionary-occurrence", &[make_occ("occ-2", "dict-parent", "T300")]).unwrap();
+        repo.push(
+            "dictionary-occurrence",
+            &[make_occ("occ-1", "dict-parent", "T200")],
+        )
+        .unwrap();
+        repo.push(
+            "dictionary-occurrence",
+            &[make_occ("occ-2", "dict-parent", "T300")],
+        )
+        .unwrap();
 
         // Both must survive — occurrences are distinct events
         let conns = repo.conn_for_kind("dictionary-occurrence").unwrap();
@@ -3023,7 +3123,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 2, "occurrences must NOT be deduped — each is a distinct event");
+        assert_eq!(
+            count, 2,
+            "occurrences must NOT be deduped — each is a distinct event"
+        );
     }
 
     // ── compute_semantic_key ──────────────────────────────────────────
@@ -3204,7 +3307,10 @@ mod tests {
             schema_version: 1,
         };
         let result = filter_unchanged_replicas("dictionary-entry", &[row], db_str).unwrap();
-        assert!(result.is_empty(), "dict entry with same semantic_key+equal HLC should be excluded");
+        assert!(
+            result.is_empty(),
+            "dict entry with same semantic_key+equal HLC should be excluded"
+        );
     }
 
     #[test]
@@ -3263,7 +3369,11 @@ mod tests {
             schema_version: 1,
         };
         let result = filter_unchanged_replicas("dictionary-entry", &[row], db_str).unwrap();
-        assert_eq!(result.len(), 1, "row with higher HLC must pass even with semantic match");
+        assert_eq!(
+            result.len(),
+            1,
+            "row with higher HLC must pass even with semantic match"
+        );
     }
 
     #[test]
@@ -3371,7 +3481,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(semantic_key, None, "non-dict kinds must have NULL semantic_key");
+        assert_eq!(
+            semantic_key, None,
+            "non-dict kinds must have NULL semantic_key"
+        );
     }
 
     #[test]
@@ -3538,7 +3651,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(definition, "embarcación", "higher-HLC definition must survive dedup");
+        assert_eq!(
+            definition, "embarcación",
+            "higher-HLC definition must survive dedup"
+        );
 
         // Verify curiosity field survived (absent in row2 → preserved from row1)
         let curiosity: String = conn
@@ -3548,6 +3664,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(curiosity, "From Latin", "absent field must survive field-level merge during dedup");
+        assert_eq!(
+            curiosity, "From Latin",
+            "absent field must survive field-level merge during dedup"
+        );
     }
 }

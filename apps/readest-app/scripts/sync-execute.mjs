@@ -3,12 +3,9 @@ import { createSyncDevEnvironment, requireDevHarness } from './sync-dev-env.mjs'
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import {
-  normalizeTerm,
-  computeSemanticKey,
   filterUnchangedReplicas,
   writeReplicaMetadata,
   newerOrEqualReplicaExists,
-  newerOrEqualSemanticReplicaExists,
   ensureReplicaTables,
 } from './sync-filter-standalone.mjs';
 
@@ -19,6 +16,9 @@ const DICTIONARY_ENTRY_ENDPOINT = '/replicas/dictionary-entry';
 const DICTIONARY_OCCURRENCE_ENDPOINT = '/replicas/dictionary-occurrence';
 const QUOTE_ENDPOINT = '/replicas/quote';
 const ANNOTATION_ENDPOINT = '/replicas/annotation';
+const PENDING_ANDROID_BOOK_TOMBSTONES_PATH =
+  process.env.BIBLIOTECA_PENDING_ANDROID_BOOK_TOMBSTONES_PATH
+    ?? '/tmp/biblioteca-dev-sync/pending-android-book-tombstones.json';
 
 export const ENTRY_FIELDS = {
   term: 'term',
@@ -192,7 +192,7 @@ function upsertVisibleRow(dbPath, kind, row) {
   const id = replicaVisibleId(row, kind);
   const updatedAt = hlcMillis(row.updated_at_ts);
   const deletedAt = row.deleted_at_ts ? hlcMillis(row.deleted_at_ts) : null;
-  const timestamps = kind === 'quote' ? null : replicaTimestampJson(row);
+  const timestamps = replicaTimestampJson(row);
   if (kind === 'dictionary-entry') {
     execSqlite(dbPath, `
       INSERT OR REPLACE INTO dictionary_entries
@@ -222,11 +222,11 @@ function upsertVisibleRow(dbPath, kind, row) {
   if (kind === 'quote') {
     execSqlite(dbPath, `
       INSERT OR REPLACE INTO quotes
-      (id, book_hash, book_title, book_author, cfi, section_href, page, text, context_before, context_after, content_hash, created_at, updated_at, deleted_at)
+      (id, book_hash, book_title, book_author, cfi, section_href, page, text, context_before, context_after, content_hash, replica_timestamps, created_at, updated_at, deleted_at)
       VALUES (${sqlValue(id)}, ${sqlValue(fieldValue(row, 'bookHash'))}, ${sqlValue(fieldValue(row, 'bookTitle'))}, ${sqlValue(fieldValue(row, 'bookAuthor'))},
         ${sqlValue(fieldValue(row, 'cfi'))}, ${sqlValue(fieldValue(row, 'sectionHref'))}, ${sqlValue(fieldValue(row, 'page'))},
         ${sqlValue(fieldValue(row, 'text'))}, ${sqlValue(fieldValue(row, 'contextBefore'))}, ${sqlValue(fieldValue(row, 'contextAfter'))},
-        ${sqlValue(fieldValue(row, 'contentHash'))}, ${sqlValue(updatedAt)}, ${sqlValue(updatedAt)}, ${sqlValue(deletedAt)});
+        ${sqlValue(fieldValue(row, 'contentHash'))}, ${sqlValue(timestamps)}, ${sqlValue(updatedAt)}, ${sqlValue(updatedAt)}, ${sqlValue(deletedAt)});
     `);
     return true;
   }
@@ -241,7 +241,7 @@ function upsertVisibleRow(dbPath, kind, row) {
   return true;
 }
 
-function upsertReplicaRow(dbPath, kind, row) {
+export function upsertReplicaRow(dbPath, kind, row) {
   ensureReplicaTables(dbPath, kind);
   if (!row?.replica_id || !row?.updated_at_ts || newerOrEqualReplicaExists(dbPath, row.replica_id, row.updated_at_ts)) return false;
   if (!upsertVisibleRow(dbPath, kind, row)) return false;
@@ -266,9 +266,152 @@ function applyReplicaRowsToDesktop(kind, rows, dbPath) {
 }
 
 export function toHlc(value) {
+  if (typeof value === 'string' && /^[0-9a-f]+-[0-9a-f]+-[A-Za-z0-9_-]+$/i.test(value)) {
+    return value;
+  }
   const numeric = typeof value === 'number' ? value : Number(value);
   const millis = Number.isFinite(numeric) ? numeric : Date.parse(String(value || Date.now()));
   return `${Math.max(0, millis).toString(16).padStart(13, '0')}-00000001-visible`;
+}
+
+export function normalizeBookTimestamp(value) {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const text = String(value).trim();
+  if (!text) return 0;
+  const numeric = Number(text);
+  if (Number.isFinite(numeric)) return numeric;
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function remoteBookFromIndexEntry(entry) {
+  return entry?.book && typeof entry.book === 'object' ? entry.book : entry;
+}
+
+function booksFromIndexPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.books)) return payload.books;
+  if (Array.isArray(payload?.index)) return payload.index;
+  return [];
+}
+
+function localBookMaxMillis(book) {
+  return Math.max(
+    normalizeBookTimestamp(book?.updatedAt),
+    normalizeBookTimestamp(book?.deletedAt),
+    normalizeBookTimestamp(book?.importedAt),
+    normalizeBookTimestamp(book?.createdAt),
+  );
+}
+
+export function mergeRemoteBookTombstones(localLibrary, remoteIndexBooks, pendingAndroidDeletes = []) {
+  const library = Array.isArray(localLibrary) ? localLibrary.map((book) => ({ ...book })) : [];
+  const indexByHash = new Map(library.map((book, index) => [book.hash, index]).filter(([hash]) => hash));
+  let applied = 0;
+
+  for (const entry of [...booksFromIndexPayload(remoteIndexBooks), ...booksFromIndexPayload(pendingAndroidDeletes)]) {
+    const remoteBook = remoteBookFromIndexEntry(entry);
+    const hash = remoteBook?.hash ?? entry?.hash;
+    if (!hash || !remoteBook?.deletedAt) continue;
+
+    const remoteDeletedAtMillis = normalizeBookTimestamp(remoteBook.deletedAt);
+    if (remoteDeletedAtMillis <= 0) continue;
+
+    const localIndex = indexByHash.get(hash);
+    const localBook = localIndex === undefined ? { hash } : library[localIndex];
+    if (remoteDeletedAtMillis <= localBookMaxMillis(localBook)) continue;
+
+    const mergedBook = { ...localBook, ...remoteBook, hash, deletedAt: remoteBook.deletedAt };
+    if (localIndex === undefined) {
+      indexByHash.set(hash, library.length);
+      library.push(mergedBook);
+    } else {
+      library[localIndex] = mergedBook;
+    }
+    applied++;
+  }
+
+  return { library, applied };
+}
+
+export function mergeRemoteBookMetadata(localLibrary, remoteIndexBooks) {
+  const library = Array.isArray(localLibrary) ? localLibrary.map((book) => ({ ...book })) : [];
+  const indexByHash = new Map(library.map((book, index) => [book.hash, index]).filter(([hash]) => hash));
+  let applied = 0;
+
+  for (const entry of booksFromIndexPayload(remoteIndexBooks)) {
+    const remoteBook = remoteBookFromIndexEntry(entry);
+    const hash = remoteBook?.hash ?? entry?.hash;
+    if (!hash || remoteBook?.deletedAt) continue;
+
+    const remoteUpdatedAtMillis = localBookMaxMillis(remoteBook);
+    if (remoteUpdatedAtMillis <= 0) continue;
+
+    const localIndex = indexByHash.get(hash);
+    const localBook = localIndex === undefined ? { hash } : library[localIndex];
+    if (remoteUpdatedAtMillis <= localBookMaxMillis(localBook)) continue;
+
+    const mergedBook = { ...localBook, ...remoteBook, hash, deletedAt: null };
+    if (localIndex === undefined) {
+      indexByHash.set(hash, library.length);
+      library.push(mergedBook);
+    } else {
+      library[localIndex] = mergedBook;
+    }
+    applied++;
+  }
+
+  return { library, applied };
+}
+
+function bookForLibraryPush(book) {
+  if (book?.deletedAt) return book;
+  const orderingTimestamp = Math.max(
+    normalizeBookTimestamp(book?.createdAt),
+    normalizeBookTimestamp(book?.updatedAt),
+    normalizeBookTimestamp(book?.importedAt),
+  );
+  if (orderingTimestamp <= 0) return book;
+  return {
+    ...book,
+    createdAt: normalizeBookTimestamp(book?.createdAt) || orderingTimestamp,
+    updatedAt: normalizeBookTimestamp(book?.updatedAt) || orderingTimestamp,
+    importedAt: normalizeBookTimestamp(book?.importedAt) || orderingTimestamp,
+  };
+}
+
+function consumePendingAndroidBookTombstones(markerPath = PENDING_ANDROID_BOOK_TOMBSTONES_PATH) {
+  const { existsSync, readFileSync, unlinkSync } = require('node:fs');
+  if (!existsSync(markerPath)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(markerPath, 'utf8'));
+    return booksFromIndexPayload(parsed);
+  } catch {
+    return [];
+  } finally {
+    try { unlinkSync(markerPath); } catch {}
+  }
+}
+
+export function mergeRemoteBookTombstonesIntoLibraryFile(libraryPath, remoteIndexBooks, pendingAndroidDeletes = []) {
+  const { existsSync, readFileSync, writeFileSync } = require('node:fs');
+  const localLibrary = existsSync(libraryPath) ? JSON.parse(readFileSync(libraryPath, 'utf8')) : [];
+  const result = mergeRemoteBookTombstones(localLibrary, remoteIndexBooks, pendingAndroidDeletes);
+  if (result.applied > 0) {
+    writeFileSync(libraryPath, `${JSON.stringify(result.library, null, 2)}\n`);
+  }
+  return result;
+}
+
+export function mergeRemoteBookMetadataIntoLibraryFile(libraryPath, remoteIndexBooks) {
+  const { existsSync, readFileSync, writeFileSync } = require('node:fs');
+  const localLibrary = existsSync(libraryPath) ? JSON.parse(readFileSync(libraryPath, 'utf8')) : [];
+  const result = mergeRemoteBookMetadata(localLibrary, remoteIndexBooks);
+  if (result.applied > 0) {
+    writeFileSync(libraryPath, `${JSON.stringify(result.library, null, 2)}\n`);
+  }
+  return result;
 }
 
 function replicaTimestamps(row) {
@@ -292,15 +435,32 @@ export function rowToReplica(row, kind, fieldMap, fallbackUpdatedAt) {
       s: 'visible',
     };
   }
+
+  // Compute max timestamp from row timestamp + all valid field envelope HLCs + deleted HLC.
+  // This ensures that a field-only edit (e.g. definition updated via replica_timestamps)
+  // produces a replica with high enough updated_at_ts to pass filtering and push gates.
+  // Only valid HLC strings participate in the max. Non-HLC formats (e.g. harness "T${ts}")
+  // are excluded so fallbackTimestamp remains the authoritative value for those cases.
+  const HLC_RE = /^[0-9a-f]+-[0-9a-f]+-[A-Za-z0-9_-]+$/;
+  const fieldTimestamps = Object.values(fields)
+    .map(f => f.t)
+    .filter(t => HLC_RE.test(String(t)));
+  const allTimestamps = [fallbackTimestamp, ...fieldTimestamps];
+
+  const deleted_at_ts = row.deleted_at ? (timestamps.__deleted ?? toHlc(row.deleted_at)) : null;
+  if (deleted_at_ts) allTimestamps.push(deleted_at_ts);
+
+  const maxTimestamp = allTimestamps.reduce((max, t) => hlcMillis(t) > hlcMillis(max) ? t : max);
+
   return {
     user_id: 'visible',
     kind,
     replica_id: `${kind}:${row.id}`,
     fields_jsonb: fields,
     manifest_jsonb: null,
-    deleted_at_ts: row.deleted_at ? (timestamps.__deleted ?? toHlc(row.deleted_at)) : null,
+    deleted_at_ts,
     reincarnation: null,
-    updated_at_ts: fallbackTimestamp,
+    updated_at_ts: maxTimestamp,
     schema_version: 1,
   };
 }
@@ -389,6 +549,59 @@ export async function pushBookAssets(transport, book, booksDir) {
   }
 }
 
+/**
+ * Push local books to Android.
+ *
+ * - Live books (no deletedAt) that are NOT in the remote manifest are pushed
+ *   along with their assets (EPUB, cover, config).
+ * - Tombstoned books (deletedAt set) are pushed to Android `/books/index`
+ *   regardless of whether they exist in the remote manifest, so that Android
+ *   can converge on the deletion.
+ *
+ * @param {object} transport - transport with pushBookLibrary and pushBookAssets
+ * @param {Array<object>} localLibrary - desktop library entries
+ * @param {Map<string, object>} remoteBooks - Map of hash → book from Android manifest
+ * @param {string} booksDir - path to Books directory on desktop
+ * @returns {Promise<{sent: number, tombstonesPushed: number}>}
+ */
+export async function pushBooks(transport, localLibrary, remoteBooks, booksDir) {
+  let sent = 0;
+  let updated = 0;
+  let tombstonesPushed = 0;
+
+  for (const book of localLibrary) {
+    if (book.deletedAt) {
+      // Push tombstone to Android /books/index regardless of remote state
+      await transport.pushBookLibrary([book]);
+      tombstonesPushed++;
+      continue;
+    }
+
+    const remoteEntry = remoteBooks.get(book.hash);
+    if (remoteEntry) {
+      // Book exists on remote — compare updatedAt to decide if metadata update is needed
+      const remoteBook = remoteEntry.book ?? remoteEntry;
+      const remoteUpdatedAt = normalizeBookTimestamp(remoteBook?.updatedAt);
+      const localUpdatedAt = localBookMaxMillis(book);
+
+      if (localUpdatedAt > remoteUpdatedAt) {
+        // Metadata-only update — push library entry, NO asset push
+        await transport.pushBookLibrary([bookForLibraryPush(book)]);
+        updated++;
+      }
+      // localUpdatedAt <= remoteUpdatedAt: skip (no-op)
+      continue;
+    }
+
+    // Book not on remote — push assets + metadata as a new book
+    await transport.pushBookLibrary([bookForLibraryPush(book)]);
+    await pushBookAssets(transport, book, booksDir);
+    sent++;
+  }
+
+  return { sent, updated, tombstonesPushed };
+}
+
 async function main() {
   requireDevHarness(process.env, 'sync-execute');
   const env = createSyncDevEnvironment();
@@ -402,6 +615,11 @@ async function main() {
     async pullBookManifest() {
       const resp = await fetch(`${baseUrl}/books/manifest`);
       if (!resp.ok) throw new Error(`manifest: ${resp.status}`);
+      return resp.json();
+    },
+    async pullBookIndex() {
+      const resp = await fetch(`${baseUrl}/books/index`);
+      if (!resp.ok) throw new Error(`books index: ${resp.status}`);
       return resp.json();
     },
     async pullBookAsset(hash, name) {
@@ -425,7 +643,7 @@ async function main() {
       });
       return resp.json();
     },
-    async pushBookConfig(hash, json) {
+    async pushBookConfig(_hash, _json) {
       // Config is handled within pushBookAsset for config.json
     },
     async pullBookConfig(hash) {
@@ -453,7 +671,7 @@ async function main() {
       for (const row of filteredEntries) writeReplicaMetadata(dictDbPath, row);
     }
 
-    const filteredOccurrences = filterUnchangedReplicas(dictDbPath, dictionaryRows.occurrences);
+    const filteredOccurrences = filterUnchangedReplicas(dictDbPath, dictionaryRows.occurrences, 'dictionary-occurrence');
     await putReplicas(baseUrl, 'dictionary-occurrence', DICTIONARY_OCCURRENCE_ENDPOINT, filteredOccurrences, replicas);
     if (filteredOccurrences.length > 0) {
       ensureReplicaTables(dictDbPath, 'dictionary-occurrence');
@@ -464,7 +682,7 @@ async function main() {
       (row) => rowToReplica(row, 'quote', QUOTE_FIELDS, row.updated_at ?? row.created_at),
     );
     const quoteDbPath = desktopReplicaDbPath(dataRoot, 'quote');
-    const filteredQuotes = filterUnchangedReplicas(quoteDbPath, quoteRows);
+    const filteredQuotes = filterUnchangedReplicas(quoteDbPath, quoteRows, 'quote');
     await putReplicas(baseUrl, 'quote', QUOTE_ENDPOINT, filteredQuotes, replicas);
     if (filteredQuotes.length > 0) {
       ensureReplicaTables(quoteDbPath, 'quote');
@@ -475,7 +693,7 @@ async function main() {
       (row) => rowToReplica(row, 'annotation', ANNOTATION_FIELDS, row.updated_at ?? row.created_at),
     );
     const annotationDbPath = desktopReplicaDbPath(dataRoot, 'annotation');
-    const filteredAnnotations = filterUnchangedReplicas(annotationDbPath, annotationRows);
+    const filteredAnnotations = filterUnchangedReplicas(annotationDbPath, annotationRows, 'annotation');
     await putReplicas(baseUrl, 'annotation', ANNOTATION_ENDPOINT, filteredAnnotations, replicas);
     if (filteredAnnotations.length > 0) {
       ensureReplicaTables(annotationDbPath, 'annotation');
@@ -485,7 +703,7 @@ async function main() {
     for (const [kind, endpoint] of REPLICA_PULL_ORDER) {
       const rows = await getReplicas(baseUrl, kind, endpoint, replicas);
       const dbPath = desktopReplicaDbPath(env.desktop.dataRoot, kind);
-      const filtered = filterUnchangedReplicas(dbPath, rows);
+      const filtered = filterUnchangedReplicas(dbPath, rows, kind);
       replicas[kind].pulled = filtered.length;
       replicas[kind].appliedToDesktop = applyReplicaRowsToDesktop(kind, filtered, dbPath);
     }
@@ -493,24 +711,31 @@ async function main() {
   // Read local library
   const { readFileSync, existsSync } = await import('node:fs');
   const libraryPath = join(env.desktop.dataRoot, 'Readest', 'Books', 'library.json');
-  const localLibrary = existsSync(libraryPath) ? JSON.parse(readFileSync(libraryPath, 'utf8')) : [];
+  let localLibrary = existsSync(libraryPath) ? JSON.parse(readFileSync(libraryPath, 'utf8')) : [];
   console.log(`Local books: ${localLibrary.length}`);
+
+  // Pull Android /books/index before pushing so newer remote tombstones win
+  // over stale desktop live rows and cannot be accidentally resurrected.
+  const remoteIndexBooks = await transport.pullBookIndex();
+  const pendingAndroidDeletes = consumePendingAndroidBookTombstones();
+  const tombstoneMerge = mergeRemoteBookTombstonesIntoLibraryFile(libraryPath, remoteIndexBooks, pendingAndroidDeletes);
+  localLibrary = tombstoneMerge.library;
+  evidence.remoteBookTombstonesMerged = tombstoneMerge.applied;
+  evidence.pendingAndroidBookDeletes = pendingAndroidDeletes.length;
+  const metadataMerge = mergeRemoteBookMetadataIntoLibraryFile(libraryPath, remoteIndexBooks);
+  localLibrary = metadataMerge.library;
+  evidence.remoteBookMetadataMerged = metadataMerge.applied;
 
   // Pull remote manifest
   const remoteManifest = await transport.pullBookManifest();
   const remoteBooks = new Map(remoteManifest.books.map(e => [e.hash, e.book]));
   console.log(`Remote books: ${remoteBooks.size}`);
 
-  // Push new books
+  // Push new books and tombstones
   const booksDir = join(env.desktop.dataRoot, 'Readest', 'Books');
-  for (const book of localLibrary) {
-    if (book.deletedAt) continue;
-    if (remoteBooks.has(book.hash)) continue;
-    await transport.pushBookLibrary([book]);
-    await pushBookAssets(transport, book, booksDir);
-    sent++;
-    console.log(`Sent: ${book.hash} (${book.title})`);
-  }
+  const pushResult = await pushBooks(transport, localLibrary, remoteBooks, booksDir);
+  sent = pushResult.sent;
+  evidence.tombstonesPushed = pushResult.tombstonesPushed;
 
   // Pull new books
   for (const [hash, book] of remoteBooks) {
@@ -520,7 +745,7 @@ async function main() {
     console.log(`Received: ${hash} (${book.title})`);
   }
 
-    console.log(JSON.stringify({ ok: true, sent, received, replicas, evidence }));
+    console.log(JSON.stringify({ ok: true, sent, received, tombstonesPushed: pushResult.tombstonesPushed, replicas, evidence }));
   } catch (err) {
     console.log(JSON.stringify({
       ok: false,

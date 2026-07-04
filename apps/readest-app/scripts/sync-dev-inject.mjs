@@ -8,6 +8,10 @@
  * Android support: pass `runAdb` + `packageName` for run-as sqlite3.
  */
 
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { createSyncDevEnvironment } from './sync-dev-env.mjs';
+
 // ── DDL helpers ──────────────────────────────────────────────────────────────
 
 /**
@@ -167,6 +171,78 @@ export function injectRows({
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/**
+ * Tombstone a book entry in the desktop Readest library index.
+ *
+ * Instead of removing the row, sets `deletedAt`, `updatedAt`, and clears
+ * `downloadedAt` to null so the tombstone can be propagated via sync.
+ *
+ * @param {string} bookHash
+ * @param {{dataRoot?: string}} [options]
+ * @returns {{ok: true, bookHash: string, action: 'tombstoned'|'not-found'}}
+ */
+export function deleteBook(bookHash, options = {}) {
+  const dataRoot = options.dataRoot ?? createSyncDevEnvironment().desktop.dataRoot;
+  const libraryPath = join(dataRoot, 'Readest', 'Books', 'library.json');
+  const library = JSON.parse(readFileSync(libraryPath, 'utf8'));
+  if (!Array.isArray(library)) {
+    throw new Error(`Invalid library.json: expected array at ${libraryPath}`);
+  }
+
+  let found = false;
+  const now = Date.now();
+  const updated = library.map((book) => {
+    if (book?.hash !== bookHash && book?.bookHash !== bookHash) return book;
+    found = true;
+    return { ...book, deletedAt: now, updatedAt: now, downloadedAt: null };
+  });
+
+  if (!found) {
+    return { ok: true, bookHash, action: 'not-found' };
+  }
+
+  writeFileSync(libraryPath, JSON.stringify(updated, null, 2), 'utf8');
+  return { ok: true, bookHash, action: 'tombstoned' };
+}
+
+/**
+ * Update editable fields for one desktop Readest library entry.
+ *
+ * @param {string} bookHash
+ * @param {Record<string, unknown>} updates
+ * @param {{dataRoot?: string}} [options]
+ * @returns {{ok: true, bookHash: string, action: 'updated'|'not-found'}}
+ */
+export function updateBook(bookHash, updates, options = {}) {
+  const dataRoot = options.dataRoot ?? createSyncDevEnvironment().desktop.dataRoot;
+  const libraryPath = join(dataRoot, 'Readest', 'Books', 'library.json');
+  const library = JSON.parse(readFileSync(libraryPath, 'utf8'));
+  if (!Array.isArray(library)) {
+    throw new Error(`Invalid library.json: expected array at ${libraryPath}`);
+  }
+
+  let found = false;
+  const now = new Date().toISOString();
+  const updatedLibrary = library.map((book) => {
+    if (book?.hash !== bookHash && book?.bookHash !== bookHash) return book;
+    found = true;
+    const next = { ...book, updatedAt: now };
+    for (const [field, value] of Object.entries(updates)) {
+      if (field === 'metadata' && value && typeof value === 'object' && !Array.isArray(value)) {
+        next.metadata = { ...(next.metadata ?? {}), ...value };
+      } else {
+        next[field] = value;
+      }
+    }
+    return next;
+  });
+
+  if (!found) return { ok: true, bookHash, action: 'not-found' };
+
+  writeFileSync(libraryPath, JSON.stringify(updatedLibrary, null, 2), 'utf8');
+  return { ok: true, bookHash, action: 'updated' };
 }
 
 // ── CLI entry point ────────────────────────────────────────────────────────────

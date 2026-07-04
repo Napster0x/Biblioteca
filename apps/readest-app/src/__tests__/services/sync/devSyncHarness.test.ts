@@ -6347,22 +6347,24 @@ describe('sync-execute semantic filter pure functions', () => {
       fields_jsonb: { term: { v: term }, language: { v: lang } },
     });
     // Valid term + language → normalized key
-    expect(computeSemanticKey(makeRow('Hello', 'EN'))).toBe('hello|en');
-    expect(computeSemanticKey(makeRow('SERENDIPÍA', 'ES'))).toBe('serendipía|es');
+    expect(computeSemanticKey(makeRow('Hello', 'EN'), 'dictionary-entry')).toBe('hello|en');
+    expect(computeSemanticKey(makeRow('SERENDIPÍA', 'ES'), 'dictionary-entry')).toBe(
+      'serendipía|es',
+    );
     // Soft-hyphen in term
-    expect(computeSemanticKey(makeRow('foo\u00adbar', 'en'))).toBe('foobar|en');
+    expect(computeSemanticKey(makeRow('foo\u00adbar', 'en'), 'dictionary-entry')).toBe('foobar|en');
     // null fields_jsonb → null
-    expect(computeSemanticKey({ fields_jsonb: null })).toBeNull();
-    expect(computeSemanticKey({})).toBeNull();
-    expect(computeSemanticKey({ fields_jsonb: {} })).toBeNull();
+    expect(computeSemanticKey({ fields_jsonb: null }, 'dictionary-entry')).toBeNull();
+    expect(computeSemanticKey({}, 'dictionary-entry')).toBeNull();
+    expect(computeSemanticKey({ fields_jsonb: {} }, 'dictionary-entry')).toBeNull();
     // Empty/whitespace term → null
-    expect(computeSemanticKey(makeRow('', 'es'))).toBeNull();
-    expect(computeSemanticKey(makeRow('   ', 'es'))).toBeNull();
+    expect(computeSemanticKey(makeRow('', 'es'), 'dictionary-entry')).toBeNull();
+    expect(computeSemanticKey(makeRow('   ', 'es'), 'dictionary-entry')).toBeNull();
     // Missing language → pipe with empty string
-    expect(computeSemanticKey(makeRow('foo', null))).toBe('foo|');
-    expect(computeSemanticKey(makeRow('foo', undefined))).toBe('foo|');
+    expect(computeSemanticKey(makeRow('foo', null), 'dictionary-entry')).toBe('foo|');
+    expect(computeSemanticKey(makeRow('foo', undefined), 'dictionary-entry')).toBe('foo|');
     // Term is not a string → null (v is number)
-    expect(computeSemanticKey(makeRow(42, 'es'))).toBeNull();
+    expect(computeSemanticKey(makeRow(42, 'es'), 'dictionary-entry')).toBeNull();
   });
 
   it('newerOrEqualSemanticReplicaExists: match found, not found, HLC gate, null key', async () => {
@@ -6388,21 +6390,41 @@ describe('sync-execute semantic filter pure functions', () => {
       { encoding: 'utf8' },
     );
     // Match found with same HLC → true
-    expect(newerOrEqualSemanticReplicaExists(dbPath, 'hello|en', hlc)).toBe(true);
-    expect(newerOrEqualSemanticReplicaExists(dbPath, 'serendipía|es', hlc)).toBe(true);
+    expect(newerOrEqualSemanticReplicaExists(dbPath, 'hello|en', hlc, 'dictionary-entry')).toBe(
+      true,
+    );
+    expect(
+      newerOrEqualSemanticReplicaExists(dbPath, 'serendipía|es', hlc, 'dictionary-entry'),
+    ).toBe(true);
     // Match found with lower HLC → true (replica has higher HLC)
     expect(
-      newerOrEqualSemanticReplicaExists(dbPath, 'hello|en', '0019ef2200001-00000001-desktop'),
+      newerOrEqualSemanticReplicaExists(
+        dbPath,
+        'hello|en',
+        '0019ef2200001-00000001-desktop',
+        'dictionary-entry',
+      ),
     ).toBe(true);
     // No match (different semantic key) → false
-    expect(newerOrEqualSemanticReplicaExists(dbPath, 'nonexistent|en', hlc)).toBe(false);
+    expect(
+      newerOrEqualSemanticReplicaExists(dbPath, 'nonexistent|en', hlc, 'dictionary-entry'),
+    ).toBe(false);
     // Match found but higher requested HLC → false
-    expect(newerOrEqualSemanticReplicaExists(dbPath, 'hello|en', higherHlc)).toBe(false);
+    expect(
+      newerOrEqualSemanticReplicaExists(dbPath, 'hello|en', higherHlc, 'dictionary-entry'),
+    ).toBe(false);
     // null/undefined key → false
-    expect(newerOrEqualSemanticReplicaExists(dbPath, null as unknown as string, hlc)).toBe(false);
-    expect(newerOrEqualSemanticReplicaExists(dbPath, undefined as unknown as string, hlc)).toBe(
-      false,
-    );
+    expect(
+      newerOrEqualSemanticReplicaExists(dbPath, null as unknown as string, hlc, 'dictionary-entry'),
+    ).toBe(false);
+    expect(
+      newerOrEqualSemanticReplicaExists(
+        dbPath,
+        undefined as unknown as string,
+        hlc,
+        'dictionary-entry',
+      ),
+    ).toBe(false);
   });
 });
 

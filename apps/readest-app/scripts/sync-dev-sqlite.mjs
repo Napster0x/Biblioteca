@@ -6,6 +6,28 @@ function sqliteQuery(dbPath, execFileSync, sql) {
   return execFileSync('sqlite3', [dbPath, '-json', sql], { encoding: 'utf8', stdio: 'pipe' });
 }
 
+function escapeSqlValue(value) {
+  return String(value).replace(/'/g, "''");
+}
+
+function sqlLiteral(value) {
+  if (value === null || value === undefined) return 'NULL';
+  if (typeof value === 'number') return String(value);
+  return `'${escapeSqlValue(value)}'`;
+}
+
+function assertRowExists({ dbPath, execFileSync, table, idColumn, rowId }) {
+  const raw = sqliteQuery(
+    dbPath,
+    execFileSync,
+    `SELECT count(*) AS c FROM "${table}" WHERE "${idColumn}" = '${escapeSqlValue(rowId)}'`,
+  );
+  const rows = JSON.parse(raw);
+  if ((rows[0]?.c ?? 0) === 0) {
+    throw new Error(`Row not found: ${table}.${rowId}`);
+  }
+}
+
 /**
  * Capture metadata for a single table: columns, row count, HLC range, tombstone count.
  * Uses PRAGMA table_info at runtime (schema discovery, not hardcoded).
@@ -107,40 +129,40 @@ export function captureReplicasTable({ dbPath, execFileSync }) {
 /**
  * Update specific columns in a row and bump its HLC replica_timestamps.
  */
-export function updateRow({ dbPath, execFileSync, table, rowId, idColumn = 'id', updates }) {
+export function updateRow({ dbPath, execFileSync, table, rowId, idColumn = 'id', updates, timestamp, hlcTimestamp }) {
   if (!updates || Object.keys(updates).length === 0) {
     return { ok: false, error: 'no updates provided' };
   }
 
-  const now = Date.now();
+  const now = timestamp ?? hlcTimestamp ?? Date.now();
   const setClauses = [];
 
   // Add user-provided updates
   for (const [col, val] of Object.entries(updates)) {
-    if (val === null || val === undefined) {
-      setClauses.push(`"${col}" = NULL`);
-    } else if (typeof val === 'number') {
-      setClauses.push(`"${col}" = ${val}`);
-    } else {
-      setClauses.push(`"${col}" = '${String(val).replace(/'/g, "''")}'`);
-    }
+    setClauses.push(`"${col}" = ${sqlLiteral(val)}`);
   }
 
   // Bump updated_at
-  setClauses.push(`updated_at = ${now}`);
+  setClauses.push(`updated_at = ${sqlLiteral(now)}`);
 
-  // Bump replica_timestamps if the column is assumed to exist
-  // We append a T{now} marker to signal HLC advancement
+  // Bump replica_timestamps for EACH updated field, so the field envelope HLC
+  // advances and Android field-level merge accepts the new value.
+  // Example: editing definition -> sets $.definition = T${now}
+  const fieldNames = Object.keys(updates);
   setClauses.push(
-    `replica_timestamps = CASE WHEN replica_timestamps IS NOT NULL AND replica_timestamps != '' THEN json_set(replica_timestamps, '$.updated', 'T${now}') ELSE json('{"updated":"T${now}"}') END`,
+    `replica_timestamps = CASE WHEN replica_timestamps IS NOT NULL AND replica_timestamps != '' THEN json_set(replica_timestamps, ${fieldNames.map(f => `'$.${f}'`).join(', ')}, ${fieldNames.map(f => sqlLiteral(`T${now}`)).join(', ')}) ELSE json(${sqlLiteral(JSON.stringify(Object.fromEntries(fieldNames.map(f => [f, `T${now}`]))))}) END`,
   );
 
-  const sql = `UPDATE "${table}" SET ${setClauses.join(', ')} WHERE "${idColumn}" = '${String(rowId).replace(/'/g, "''")}'`;
+  const sql = `UPDATE "${table}" SET ${setClauses.join(', ')} WHERE "${idColumn}" = '${escapeSqlValue(rowId)}'`;
 
   try {
+    assertRowExists({ dbPath, execFileSync, table, idColumn, rowId });
     execFileSync('sqlite3', [dbPath, sql], { encoding: 'utf8', stdio: 'pipe' });
     return { ok: true, table, rowId };
   } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Row not found:')) {
+      throw error;
+    }
     return {
       ok: false,
       table,
@@ -153,25 +175,29 @@ export function updateRow({ dbPath, execFileSync, table, rowId, idColumn = 'id',
 /**
  * Mark a row as deleted (tombstone) by setting deleted_at and bumping HLC.
  */
-export function softDeleteRow({ dbPath, execFileSync, table, rowId, idColumn = 'id' }) {
-  const now = Date.now();
+export function softDeleteRow({ dbPath, execFileSync, table, rowId, idColumn = 'id', timestamp, hlcTimestamp }) {
+  const now = timestamp ?? hlcTimestamp ?? Date.now();
 
   const sql = `
 UPDATE "${table}"
-SET deleted_at = ${now},
-    updated_at = ${now},
+SET deleted_at = ${sqlLiteral(now)},
+    updated_at = ${sqlLiteral(now)},
     replica_timestamps = CASE
       WHEN replica_timestamps IS NOT NULL AND replica_timestamps != ''
-      THEN json_set(replica_timestamps, '$.deleted', 'T${now}')
-      ELSE json('{"deleted":"T${now}"}')
+      THEN json_set(replica_timestamps, '$.deleted', ${sqlLiteral(`T${now}`)})
+      ELSE json(${sqlLiteral(JSON.stringify({ deleted: `T${now}` }))})
     END
-WHERE "${idColumn}" = '${String(rowId).replace(/'/g, "''")}'
+WHERE "${idColumn}" = ${sqlLiteral(rowId)}
   `.trim();
 
   try {
+    assertRowExists({ dbPath, execFileSync, table, idColumn, rowId });
     execFileSync('sqlite3', [dbPath, sql], { encoding: 'utf8', stdio: 'pipe' });
     return { ok: true, table, rowId, deleted: true };
   } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Row not found:')) {
+      throw error;
+    }
     return {
       ok: false,
       table,

@@ -80,6 +80,66 @@ pnpm dev:sync:doctor --json
 - Si `android.health` es `pass` pero no muestra `serverVersion`/`startedAt`, el doctor reporta `warn` — el servidor funciona pero no expone metadatos de versión (no es blocker, pero dificulta verificar que el APK correcto está corriendo).
 - `android.runAs`: debe ser `pass`.
 - `android.readestDir`: debe ser `pass`.
+- `phase2.preflight`: debe ser `pass` antes de ejecutar cualquier caso de Phase 2.
+
+---
+
+## Gate de Phase 2: camino rápido
+
+**No ejecutar casos Phase 2 hasta que el doctor diga `phase2.preflight: pass`.**
+Este gate evita confundir un problema de paquete, proceso, túnel o listener Android con una divergencia real de CRDT/sync.
+
+```bash
+# 1. Guardar evidencia completa del gate
+pnpm dev:sync:doctor --json > /tmp/biblioteca-dev-sync/phase2-doctor.json
+
+# 2. Confirmar paquete/proceso seleccionado
+adb shell pidof io.github.Napster0x.biblioteca.dev
+
+# 3. Confirmar forward serial-scoped si hay más de un dispositivo
+adb forward --list
+
+# 4. Confirmar health vía túnel USB
+curl http://localhost:7878/health
+```
+
+| Check requerido | Debe probar | Si falla |
+|---|---|---|
+| `android.package` | Paquete seleccionado y serial visible | Definir `BIBLIOTECA_DEV_ANDROID_PACKAGE` o instalar el APK correcto. |
+| `android.process` | PID activo del paquete seleccionado | Abrir la app Android antes de repetir Phase 2. |
+| `adb.forward` | `tcp:7878 → tcp:7878` para el serial objetivo | Ejecutar `adb -s <serial> forward tcp:7878 tcp:7878`. |
+| `android.health` | `/health` Android responde por el túnel | Verificar rebuild/redeploy, listener y logs `[local-sync:lifecycle]`. |
+| `android.manifest` | API Android local responde más allá de health | Resolver listener/rutas antes de diagnosticar CRDT. |
+| `desktop.devSyncHealth` | Endpoint desktop dev-sync está sano | Levantar o corregir el dev server desktop. |
+
+### Package override
+
+Usar override cuando haya variantes prod/dev instaladas o cuando el doctor elija el paquete equivocado:
+
+```bash
+BIBLIOTECA_DEV_ANDROID_PACKAGE=io.github.Napster0x.biblioteca.dev \
+BIBLIOTECA_DEV_ANDROID_SERIAL=<serial> \
+pnpm dev:sync:doctor --json
+```
+
+### Recovery rápido
+
+| Failure class | Qué significa | Acción |
+|---|---|---|
+| `package-not-found` | No hay candidato instalado o el override apunta mal | Instalar el APK correcto o ajustar `BIBLIOTECA_DEV_ANDROID_PACKAGE`. |
+| `app-process-absent` | El paquete existe pero la app no está corriendo | Abrir la app; si hubo cambio Rust, rebuild/redeploy antes. |
+| `port-refused` | El túnel llega al dispositivo, pero no hay listener local | Revisar logs `[local-sync:lifecycle]`; confirmar que el APK incluye el cambio nativo. |
+| `timeout` | El endpoint no responde a tiempo | Revisar USB, pantalla activa, serial correcto y forward. |
+
+### Escalation criteria
+
+Escalar a foreground service **solo** si hay evidencia repetible de que:
+
+- `android.process` pasa al iniciar la app, pero el proceso muere o suspende mientras debería servir sync.
+- `adb.forward` sigue correcto, pero `android.health` alterna entre `pass` y `port-refused/timeout` con logs de lifecycle incompletos.
+- El APK ya fue rebuild/redeploy después de cambios en `src-tauri/src/`.
+
+Sin esa evidencia, NO ampliar el scope nativo: primero corregir paquete, PID, forward o rebuild.
 
 ---
 

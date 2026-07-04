@@ -83,52 +83,71 @@ describe('normalizeTerm', () => {
 
 describe('computeSemanticKey', () => {
   it('returns null when fields_jsonb is undefined', () => {
-    expect(computeSemanticKey({})).toBeNull();
+    expect(computeSemanticKey({}, 'dictionary-entry')).toBeNull();
   });
 
   it('returns null when term is missing', () => {
-    expect(computeSemanticKey({ fields_jsonb: { language: { v: 'en' } } })).toBeNull();
+    expect(
+      computeSemanticKey({ fields_jsonb: { language: { v: 'en' } } }, 'dictionary-entry'),
+    ).toBeNull();
   });
 
   it('returns null when term is empty string', () => {
     expect(
-      computeSemanticKey({ fields_jsonb: { term: { v: '' }, language: { v: 'en' } } }),
+      computeSemanticKey(
+        { fields_jsonb: { term: { v: '' }, language: { v: 'en' } } },
+        'dictionary-entry',
+      ),
     ).toBeNull();
   });
 
   it('returns null when term is white-space only', () => {
     expect(
-      computeSemanticKey({ fields_jsonb: { term: { v: '   ' }, language: { v: 'en' } } }),
+      computeSemanticKey(
+        { fields_jsonb: { term: { v: '   ' }, language: { v: 'en' } } },
+        'dictionary-entry',
+      ),
     ).toBeNull();
   });
 
   it('returns null when term is a non-string value', () => {
-    expect(computeSemanticKey({ fields_jsonb: { term: { v: 42 } } })).toBeNull();
+    expect(
+      computeSemanticKey({ fields_jsonb: { term: { v: 42 } } }, 'dictionary-entry'),
+    ).toBeNull();
   });
 
   it('returns key with term and language', () => {
-    const key = computeSemanticKey({
-      fields_jsonb: { term: { v: 'Hello' }, language: { v: 'en' } },
-    });
+    const key = computeSemanticKey(
+      {
+        fields_jsonb: { term: { v: 'Hello' }, language: { v: 'en' } },
+      },
+      'dictionary-entry',
+    );
     expect(key).toBe('hello|en');
   });
 
   it('returns key with term only (language defaults to empty)', () => {
-    const key = computeSemanticKey({ fields_jsonb: { term: { v: 'Hello' } } });
+    const key = computeSemanticKey({ fields_jsonb: { term: { v: 'Hello' } } }, 'dictionary-entry');
     expect(key).toBe('hello|');
   });
 
   it('normalizes both term and language', () => {
-    const key = computeSemanticKey({
-      fields_jsonb: { term: { v: 'Café' }, language: { v: 'FR' } },
-    });
+    const key = computeSemanticKey(
+      {
+        fields_jsonb: { term: { v: 'Café' }, language: { v: 'FR' } },
+      },
+      'dictionary-entry',
+    );
     expect(key).toBe('café|fr');
   });
 
   it('strips soft hyphens from both term and language', () => {
-    const key = computeSemanticKey({
-      fields_jsonb: { term: { v: 'hell\u{00AD}o' }, language: { v: 'e\u{00AD}n' } },
-    });
+    const key = computeSemanticKey(
+      {
+        fields_jsonb: { term: { v: 'hell\u{00AD}o' }, language: { v: 'e\u{00AD}n' } },
+      },
+      'dictionary-entry',
+    );
     expect(key).toBe('hello|en');
   });
 });

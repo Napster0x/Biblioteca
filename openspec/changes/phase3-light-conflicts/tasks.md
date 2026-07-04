@@ -34,10 +34,10 @@ Chain strategy: stacked-to-main
 
 ## Phase 2: Casos 15–17 same-identity
 
-- [ ] 2.1 Extender `apps/readest-app/scripts/dev-sync-fixture.mjs` para Case 15: mismo EPUB/hash con IDs/metadatos distintos y tombstone stale. AC: una entrada lógica por `hash`.
-- [ ] 2.2 Añadir fixtures/assertions Case 16 en `dev-sync-fixture.mjs` y `assert-engine.mjs`: término+idioma normalizados, ocurrencias válidas coexistentes. AC: cero duplicados de entrada.
-- [ ] 2.3 Añadir fixtures/assertions Case 17: `bookHash|cfi|text/contentHash`, `_replicas` y HLC visibles. AC: una cita lógica por rango/texto.
-- [ ] 2.4 Añadir tests por caso 15–17 junto a cada helper modificado. Verificación placeholder: `pnpm --filter readest-app test -- phase3-light-conflicts`.
+- [x] 2.1 Extender `apps/readest-app/scripts/dev-sync-fixture.mjs` para Case 15: mismo EPUB/hash con IDs/metadatos distintos y tombstone stale. AC: una entrada lógica por `hash`.
+- [x] 2.2 Añadir fixtures/assertions Case 16 en `dev-sync-fixture.mjs` y `assert-engine.mjs`: término+idioma normalizados, ocurrencias válidas coexistentes. AC: cero duplicados de entrada.
+- [x] 2.3 Añadir fixtures/assertions Case 17: `bookHash|cfi|text/contentHash`, `_replicas` y HLC visibles. AC: una cita lógica por rango/texto.
+- [x] 2.4 Añadir tests por caso 15–17 junto a cada helper modificado. Verificación placeholder: `pnpm --filter readest-app test -- phase3-light-conflicts`.
 
 ## Phase 3: Casos 18–20 coexistencia
 

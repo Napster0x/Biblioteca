@@ -41,7 +41,7 @@ export function computePartialMd5Node(filePath) {
 
 // Cached AdmZip constructor — populated on first successful load.
 // `undefined` means "not yet attempted"; `null` means "tried and failed".
-let _AdmZip = undefined;
+let _AdmZip;
 
 function loadAdmZip() {
   if (_AdmZip !== undefined) return _AdmZip;
@@ -49,26 +49,33 @@ function loadAdmZip() {
   // In vitest, import.meta.url may be transformed. Use a fixed absolute path
   // derived from the scripts directory to the app root's node_modules.
   const appRoot = join(__dirname, '..');
-  const appNodeModules = join(appRoot, 'node_modules');
-  
+
   try {
     // Use createRequire from the app root's package.json
     const r = createRequire(join(appRoot, 'package.json'));
     const m = r('adm-zip');
     _AdmZip = m.default || m;
     return _AdmZip;
-  } catch(e1) {
+  } catch(_e1) {
     try {
       // Fallback: resolve from cwd (works in some test runners)
       const r = createRequire(join(process.cwd(), 'package.json'));
       const m = r('adm-zip');
       _AdmZip = m.default || m;
       return _AdmZip;
-    } catch(e2) {
+    } catch(_e2) {
       _AdmZip = null;
     }
   }
   return _AdmZip;
+}
+
+function resolveNowValue(now) {
+  const value = typeof now === 'function' ? now() : now;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'number') return new Date(value).toISOString();
+  if (typeof value === 'string') return value;
+  return new Date().toISOString();
 }
 
 /**
@@ -124,6 +131,38 @@ export function extractEpubMetadata(epubPath) {
 }
 
 /**
+ * Create a reusable EPUB import descriptor without writing desktop state.
+ */
+export function createEpubImportDescriptor({ filePath, title, author, language, now }) {
+  if (!existsSync(filePath)) {
+    return { ok: false, error: `File not found: ${filePath}` };
+  }
+
+  const hash = computePartialMd5Node(filePath);
+  const fileName = basename(filePath);
+  const byteSize = statSync(filePath).size;
+  const extracted = extractEpubMetadata(filePath);
+  const metadata = {
+    title: title ?? extracted.title,
+    author: author ?? extracted.author,
+    ...(language ?? extracted.language ? { language: language ?? extracted.language } : {}),
+  };
+  const timestamp = resolveNowValue(now);
+  const entry = {
+    hash,
+    title: metadata.title,
+    author: metadata.author,
+    byteSize,
+    fileName,
+    importedAt: timestamp,
+    updatedAt: timestamp,
+    ...(metadata.language ? { language: metadata.language } : {}),
+  };
+
+  return { hash, fileName, byteSize, metadata, entry, filePath };
+}
+
+/**
  * Import an EPUB file into the desktop dev-sync library.
  */
 export function importEpubToLibrary({ filePath, dataRoot, title, author, language }) {
@@ -131,18 +170,23 @@ export function importEpubToLibrary({ filePath, dataRoot, title, author, languag
     return { ok: false, error: `File not found: ${filePath}` };
   }
 
-  const hash = computePartialMd5Node(filePath);
-  const stat = statSync(filePath);
-  const fileName = basename(filePath);
-  const byteSize = stat.size;
+  const descriptor = createEpubImportDescriptor({ filePath, title, author, language });
+  const { hash, fileName } = descriptor;
 
   const booksDir = join(dataRoot, 'Readest', 'Books');
   const libraryPath = join(booksDir, 'library.json');
+  let library = [];
+  let existingIndex = -1;
   if (existsSync(libraryPath)) {
     try {
       const existing = JSON.parse(readFileSync(libraryPath, 'utf8'));
-      if (Array.isArray(existing) && existing.some((e) => e.hash === hash)) {
-        return { ok: true, action: 'skipped', hash, book: existing.find((e) => e.hash === hash) };
+      if (Array.isArray(existing)) {
+        library = existing;
+        existingIndex = library.findIndex((e) => e.hash === hash);
+        const existingBook = existingIndex === -1 ? null : library[existingIndex];
+        if (existingBook && !existingBook.deletedAt) {
+          return { ok: true, action: 'skipped', hash, book: existingBook };
+        }
       }
     } catch { /* overwrite on malformed */ }
   }
@@ -151,24 +195,10 @@ export function importEpubToLibrary({ filePath, dataRoot, title, author, languag
   mkdirSync(bookDir, { recursive: true });
   copyFileSync(filePath, join(bookDir, fileName));
 
-  const entry = {
-    hash,
-    title,
-    author,
-    byteSize,
-    fileName,
-    importedAt: new Date().toISOString(),
-    ...(language ? { language } : {}),
-  };
+  const entry = descriptor.entry;
 
-  let library = [];
-  if (existsSync(libraryPath)) {
-    try {
-      library = JSON.parse(readFileSync(libraryPath, 'utf8'));
-      if (!Array.isArray(library)) library = [];
-    } catch { library = []; }
-  }
-  library.push(entry);
+  if (existingIndex === -1) library.push(entry);
+  else library[existingIndex] = entry;
 
   mkdirSync(booksDir, { recursive: true });
   writeFileSync(libraryPath, JSON.stringify(library, null, 2), 'utf8');

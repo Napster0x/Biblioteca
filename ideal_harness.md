@@ -546,3 +546,149 @@ entorno real
 + code path FIEL a la UI real
 = harness CRDT+HLC útil
 ```
+
+---
+
+## Herramientas actuales del harness
+
+Esta sección documenta el inventario completo de herramientas del harness disponibles actualmente en el proyecto. Se actualiza a medida que se añaden nuevas capacidades.
+
+### CLI de entorno (`dev:*`)
+
+Estos comandos no ejecutan casos por sí solos; preparan el entorno real sobre el que trabaja el harness.
+
+| Comando | Script package.json | Uso dentro del harness |
+|---------|---------------------|------------------------|
+| `dev:server` | `dotenv -e .env.tauri -- next dev -H 0.0.0.0 -p 3000` | Servidor dev accesible para desktop/Android. |
+| `dev:tauri` | `tauri dev --config src-tauri/tauri-dev.conf.json` | App desktop real contra configuración dev. |
+| `dev:android` | `tauri android dev --features devtools --host 127.0.0.1` | App Android real contra configuración dev. |
+| `dev:tauri:shared` | `tauri dev --config src-tauri/tauri-dev-shared.conf.json` | Variante desktop con configuración shared. |
+| `dev:android:shared` | `tauri android dev --features devtools --host 127.0.0.1` | Variante Android shared; hoy equivale al comando Android dev. |
+
+### CLI entry points (comandos `dev:sync:*`)
+
+Estos comandos son la interfaz estable del harness. Deben ejecutarse desde
+`apps/readest-app/` con `BIBLIOTECA_DEV_SYNC_HARNESS=1` cuando mutan estado.
+
+| # | Comando | Archivo | Tests? | Responsabilidad | Targets |
+|---|---------|---------|--------|------------------|---------|
+| 1 | `dev:sync:doctor` | `scripts/dev-sync-doctor.mjs` | ✅ | Preflight de entorno, ADB, Android HTTP, desktop health y Phase 2 gate | desktop, android |
+| 2 | `dev:sync:state` | `scripts/dev-sync-state.mjs` | ✅ | Captura estado desktop/Android y evidencia HTTP/SQLite | desktop, android |
+| 3 | `dev:sync:reset` | `scripts/dev-sync-reset.mjs` | ✅ indirecto | Limpieza destructiva con guards y reinit Android post-`pm clear` | tmp, desktop-db, android-db, all |
+| 4 | `dev:sync:clean` | `scripts/dev-sync-clean.mjs` | ✅ indirecto | Limpieza no destructiva/operativa por targets | desktop-db, android-db |
+| 5 | `dev:sync:prepare` | `scripts/dev-sync-prepare.mjs` | ✅ | Importa EPUB en desktop usando `prepare-engine` | desktop |
+| 6 | `dev:sync:fixture` | `scripts/dev-sync-fixture.mjs` | ✅ | Crea/edita/borra datos, libros, metadata y semantic deletes | desktop, android-http |
+| 7 | `dev:sync:trigger` | `scripts/dev-sync-trigger.mjs` | ⚠️ | Dispara sync desde desktop | desktop |
+| 8 | `dev:sync:cycle` | `scripts/dev-sync-cycle.mjs` | ✅ | Orquesta ciclo harness, casos Phase 2, repeat/reliability y reportes | desktop, android |
+| 9 | `dev:sync:assert` | `scripts/dev-sync-assert.mjs` | ⚠️ | Compara snapshots/expectativas | desktop, android |
+| 10 | `dev:sync:report` | `scripts/dev-sync-report.mjs` | ⚠️ | Genera reportes estructurados | N/A |
+| 11 | `dev:sync:smoke` | `scripts/dev-sync-smoke.mjs` | ⚠️ | Planner/smoke descriptivo | N/A |
+| 12 | `dev:sync:up` | `scripts/dev-sync-up.mjs` | ✅ | Enciende toggles, reinyecta settings y espera readiness Android/desktop | desktop, android |
+| 13 | `dev:sync:plan` | `scripts/dev-sync-plan.mjs` | ⚠️ | Planificador de pasos harness | N/A |
+| 14 | `dev:sync:down` | `scripts/dev-sync-down.mjs` | ⚠️ | Apaga toggle/estado dev sync local | desktop |
+| 15 | `dev:sync:inject` | `scripts/sync-dev-inject.mjs` | ✅ | Inyección SQLite directa para desktop y fallback ADB | desktop, android-adb |
+
+Nota de revisión: `scripts/sync-dev-inject.mjs` aparece también como módulo compartido porque es entry point de `dev:sync:inject` y helper usado por `dev-sync-fixture.mjs`.
+
+### Standalone scripts
+
+| # | Archivo | Tests? | Propósito |
+|---|---------|--------|-----------|
+| 16 | `scripts/sync-execute.mjs` | ✅ | Ciclo completo push/pull sync desktop↔Android, books/index merge, tombstones y metadata |
+| 17 | `scripts/run-all-cases.mjs` | ⚠️ | Runner legado/automatizado para casos base; no sustituye el ciclo harness granular |
+| 18 | `scripts/sync-phase2-preflight.mjs` | ✅ | Gate explícito antes de ejecutar casos Phase 2 |
+
+### Módulos compartidos / engine
+
+| # | Módulo | Tests? | Propósito |
+|---|--------|--------|-----------|
+| 19 | `scripts/sync-dev-env.mjs` | ✅ vía consumidores | Utilidades de entorno: ADB, package detection, health checks, forwards y parsing |
+| 20 | `scripts/android-clean-reinit.mjs` | ✅ | Reinit Android tras `pm clear`: settings, app start, health, manifest, replicas API |
+| 21 | `scripts/sync-dev-state.mjs` | ✅ | Captura desktop/Android, HTTP fallback cuando Android no tiene `sqlite3`, book facts y semantic evidence |
+| 22 | `scripts/sync-dev-inject.mjs` | ✅ | Inyección SQLite directa desktop y operaciones ADB legacy |
+| 23 | `scripts/sync-dev-inject-http.mjs` | ✅ | Inyección HTTP Android: replicas, libros, metadata, import/reimport, BookConfig y semantic delete |
+| 24 | `scripts/sync-dev-sqlite.mjs` | ✅ | Operaciones SQLite: captura, updateRow, softDeleteRow, duplicados, stale checks |
+| 25 | `scripts/sync-filter-standalone.mjs` | ✅ vía sync | Normalización de términos, dedup semántico, gestión `_replicas` |
+| 26 | `scripts/assert-engine.mjs` | ⚠️ | Comparación de snapshots y estado semántico |
+| 27 | `scripts/clean-engine.mjs` | ⚠️ | Verificación de estado limpio post-reset |
+| 28 | `scripts/prepare-engine.mjs` | ✅ | Descriptor EPUB, import desktop, reimport same-hash tras tombstone |
+| 29 | `scripts/report-engine.mjs` | ⚠️ | Constructor de informes estructurados |
+
+### Archivos de test
+
+| Archivo | Prueba |
+|---------|--------|
+| `scripts/__tests__/dev-sync-doctor.test.mjs` | Diagnósticos doctor: package/process/forward/health/preflight |
+| `scripts/__tests__/phase2-preflight.test.mjs` | Gate Phase 2 y checks obligatorios |
+| `scripts/__tests__/android-clean-reinit.test.mjs` | Helper Android clean+reinit, bounded waits y diagnósticos |
+| `scripts/__tests__/android-clean-reinit-integration.test.mjs` | Integración reset/cycle/up con reinit/preflight |
+| `scripts/__tests__/dev-sync-cycle.test.mjs` | Ciclo harness, Phase 2 actions, repeat/reliability, case isolation |
+| `scripts/__tests__/sync-dev-state.test.mjs` | captureAndroidState con manifest.data |
+| `scripts/__tests__/sync-execute.test.mjs` | pushBookAssets, push de assets |
+| `scripts/__tests__/sync-dev-inject-http.test.mjs` | injectReplicasViaHttp, injectBookViaHttp, HTTP edit/delete helpers |
+| `scripts/__tests__/dev-sync-fixture.test.mjs` | fixture CLI parsing/routing: create, edit, delete, delete-book, HLC |
+| `scripts/__tests__/prepare-engine.test.mjs` | Descriptor/import/reimport EPUB y tombstone resurrection |
+| `scripts/__tests__/sync-dev-inject.test.mjs` | Inyección directa SQLite/fixture helpers |
+| `scripts/__tests__/sync-dev-sqlite.test.mjs` | Operaciones SQLite y checks de staleness |
+
+### Capacidades actuales
+
+| Operación | Desktop | Android (HTTP) | Android (ADB) |
+|-----------|---------|----------------|---------------|
+| Health check | ✅ /api/dev-sync/health | ✅ /health | ❌ |
+| State capture | ✅ SQLite directo | ✅ /replicas/:kind, /books/index, manifest/config | ⚠️ sqlite3 run-as si existe; HTTP fallback preferido |
+| Reset/clean | ✅ Borrado de DB + assets | ✅ `pm clear` + reinit + readiness | ⚠️ solo transporte |
+| Importar EPUB | ✅ `dev:sync:prepare` | ✅ `fixture --target android-http --import-book <epub>` | ⚠️ no recomendado |
+| Reimport same-hash tras tombstone | ✅ `prepare-engine` limpia tombstone | ✅ import HTTP con `deletedAt:null` y timestamps nuevos | ❌ |
+| Crear D (diccionario) | ✅ `fixture --dict` | ✅ `fixture --target android-http --dict` | ⚠️ |
+| Crear C (cita) | ✅ `fixture --quote` | ✅ `fixture --target android-http --quote` | ⚠️ |
+| Crear N (anotación) | ✅ `fixture --note` | ✅ `fixture --target android-http --note` | ⚠️ |
+| Crear highlight (BookNote) | ⚠️ sintético por BookConfig cuando el caso lo requiere | ⚠️ sintético por BookConfig HTTP cuando el caso lo requiere | ❌ |
+| Sync trigger | ✅ POST /api/sync-trigger | ❌ (no puede iniciar sync) | ❌ |
+| **Editar datos** | ✅ `fixture --edit table:id:field=value` | ✅ `fixture --target android-http --edit ...` | ❌ |
+| **Editar metadata de libro** | ✅ `fixture --edit books:<hash>:title=...` | ✅ `fixture --target android-http --edit books:<hash>:title=...` | ❌ |
+| **Borrar datos (soft-delete)** | ✅ `fixture --delete table:id` | ✅ `fixture --target android-http --delete ...` | ❌ |
+| **Borrar libro** | ✅ `fixture --delete-book <hash>` | ✅ `fixture --target android-http --delete-book <hash>` | ❌ |
+| **Borrado semántico highlight→dato** | ✅ `fixture --semantic-delete ...` | ✅ `fixture --target android-http --semantic-delete ...` | ❌ |
+| Sync bidireccional | ✅ `sync-execute.mjs` con merge books/index, tombstones, metadata y replicas | | |
+| Phase 2 preflight | ✅ `sync-phase2-preflight` | ✅ doctor + HTTP readiness | ❌ |
+| Reliability >80% | ✅ `dev:sync:cycle --repeat ... --min-success-rate 0.8` | ✅ real-device repeat con aislamiento por caso | ❌ |
+
+### Capacidades Phase 2 añadidas recientemente
+
+Estas capacidades desbloquearon la Fase 2 bidireccional completa:
+
+| Caso | Capacidad | Herramienta principal | Fiabilidad verificada |
+|------|-----------|-----------------------|-----------------------|
+| `9Ma` | Editar metadata de libro en Android y converger a desktop | `dev:sync:fixture --target android-http --edit books:<hash>:title=...` | ✅ 5/5 |
+| `13Ma` | Import/reimport EPUB en Android, incluso mismo hash tras tombstone | `dev:sync:fixture --target android-http --import-book <epub>` | ✅ 5/5 |
+| `14a/b/c` | Borrado semántico BookNote/highlight→D/C/N en desktop | `dev:sync:fixture --semantic-delete ...` | ✅ 15/15 acumulado |
+| `14Ma/Mb/Mc` | Borrado semántico BookNote/highlight→D/C/N en Android | `dev:sync:fixture --target android-http --semantic-delete ...` | ✅ 15/15 acumulado |
+| Todos | Medición real-device repetida con aislamiento por caso | `dev:sync:cycle --repeat 5 --min-success-rate 0.8 --case-ref ...` | ✅ 40/40, 100% |
+
+### Reliability runner
+
+El runner de fiabilidad evita falsos positivos mediante estas reglas:
+
+- Cada `case-ref` se ejecuta aislado; los casos separados por coma no comparten estado final.
+- Cada intento tiene timeout acotado.
+- El reporte separa dominios de fallo: `environment`, `harness`, `product`, `timeout`, `unknown`.
+- `WARN` no cuenta como éxito definitivo.
+- El target de Fase 2 para capacidades nuevas es **>80%** de éxito real-device.
+
+Ejemplo:
+
+```bash
+BIBLIOTECA_DEV_SYNC_HARNESS=1 pnpm dev:sync:cycle -- \
+  --repeat 5 \
+  --repeat-timeout-ms 120000 \
+  --case-ref 9Ma,13Ma,14a,14b,14c,14Ma,14Mb,14Mc \
+  --min-success-rate 0.8 \
+  --clean-android
+```
+
+Última evidencia aceptada: `40/40`, `100%`.
+
+```txt
+/tmp/biblioteca-dev-sync/dev-sync-cycle-1783061589013-repeat.json
+```

@@ -294,6 +294,126 @@ function idempotenceFailures(state) {
   return failures;
 }
 
+/**
+ * Assert Case 15 convergence: same book hash appears at most once per side.
+ * Verifies no duplicate book hash in desktop library facts or Android book index.
+ *
+ * @param {{desktop?: object, android?: object}} state
+ *   Expected shape: { desktop: { books?: Array<{hash?, bookHash?}> }, android: { books?: Array<{hash?, bookHash?}> } }
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertCase15({ desktop = {}, android = {} }) {
+  const failures = [];
+  const sides = [
+    ['desktop', Array.isArray(desktop.books) ? desktop.books : []],
+    ['android', Array.isArray(android.books) ? android.books : []],
+  ];
+
+  for (const [side, books] of sides) {
+    const seen = new Map();
+    for (const book of books) {
+      const hash = book?.hash || book?.bookHash;
+      if (!hash) continue;
+      const count = (seen.get(hash) ?? 0) + 1;
+      seen.set(hash, count);
+      if (count > 1) {
+        failures.push({
+          invariant: 'case15-no-duplicate-hash',
+          entity: 'book',
+          side,
+          logicalKey: `book:${hash}`,
+          count,
+        });
+      }
+    }
+  }
+
+  return {
+    verdict: failures.length === 0 ? 'PASS' : 'FAIL',
+    failures,
+  };
+}
+
+/**
+ * Assert Case 16 convergence: same normalized dictionary term+language appears at most once per side.
+ * Uses dictionaryEntryIdentityKey for semantic identity matching.
+ *
+ * @param {{desktop?: object, android?: object}} state
+ *   Expected shape: { desktop: { dictionaryEntries?: Array<object> }, android: { dictionaryEntries?: Array<object> } }
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertCase16({ desktop = {}, android = {} }) {
+  const failures = [];
+  const sides = [
+    ['desktop', Array.isArray(desktop.dictionaryEntries) ? desktop.dictionaryEntries : []],
+    ['android', Array.isArray(android.dictionaryEntries) ? android.dictionaryEntries : []],
+  ];
+
+  for (const [side, rows] of sides) {
+    const seen = new Map();
+    for (const row of rows) {
+      const key = dictionaryEntryIdentityKey(row);
+      if (!key) continue;
+      const count = (seen.get(key) ?? 0) + 1;
+      seen.set(key, count);
+      if (count > 1) {
+        failures.push({
+          invariant: 'case16-no-duplicate-dictionary-entry',
+          entity: 'dictionary-entry',
+          side,
+          logicalKey: key,
+          count,
+        });
+      }
+    }
+  }
+
+  return {
+    verdict: failures.length === 0 ? 'PASS' : 'FAIL',
+    failures,
+  };
+}
+
+/**
+ * Assert Case 17 convergence: same quote (bookHash|cfi|text) appears at most once per side.
+ * Uses quoteIdentityKey for semantic identity matching.
+ *
+ * @param {{desktop?: object, android?: object}} state
+ *   Expected shape: { desktop: { quotes?: Array<object> }, android: { quotes?: Array<object> } }
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertCase17({ desktop = {}, android = {} }) {
+  const failures = [];
+  const sides = [
+    ['desktop', Array.isArray(desktop.quotes) ? desktop.quotes : []],
+    ['android', Array.isArray(android.quotes) ? android.quotes : []],
+  ];
+
+  for (const [side, rows] of sides) {
+    const seen = new Map();
+    for (const row of rows) {
+      const key = quoteIdentityKey(row);
+      if (!key) continue;
+      const count = (seen.get(key) ?? 0) + 1;
+      seen.set(key, count);
+      if (count > 1) {
+        failures.push({
+          invariant: 'case17-no-duplicate-quote',
+          entity: 'quote',
+          side,
+          logicalKey: key,
+          count,
+        });
+      }
+    }
+  }
+
+  return {
+    verdict: failures.length === 0 ? 'PASS' : 'FAIL',
+    failures,
+  };
+}
+
 export function compareSemanticState({ desktop = {}, android = {} }) {
   const failures = [];
   for (const config of ENTITY_CONFIG) {

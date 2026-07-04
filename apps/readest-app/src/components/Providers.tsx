@@ -118,7 +118,7 @@ const Providers = ({ children }: { children: React.ReactNode }) => {
   const appShellHidden = !isLockInitialized || !isUnlocked;
   const debugSyncEnv: DebugSyncTriggerEnv = {
     nodeEnv: process.env.NODE_ENV,
-    devHarness: process.env.NEXT_PUBLIC_BIBLIOTECA_DEV_SYNC_HARNESS,
+    devHarness: process.env['NEXT_PUBLIC_BIBLIOTECA_DEV_SYNC_HARNESS'],
   };
   const shouldMountDebugSyncTrigger =
     debugSyncEnv.nodeEnv === 'development' || debugSyncEnv.devHarness === '1';

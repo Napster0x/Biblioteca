@@ -14,11 +14,12 @@
  *   - Android server HTTP activo (puerto 7878, vía ADB forward)
  */
 
-import { execFileSync, execSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runPhase2Preflight } from './sync-phase2-preflight.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = join(__dirname);
@@ -823,6 +824,14 @@ const CASES = [
 
 async function main() {
   assertHarness();
+  runPhase2Preflight({
+    runDoctor: () => execFileSync(process.execPath, [join(SCRIPTS, 'dev-sync-doctor.mjs'), '--json'], {
+      env: { ...process.env, BIBLIOTECA_DEV_SYNC_HARNESS: '1' },
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: 30_000,
+    }),
+  });
   mkdirSync(REPORTS_DIR, { recursive: true });
 
   console.log('╔══════════════════════════════════════════════════════════════════════╗');
