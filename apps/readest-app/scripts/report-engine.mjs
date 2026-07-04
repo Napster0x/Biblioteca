@@ -12,6 +12,16 @@ function flattenEvidencePaths(evidence = {}) {
   ].filter(Boolean);
 }
 
+function missingRequiredEvidence(evidence = {}, unavailableEvidence = []) {
+  const required = new Set(asArray(evidence.required));
+  const available = new Set(asArray(evidence.available));
+  return [...new Set([
+    ...asArray(unavailableEvidence),
+    ...asArray(evidence.unavailable),
+    ...[...required].filter((key) => !available.has(key)),
+  ])];
+}
+
 function firstFailure(assertions = {}) {
   return asArray(assertions.failures)[0] ?? null;
 }
@@ -28,12 +38,18 @@ function buildDiagnosis({ verdict, assertions, unavailableEvidence }) {
 }
 
 export function buildSyncReport({ assertions = {}, evidence = {}, unavailableEvidence = [], cleanup = null } = {}) {
-  const verdict = assertions.verdict ?? (unavailableEvidence.length > 0 ? 'AMBIGUOUS' : 'PASS');
+  const normalizedUnavailable = missingRequiredEvidence(evidence, unavailableEvidence);
+  const requestedVerdict = assertions.verdict ?? (normalizedUnavailable.length > 0 ? 'AMBIGUOUS' : 'PASS');
+  // Phase 3 PASS is intentionally evidence-gated: WARN/AMBIGUOUS/timeout/blocking
+  // are non-success outcomes, and missing required evidence must never be upgraded
+  // to PASS just because semantic assertions are otherwise green.
+  const verdict = evidence.phase === 'phase3' && requestedVerdict === 'PASS' && normalizedUnavailable.length > 0
+    ? 'AMBIGUOUS'
+    : requestedVerdict;
   const failure = firstFailure(assertions);
-  const normalizedUnavailable = [...new Set([...unavailableEvidence, ...asArray(evidence.unavailable)])];
 
   return {
-    ok: verdict === 'PASS' || verdict === 'WARN',
+    ok: verdict === 'PASS',
     verdict,
     diagnosis: buildDiagnosis({ verdict, assertions, unavailableEvidence: normalizedUnavailable }),
     probableDomain: failure?.probableDomain,
