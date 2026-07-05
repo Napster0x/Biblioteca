@@ -576,3 +576,67 @@ describe('case-15 computeCaseAcceptanceVerdict', () => {
     assert.equal(computeCaseAcceptanceVerdict('15e', pre, post), 'warn');
   });
 });
+
+describe('case-16 computeCaseAcceptanceVerdict', () => {
+  const basePre = {
+    desktop: { sqlite: { dictionary: { available: true, tables: [{ name: 'dictionary_entries', rowCount: 0 }, { name: 'dictionary_occurrences', rowCount: 0 }] } } },
+    android: { replicas: { 'dictionary-entry': { reachable: true, rowCount: 0 }, 'dictionary-occurrence': { reachable: true, rowCount: 0 } } },
+  };
+  const basePost = {
+    desktop: { sqlite: { dictionary: { available: true, tables: [{ name: 'dictionary_entries', rowCount: 1 }, { name: 'dictionary_occurrences', rowCount: 1 }] } } },
+    android: { replicas: { 'dictionary-entry': { reachable: true, rowCount: 1 }, 'dictionary-occurrence': { reachable: true, rowCount: 1 } } },
+  };
+  const context = { caseActions: [{ caseRef: '16a', bookHash: 'h1', term: 'test-term' }] };
+
+  it('16a passes when dictionary propagates to both sides', () => {
+    assert.equal(computeCaseAcceptanceVerdict('16a', basePre, basePost, context), 'pass');
+  });
+  it('16a returns warn when android does not have dictionary-entry replicas', () => {
+    const noAndroid = {
+      ...basePost,
+      android: { replicas: { 'dictionary-entry': { reachable: false, rowCount: 0 }, 'dictionary-occurrence': { reachable: false, rowCount: 0 } } },
+    };
+    assert.equal(computeCaseAcceptanceVerdict('16a', basePre, noAndroid, context), 'warn');
+  });
+  it('16a returns warn when no caseAction found', () => {
+    assert.equal(computeCaseAcceptanceVerdict('16a', basePre, basePost, {}), 'warn');
+  });
+  it('16a returns fail on duplicate rows', () => {
+    const duplicatePost = {
+      ...basePost,
+      desktop: { sqlite: { dictionary: { available: true, tables: [{ name: 'dictionary_entries', rowCount: 2 }, { name: 'dictionary_occurrences', rowCount: 1 }] } } },
+    };
+    assert.equal(computeCaseAcceptanceVerdict('16a', basePre, duplicatePost, context), 'fail');
+  });
+  it('16b passes when android dict propagates to desktop', () => {
+    const ctx = { caseActions: [{ caseRef: '16b', bookHash: 'h1', term: 'test-term' }] };
+    assert.equal(computeCaseAcceptanceVerdict('16b', basePre, basePost, ctx), 'pass');
+  });
+});
+
+describe('case-17 computeCaseAcceptanceVerdict', () => {
+  const basePre = {
+    desktop: { sqlite: { quotes: { available: true, tables: [{ name: 'quotes', rowCount: 0 }] } } },
+    android: { replicas: { quote: { reachable: true, rowCount: 0 } } },
+  };
+  const basePost = {
+    desktop: { sqlite: { quotes: { available: true, tables: [{ name: 'quotes', rowCount: 1 }] } } },
+    android: { replicas: { quote: { reachable: true, rowCount: 1 } } },
+  };
+  const context = { caseActions: [{ caseRef: '17a', bookHash: 'h1', text: 'test-quote' }] };
+
+  it('17a passes when quote propagates to both sides', () => {
+    assert.equal(computeCaseAcceptanceVerdict('17a', basePre, basePost, context), 'pass');
+  });
+  it('17a returns warn when android does not have quote replicas', () => {
+    const noAndroid = {
+      ...basePost,
+      android: { replicas: { quote: { reachable: false, rowCount: 0 } } },
+    };
+    assert.equal(computeCaseAcceptanceVerdict('17a', basePre, noAndroid, context), 'warn');
+  });
+  it('17b passes when android quote propagates to desktop', () => {
+    const ctx = { caseActions: [{ caseRef: '17b', bookHash: 'h1', text: 'test-quote' }] };
+    assert.equal(computeCaseAcceptanceVerdict('17b', basePre, basePost, ctx), 'pass');
+  });
+});

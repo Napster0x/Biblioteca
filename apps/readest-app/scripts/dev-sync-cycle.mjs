@@ -305,6 +305,76 @@ async function setupCase15Ref(normalized, stateEnv, env, runId, now) {
   return { ok: true, caseRef: normalized, action: 'none' };
 }
 
+/**
+ * Specialized setup for Case 16 case-refs (16a-16b).
+ * Dictionary propagation: O→M (16a) and M→O (16b).
+ *   16a: Desktop creates dictionary entry, Android converges via sync
+ *   16b: Android creates dictionary entry, Desktop converges via sync
+ */
+async function setupCase16Ref(normalized, stateEnv, env, runId, now) {
+  const term = `case16-term-${runId}`;
+  const pre = spawnStateJson(stateEnv);
+  const liveBook = await ensurePhase2LiveBook({ caseRef: normalized, pre, stateEnv, env, now });
+  if (!liveBook.ok) return { ok: false, caseRef: normalized, action: 'case16-live-book', error: liveBook.error };
+  const bookHash = liveBook.bookHash;
+  stateEnv.BIBLIOTECA_DEV_STATE_BOOK_HASH = bookHash;
+
+  if (normalized === '16a') {
+    const result = spawnFixture(stateEnv, [
+      '--target', 'desktop', '--dict', term, '--definition', term,
+      '--book', bookHash, '--hlc', String(now),
+    ]);
+    if (!result.ok) return { ok: false, caseRef: normalized, action: 'case16a-dict-create', error: result.error || 'desktop dict create failed' };
+    return { ok: true, caseRef: normalized, action: 'case16a-desktop-dict', bookHash, term, entryId: result.entryId };
+  }
+
+  if (normalized === '16b') {
+    const result = spawnFixture(stateEnv, [
+      '--target', 'android-http', '--dict', term, '--definition', term,
+      '--book', bookHash, '--hlc', String(now),
+    ]);
+    if (!result.ok) return { ok: false, caseRef: normalized, action: 'case16b-dict-create', error: result.error || 'android dict create failed' };
+    return { ok: true, caseRef: normalized, action: 'case16b-android-dict', bookHash, term, entryId: result.entryId };
+  }
+
+  return { ok: true, caseRef: normalized, action: 'none' };
+}
+
+/**
+ * Specialized setup for Case 17 case-refs (17a-17b).
+ * Quote propagation: O→M (17a) and M→O (17b).
+ *   17a: Desktop creates quote, Android converges via sync
+ *   17b: Android creates quote, Desktop converges via sync
+ */
+async function setupCase17Ref(normalized, stateEnv, env, runId, now) {
+  const text = `case17-quote-${runId}`;
+  const pre = spawnStateJson(stateEnv);
+  const liveBook = await ensurePhase2LiveBook({ caseRef: normalized, pre, stateEnv, env, now });
+  if (!liveBook.ok) return { ok: false, caseRef: normalized, action: 'case17-live-book', error: liveBook.error };
+  const bookHash = liveBook.bookHash;
+  stateEnv.BIBLIOTECA_DEV_STATE_BOOK_HASH = bookHash;
+
+  if (normalized === '17a') {
+    const result = spawnFixture(stateEnv, [
+      '--target', 'desktop', '--quote', text,
+      '--book', bookHash, '--hlc', String(now),
+    ]);
+    if (!result.ok) return { ok: false, caseRef: normalized, action: 'case17a-quote-create', error: result.error || 'desktop quote create failed' };
+    return { ok: true, caseRef: normalized, action: 'case17a-desktop-quote', bookHash, text, quoteId: result.quoteId };
+  }
+
+  if (normalized === '17b') {
+    const result = spawnFixture(stateEnv, [
+      '--target', 'android-http', '--quote', text,
+      '--book', bookHash, '--hlc', String(now),
+    ]);
+    if (!result.ok) return { ok: false, caseRef: normalized, action: 'case17b-quote-create', error: result.error || 'android quote create failed' };
+    return { ok: true, caseRef: normalized, action: 'case17b-android-quote', bookHash, text, quoteId: result.quoteId };
+  }
+
+  return { ok: true, caseRef: normalized, action: 'none' };
+}
+
 async function executePhase2CaseRef(caseRef, pre, stateEnv, env, runId) {
   const normalized = String(caseRef ?? '').trim();
   const now = Date.now();
@@ -312,6 +382,12 @@ async function executePhase2CaseRef(caseRef, pre, stateEnv, env, runId) {
   // Case 15 needs specialized per-scenario book setup
   if (/^15[a-e]$/.test(normalized)) {
     return setupCase15Ref(normalized, stateEnv, env, runId, now);
+  }
+
+  // Cases 16-17: dictionary/quote propagation
+  if (/^1[67][ab]$/.test(normalized)) {
+    if (normalized.startsWith('16')) return setupCase16Ref(normalized, stateEnv, env, runId, now);
+    if (normalized.startsWith('17')) return setupCase17Ref(normalized, stateEnv, env, runId, now);
   }
 
   const liveBook = await ensurePhase2LiveBook({ caseRef: normalized, pre, stateEnv, env, now });
@@ -638,7 +714,85 @@ export function computeCaseAcceptanceVerdict(caseRef, pre, post, context = {}) {
     if (case15Verdict !== undefined) return case15Verdict;
   }
 
+  if (/^1[67][ab]$/.test(normalized)) {
+    if (normalized.startsWith('16')) return computeCase16Verdict(normalized, pre, post, context);
+    if (normalized.startsWith('17')) return computeCase17Verdict(normalized, pre, post, context);
+  }
+
   return undefined;
+}
+
+function tableRowCount(state, kind, tableName) {
+  const db = state?.sqlite?.[kind];
+  if (!db?.available) return 0;
+  const table = (db.tables || []).find((t) => t.name === tableName);
+  return table?.rowCount ?? 0;
+}
+
+function replicaRowCount(state, kind) {
+  const replica = state?.replicas?.[kind];
+  if (!replica?.reachable) return 0;
+  return replica.rowCount ?? 0;
+}
+
+function computeCase16Verdict(normalized, pre, post, context = {}) {
+  const action = (context?.caseActions || []).find((a) => a.caseRef === normalized);
+  if (!action) return 'warn';
+
+  const preDesktop = pre?.desktop ?? {};
+  const postDesktop = post?.desktop ?? {};
+  const preAndroid = pre?.android ?? {};
+  const postAndroid = post?.android ?? {};
+
+  // Check desktop: dictionary_entries and dictionary_occurrences tables
+  const preDesktopEntries = tableRowCount(preDesktop, 'dictionary', 'dictionary_entries');
+  const preDesktopOccs = tableRowCount(preDesktop, 'dictionary', 'dictionary_occurrences');
+  const postDesktopEntries = tableRowCount(postDesktop, 'dictionary', 'dictionary_entries');
+  const postDesktopOccs = tableRowCount(postDesktop, 'dictionary', 'dictionary_occurrences');
+
+  // Check Android: dictionary-entry and dictionary-occurrence replicas
+  const preAndroidEntries = replicaRowCount(preAndroid, 'dictionary-entry');
+  const preAndroidOccs = replicaRowCount(preAndroid, 'dictionary-occurrence');
+  const postAndroidEntries = replicaRowCount(postAndroid, 'dictionary-entry');
+  const postAndroidOccs = replicaRowCount(postAndroid, 'dictionary-occurrence');
+
+  // Duplicate rows = fail (forensic evidence of bad merge)
+  if (postDesktopEntries > 1 || postDesktopOccs > 1 || postAndroidEntries > 1 || postAndroidOccs > 1) return 'fail';
+
+  const desktopHasNewData = postDesktopEntries > 0 && postDesktopOccs > 0;
+  const androidHasNewData = postAndroidEntries > 0 && postAndroidOccs > 0;
+
+  // For 16a (desktop-first): desktop created the data, android must have received it
+  // For 16b (android-first): android created the data, desktop must have received it
+  if (desktopHasNewData && androidHasNewData) return 'pass';
+  return 'warn';
+}
+
+function computeCase17Verdict(normalized, pre, post, context = {}) {
+  const action = (context?.caseActions || []).find((a) => a.caseRef === normalized);
+  if (!action) return 'warn';
+
+  const preDesktop = pre?.desktop ?? {};
+  const postDesktop = post?.desktop ?? {};
+  const preAndroid = pre?.android ?? {};
+  const postAndroid = post?.android ?? {};
+
+  // Check desktop: quotes table
+  const preDesktopQuotes = tableRowCount(preDesktop, 'quotes', 'quotes');
+  const postDesktopQuotes = tableRowCount(postDesktop, 'quotes', 'quotes');
+
+  // Check Android: quote replica
+  const preAndroidQuotes = replicaRowCount(preAndroid, 'quote');
+  const postAndroidQuotes = replicaRowCount(postAndroid, 'quote');
+
+  // Duplicate rows = fail (forensic evidence of bad merge)
+  if (postDesktopQuotes > 1 || postAndroidQuotes > 1) return 'fail';
+
+  const desktopHasQuote = postDesktopQuotes > 0;
+  const androidHasQuote = postAndroidQuotes > 0;
+
+  if (desktopHasQuote && androidHasQuote) return 'pass';
+  return 'warn';
 }
 
 function computeVerdict(pre, post, attempts, caseRef, context = {}) {
