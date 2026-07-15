@@ -252,16 +252,14 @@ describe('annotacionesStore — replica applyRemoteAnnotation', () => {
   });
 
   it('applyRemoteAnnotation restores deleted highlight style and color only when live HLC wins', () => {
-    useAnotacionesStore
-      .getState()
-      .applyRemoteAnnotation(
-        makeAnnotationRow({
-          id: 'annot-highlight-parity',
-          hlc: NEW_HLC,
-          fields: {},
-          deleted: true,
-        }),
-      );
+    useAnotacionesStore.getState().applyRemoteAnnotation(
+      makeAnnotationRow({
+        id: 'annot-highlight-parity',
+        hlc: NEW_HLC,
+        fields: {},
+        deleted: true,
+      }),
+    );
 
     useAnotacionesStore.getState().applyRemoteAnnotation(
       makeAnnotationRow({
