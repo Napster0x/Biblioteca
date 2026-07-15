@@ -315,6 +315,27 @@ export class USBHttpTransport implements SyncTransport {
     return (await res.json()) as UsbBookManifest;
   }
 
+  async pullBookLibrary(): Promise<Book[]> {
+    const peerId = `localhost:${this.port}`;
+    const url = `http://localhost:${this.port}/books/library`;
+
+    let res: Response;
+    try {
+      const { controller, clear } = createTimeoutController();
+      res = await fetch(url, { signal: controller.signal });
+      clear();
+    } catch (err) {
+      throw syncError(peerId, 'annotation', err);
+    }
+
+    if (!res.ok) {
+      throw await httpError(peerId, 'annotation', res);
+    }
+
+    const data: unknown = await res.json();
+    return Array.isArray(data) ? (data as Book[]) : [];
+  }
+
   async pushBookLibrary(books: Book[]): Promise<void> {
     const peerId = `localhost:${this.port}`;
     const url = `http://localhost:${this.port}/books/library`;

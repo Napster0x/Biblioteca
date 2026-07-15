@@ -132,6 +132,19 @@ pub struct SyncServer {
     port: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncServerHealthStatus {
+    Healthy,
+    Unhealthy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncServerHealth {
+    pub port: u16,
+    pub status: SyncServerHealthStatus,
+    pub detail: String,
+}
+
 impl SyncServer {
     /// Start the server listening on `127.0.0.1:{port}` for USB/ADB forward.
     ///
@@ -226,6 +239,21 @@ impl SyncServer {
         }
     }
 
+    pub fn health_status(&self, timeout: Duration) -> SyncServerHealth {
+        match self.verify_health(timeout) {
+            Ok(()) => SyncServerHealth {
+                port: self.port,
+                status: SyncServerHealthStatus::Healthy,
+                detail: "ok".to_string(),
+            },
+            Err(detail) => SyncServerHealth {
+                port: self.port,
+                status: SyncServerHealthStatus::Unhealthy,
+                detail,
+            },
+        }
+    }
+
     /// Signal shutdown and wait for the server thread to exit.
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
@@ -247,6 +275,7 @@ enum Route {
     Replicas(String),
     DictionaryImages(String),
     BooksIndex,
+    BooksDelete,
     BooksManifest,
     BookAsset { hash: String, asset: BookAsset },
     DevReset,
@@ -335,6 +364,10 @@ fn parse_route(url: &str) -> Route {
 
     if path == "/books/index" || path == "/books/library" {
         return Route::BooksIndex;
+    }
+
+    if path == "/books/delete" {
+        return Route::BooksDelete;
     }
 
     if path == "/books/manifest" {
@@ -437,6 +470,7 @@ fn handle_request(
         }
         (&Method::Get, Route::BooksIndex) => serve_get_books_index(req, replicas_dir),
         (&Method::Put, Route::BooksIndex) => serve_put_books_index(req, replicas_dir),
+        (&Method::Put, Route::BooksDelete) => serve_put_books_delete(req, replicas_dir),
         (&Method::Get, Route::BooksManifest) => serve_get_books_manifest(req, replicas_dir),
         (&Method::Get, Route::BookAsset { hash, asset }) => {
             serve_get_book_asset(req, replicas_dir, &hash, asset);
@@ -503,8 +537,7 @@ fn serve_health(req: Request, device_name: &str) {
         .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
         .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap())
         .with_header(
-            Header::from_bytes("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS")
-                .unwrap(),
+            Header::from_bytes("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS").unwrap(),
         )
         .with_header(
             Header::from_bytes(
@@ -704,7 +737,40 @@ fn sanitize_book_metadata(book: &mut serde_json::Value) {
 }
 
 fn book_is_tombstone(book: &serde_json::Value) -> bool {
-    book.get("deletedAt").and_then(|value| value.as_u64()).is_some()
+    book.get("deletedAt")
+        .and_then(|value| value.as_u64())
+        .is_some()
+}
+
+#[derive(Debug, Deserialize)]
+struct BooksDeleteRequest {
+    hash: String,
+    #[serde(rename = "deletedAt")]
+    deleted_at: Option<u64>,
+}
+
+fn current_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn tombstone_book(book: &mut serde_json::Value, hash: &str, deleted_at: u64) {
+    if !book.is_object() {
+        *book = serde_json::json!({});
+    }
+
+    if let Some(object) = book.as_object_mut() {
+        object.insert(
+            "hash".to_string(),
+            serde_json::Value::String(hash.to_string()),
+        );
+        object.insert("deletedAt".to_string(), serde_json::json!(deleted_at));
+        object.insert("updatedAt".to_string(), serde_json::json!(deleted_at));
+        object.insert("downloadedAt".to_string(), serde_json::Value::Null);
+    }
+    sanitize_book_metadata(book);
 }
 
 fn book_live_reimport_is_newer_than_tombstone(
@@ -764,7 +830,9 @@ fn book_file_fallback(books_dir: &Path, hash: &str) -> Option<String> {
 
 fn filename_from_library_format(books_dir: &Path, hash: &str) -> Option<String> {
     let books = load_books_index(books_dir).ok()?;
-    let book = books.into_iter().find(|b| b.get("hash").and_then(|v| v.as_str()) == Some(hash))?;
+    let book = books
+        .into_iter()
+        .find(|b| b.get("hash").and_then(|v| v.as_str()) == Some(hash))?;
 
     let title = book
         .get("sourceTitle")
@@ -784,7 +852,13 @@ fn filename_from_library_format(books_dir: &Path, hash: &str) -> Option<String> 
 
     let safe_title: String = title
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
 
     let safe_title = safe_title.trim_matches('_');
@@ -861,17 +935,19 @@ fn build_books_manifest(books_dir: &Path) -> Result<serde_json::Value, String> {
             })
             .collect::<Vec<_>>();
 
-            // Skip books whose required assets are missing on disk,
-            // unless the book is tombstoned (deletedAt is set) — tombstones
-            // must be included so the remote peer can discover the deletion.
+            // Skip books whose required assets are missing on disk and omit
+            // tombstones from the active asset manifest. Tombstone evidence is
+            // still available to peers through /books/index.
             let is_tombstone = book.get("deletedAt").and_then(|v| v.as_u64()).is_some();
-            if !is_tombstone {
-                let has_all_required = assets.iter().all(|asset| {
-                    !asset["required"].as_bool().unwrap_or(false) || asset["size"].as_u64().is_some()
-                });
-                if !has_all_required {
-                    return None;
-                }
+            if is_tombstone {
+                return None;
+            }
+
+            let has_all_required = assets.iter().all(|asset| {
+                !asset["required"].as_bool().unwrap_or(false) || asset["size"].as_u64().is_some()
+            });
+            if !has_all_required {
+                return None;
             }
 
             Some(serde_json::json!({
@@ -929,7 +1005,9 @@ fn is_safe_entry_id(id: &str) -> bool {
         && id != ".."
         && !id.contains('/')
         && !id.contains('\\')
-        && id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+        && id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
 /// Check whether `bytes` starts with the PNG magic signature.
@@ -1084,7 +1162,8 @@ fn serve_put_books_index(mut req: Request, replicas_dir: &Path) {
 
     // Merge incoming into existing library by hash — do not overwrite unrelated books.
     let mut merged = load_books_index(&books_dir).unwrap_or_default();
-    let mut idx_by_hash: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut idx_by_hash: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     for (i, book) in merged.iter().enumerate() {
         if let Some(hash) = book.get("hash").and_then(|v| v.as_str()) {
             idx_by_hash.insert(hash.to_string(), i);
@@ -1126,6 +1205,87 @@ fn serve_put_books_index(mut req: Request, replicas_dir: &Path) {
         Ok(()) => respond_json_status(
             req,
             &serde_json::json!({ "merged": merged.len() }).to_string(),
+            StatusCode(200),
+        ),
+        Err(e) => respond_json_status(
+            req,
+            &json_error(&format!("write books index: {e}")),
+            StatusCode(500),
+        ),
+    }
+}
+
+fn serve_put_books_delete(mut req: Request, replicas_dir: &Path) {
+    let books_dir = books_dir_from_replicas_dir(replicas_dir);
+    let mut body = String::new();
+    if let Err(e) = req.as_reader().read_to_string(&mut body) {
+        return respond_json_status(
+            req,
+            &json_error(&format!("Body read failed: {e}")),
+            StatusCode(400),
+        );
+    }
+
+    let delete_request: BooksDeleteRequest = match serde_json::from_str(&body) {
+        Ok(request) => request,
+        Err(e) => {
+            return respond_json_status(
+                req,
+                &json_error(&format!("Invalid JSON: {e}")),
+                StatusCode(400),
+            );
+        }
+    };
+
+    if !is_safe_book_hash(&delete_request.hash) {
+        return respond_json_status(req, &json_error("invalid book hash"), StatusCode(400));
+    }
+
+    if let Err(e) = fs::create_dir_all(&books_dir) {
+        return respond_json_status(
+            req,
+            &json_error(&format!("mkdir books: {e}")),
+            StatusCode(500),
+        );
+    }
+
+    let deleted_at = delete_request
+        .deleted_at
+        .unwrap_or_else(current_unix_millis);
+    let mut books = load_books_index(&books_dir).unwrap_or_default();
+    let mut action = "not-found-tombstone-created";
+
+    if let Some(book) = books.iter_mut().find(|book| {
+        book.get("hash").and_then(|value| value.as_str()) == Some(delete_request.hash.as_str())
+    }) {
+        tombstone_book(book, &delete_request.hash, deleted_at);
+        action = "tombstoned";
+    } else {
+        let mut tombstone = serde_json::json!({});
+        tombstone_book(&mut tombstone, &delete_request.hash, deleted_at);
+        books.push(tombstone);
+    }
+
+    let json = match serde_json::to_string_pretty(&books) {
+        Ok(json) => json,
+        Err(e) => {
+            return respond_json_status(
+                req,
+                &json_error(&format!("serialize: {e}")),
+                StatusCode(500),
+            )
+        }
+    };
+
+    match fs::write(books_index_path(&books_dir), json) {
+        Ok(()) => respond_json_status(
+            req,
+            &serde_json::json!({
+                "deleted": true,
+                "hash": delete_request.hash,
+                "action": action,
+            })
+            .to_string(),
             StatusCode(200),
         ),
         Err(e) => respond_json_status(
@@ -1681,6 +1841,15 @@ mod tests {
     }
 
     #[test]
+    fn route_books_accepts_delete_contract() {
+        assert!(matches!(parse_route("/books/delete"), Route::BooksDelete));
+        assert!(matches!(
+            parse_route("/books/delete?source=harness"),
+            Route::BooksDelete
+        ));
+    }
+
+    #[test]
     fn route_books_rejects_path_traversal_and_unknown_assets() {
         assert!(matches!(parse_route("/books/../file"), Route::NotFound));
         assert!(matches!(
@@ -1883,6 +2052,56 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_health_report_exposes_port_and_healthy_status() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("replicas");
+        let port = find_free_port();
+
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir,
+            "lifecycle-health".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
+
+        let health = server.health_status(Duration::from_secs(1));
+        server.stop();
+
+        assert_eq!(health.port, port);
+        assert_eq!(health.status, SyncServerHealthStatus::Healthy);
+        assert_eq!(health.detail, "ok");
+    }
+
+    #[test]
+    fn lifecycle_health_report_exposes_stale_listener_failure() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("replicas");
+        let port = find_free_port();
+
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir,
+            "lifecycle-stale".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
+        server.stop();
+
+        let health = server.health_status(Duration::from_millis(100));
+
+        assert_eq!(health.port, port);
+        assert_eq!(health.status, SyncServerHealthStatus::Unhealthy);
+        assert!(
+            health.detail.contains("Server not listening")
+                || health.detail.contains("Connection refused")
+                || health.detail.contains("Connection reset"),
+            "unexpected stale health detail: {}",
+            health.detail
+        );
+    }
+
+    #[test]
     fn integration_health_endpoint() {
         let dir = tempfile::TempDir::new().unwrap();
         let replicas_dir = dir.path().join("replicas");
@@ -1935,12 +2154,17 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(body.lines().last().unwrap_or("{}")).unwrap();
         assert_eq!(json["status"], "ok");
-        assert!(json["serverVersion"].is_string(), "serverVersion must be present");
+        assert!(
+            json["serverVersion"].is_string(),
+            "serverVersion must be present"
+        );
         assert!(!json["serverVersion"].as_str().unwrap_or("").is_empty());
         assert!(json["startedAt"].is_string(), "startedAt must be present");
         let started = json["startedAt"].as_str().unwrap();
-        assert!(started.parse::<u64>().is_ok(), "startedAt must be a unix timestamp");
-
+        assert!(
+            started.parse::<u64>().is_ok(),
+            "startedAt must be a unix timestamp"
+        );
     }
 
     #[test]
@@ -2011,12 +2235,12 @@ mod tests {
 
         assert_eq!(status, 204);
         assert!(body.contains("Access-Control-Allow-Origin: *"));
-        assert!(body.contains("Access-Control-Allow-Methods: GET, PUT, OPTIONS"));
+        assert!(body.contains("Access-Control-Allow-Methods: GET, PUT, POST, OPTIONS"));
         assert!(body.contains("Access-Control-Allow-Headers: Content-Type"));
     }
 
     #[test]
-    fn integration_options_preflight_allows_books_put() {
+    fn integration_options_preflight_allows_books_delete_put() {
         let dir = tempfile::TempDir::new().unwrap();
         let replicas_dir = dir.path().join("local-sync").join("replicas");
         let port = find_free_port();
@@ -2032,14 +2256,14 @@ mod tests {
         let (status, body) = http_request(
             "127.0.0.1",
             port,
-            "OPTIONS /books/book-hash-1/file HTTP/1.0\r\nHost: localhost\r\nOrigin: http://localhost:3000\r\nAccess-Control-Request-Method: PUT\r\nAccess-Control-Request-Headers: content-type\r\n\r\n",
+            "OPTIONS /books/delete HTTP/1.0\r\nHost: localhost\r\nOrigin: http://localhost:3000\r\nAccess-Control-Request-Method: PUT\r\nAccess-Control-Request-Headers: content-type\r\n\r\n",
         );
 
         server.stop();
 
         assert_eq!(status, 204);
         assert!(body.contains("Access-Control-Allow-Origin: *"));
-        assert!(body.contains("Access-Control-Allow-Methods: GET, PUT, OPTIONS"));
+        assert!(body.contains("Access-Control-Allow-Methods: GET, PUT, POST, OPTIONS"));
         assert!(body.contains("Access-Control-Allow-Headers: Content-Type"));
     }
 
@@ -2106,6 +2330,136 @@ mod tests {
             .position(|w| w == b"\r\n\r\n")
             .unwrap();
         assert_eq!(&get_file_raw[header_end + 4..], book_bytes);
+    }
+
+    #[test]
+    fn integration_books_delete_tombstones_existing_book_and_preserves_semantic_data() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("local-sync").join("replicas");
+        let books_dir = dir.path().join("Readest").join("Books");
+        let book_dir = books_dir.join("book-hash-1");
+        fs::create_dir_all(&book_dir).unwrap();
+        fs::write(dir.path().join("annotations.db"), b"annotation data").unwrap();
+        fs::write(dir.path().join("citas.db"), b"quote data").unwrap();
+        fs::write(dir.path().join("dictionary.db"), b"dictionary data").unwrap();
+        let port = find_free_port();
+
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir,
+            "books-delete-test".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
+
+        let library = r#"[{"hash":"book-hash-1","title":"Test Book","fileName":"test.epub","updatedAt":100,"downloadedAt":100,"filePath":"/sender/test.epub"}]"#;
+        let put_index = format!(
+            "PUT /books/index HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            library.len(),
+            library
+        );
+        let (put_status, _) = http_request("127.0.0.1", port, &put_index);
+        assert_eq!(put_status, 200);
+        fs::write(book_dir.join("test.epub"), b"epub bytes").unwrap();
+
+        let delete_body = r#"{"hash":"book-hash-1","deletedAt":250}"#;
+        let delete_request = format!(
+            "PUT /books/delete HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            delete_body.len(),
+            delete_body
+        );
+        let (delete_status, delete_response) = http_request("127.0.0.1", port, &delete_request);
+        assert_eq!(delete_status, 200);
+        let delete_json: serde_json::Value =
+            serde_json::from_str(delete_response.lines().last().unwrap_or("{}")).unwrap();
+        assert_eq!(delete_json["deleted"], true);
+        assert_eq!(delete_json["hash"], "book-hash-1");
+        assert_eq!(delete_json["action"], "tombstoned");
+
+        let (index_status, index_body) = http_request(
+            "127.0.0.1",
+            port,
+            "GET /books/index HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        );
+        assert_eq!(index_status, 200);
+        let returned: Vec<serde_json::Value> =
+            serde_json::from_str(index_body.lines().last().unwrap_or("[]")).unwrap();
+        assert_eq!(returned.len(), 1);
+        assert_eq!(returned[0]["hash"], "book-hash-1");
+        assert_eq!(returned[0]["deletedAt"], 250);
+        assert_eq!(returned[0]["updatedAt"], 250);
+        assert!(returned[0]["downloadedAt"].is_null());
+        assert!(returned[0].get("filePath").is_none());
+
+        let (manifest_status, manifest_body) = http_request(
+            "127.0.0.1",
+            port,
+            "GET /books/manifest HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        );
+        server.stop();
+
+        assert_eq!(manifest_status, 200);
+        let manifest_json: serde_json::Value =
+            serde_json::from_str(manifest_body.lines().last().unwrap_or("{}")).unwrap();
+        assert_eq!(manifest_json["books"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            fs::read(dir.path().join("annotations.db")).unwrap(),
+            b"annotation data"
+        );
+        assert_eq!(
+            fs::read(dir.path().join("citas.db")).unwrap(),
+            b"quote data"
+        );
+        assert_eq!(
+            fs::read(dir.path().join("dictionary.db")).unwrap(),
+            b"dictionary data"
+        );
+    }
+
+    #[test]
+    fn integration_books_delete_is_idempotent_for_missing_book() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let replicas_dir = dir.path().join("local-sync").join("replicas");
+        fs::write(dir.path().join("annotations.db"), b"annotation data").unwrap();
+        fs::write(dir.path().join("citas.db"), b"quote data").unwrap();
+        fs::write(dir.path().join("dictionary.db"), b"dictionary data").unwrap();
+        let port = find_free_port();
+
+        let mut server = SyncServer::start(
+            port,
+            replicas_dir,
+            "books-delete-missing-test".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
+
+        let delete_body = r#"{"hash":"missing-book","deletedAt":300}"#;
+        let delete_request = format!(
+            "PUT /books/delete HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            delete_body.len(),
+            delete_body
+        );
+        let (delete_status, delete_response) = http_request("127.0.0.1", port, &delete_request);
+        server.stop();
+
+        assert_eq!(delete_status, 200);
+        let delete_json: serde_json::Value =
+            serde_json::from_str(delete_response.lines().last().unwrap_or("{}")).unwrap();
+        assert_eq!(delete_json["deleted"], true);
+        assert_eq!(delete_json["hash"], "missing-book");
+        assert_eq!(delete_json["action"], "not-found-tombstone-created");
+        assert_eq!(
+            fs::read(dir.path().join("annotations.db")).unwrap(),
+            b"annotation data"
+        );
+        assert_eq!(
+            fs::read(dir.path().join("citas.db")).unwrap(),
+            b"quote data"
+        );
+        assert_eq!(
+            fs::read(dir.path().join("dictionary.db")).unwrap(),
+            b"dictionary data"
+        );
     }
 
     #[test]
@@ -2448,6 +2802,9 @@ mod tests {
 
         server.stop();
 
-        assert_eq!(put_status, 400, "non-PNG upload should be rejected with 400");
+        assert_eq!(
+            put_status, 400,
+            "non-PNG upload should be rejected with 400"
+        );
     }
 }

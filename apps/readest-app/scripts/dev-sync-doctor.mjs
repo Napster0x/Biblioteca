@@ -3,7 +3,27 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createSyncDevEnvironment, parseHealthVersion, parseAdbForwardList, parseToggleState, detectToggleContradiction, REPLICA_KINDS } from './sync-dev-env.mjs';
+import { fileURLToPath } from 'node:url';
+import {
+  classifyAndroidHealthFailure,
+  createSyncDevEnvironment,
+  parseHealthVersion,
+  parseAdbForwardList,
+  parsePidofOutput,
+  parseToggleState,
+  detectToggleContradiction,
+  resolveAndroidPackageTarget,
+  REPLICA_KINDS,
+} from './sync-dev-env.mjs';
+
+const PHASE2_REQUIRED_CHECKS = Object.freeze([
+  'android.package',
+  'android.process',
+  'adb.forward',
+  'android.health',
+  'android.manifest',
+  'desktop.devSyncHealth',
+]);
 
 function hasFlag(name) {
   return process.argv.includes(name);
@@ -13,12 +33,145 @@ function check(name, status, message, details = {}) {
   return { name, status, message, ...details };
 }
 
+export function buildPhase2PreflightGate(checks) {
+  const failures = [];
+
+  for (const requiredName of PHASE2_REQUIRED_CHECKS) {
+    const item = checks.find((candidate) => candidate.name === requiredName);
+    if (!item) {
+      failures.push({
+        name: requiredName,
+        status: 'fail',
+        failureClass: 'missing-check',
+        message: `${requiredName} did not run`,
+      });
+      continue;
+    }
+    if (item.status !== 'pass') {
+      failures.push({
+        name: item.name,
+        status: item.status,
+        failureClass: item.failureClass ?? (item.status === 'warn' ? 'ambiguous' : null),
+        message: item.message,
+      });
+    }
+  }
+
+  if (failures.length === 0) {
+    return check('phase2.preflight', 'pass', 'Phase 2 preflight passed; case execution may start', {
+      requiredChecks: [...PHASE2_REQUIRED_CHECKS],
+      failures,
+    });
+  }
+
+  const status = failures.some((failure) => failure.status === 'fail') ? 'fail' : 'warn';
+  return check('phase2.preflight', status, 'Phase 2 preflight blocked; fix readiness checks before case execution', {
+    requiredChecks: [...PHASE2_REQUIRED_CHECKS],
+    failures,
+  });
+}
+
+export function normalizeDiagnosticAction(item) {
+  if (item.name === 'android.package') {
+    return 'Set BIBLIOTECA_DEV_ANDROID_PACKAGE to the installed Biblioteca package, or install/start the expected APK before rerunning.';
+  }
+  if (item.name === 'android.process' && item.failureClass === 'app-process-absent') {
+    return `Start ${item.packageName || 'the selected Android package'} on the Android device before rerunning Phase 2.`;
+  }
+  if (item.name === 'adb.forward') {
+    return 'Create a serial-scoped USB tunnel with adb forward tcp:7878 tcp:7878, then rerun the doctor.';
+  }
+  if (item.name === 'android.health' && item.failureClass === 'port-refused') {
+    return 'Android /health refused the forwarded port; verify the app is rebuilt/redeployed, running, and listening on tcp:7878.';
+  }
+  if (item.name === 'android.health' && item.failureClass === 'timeout') {
+    return 'Android /health timed out; verify USB stability, device wake state, and the serial-scoped adb forward before rerunning.';
+  }
+  if (item.name === 'android.health') {
+    return item.message || 'Android /health failed; inspect app logs and rerun the doctor.';
+  }
+  if (item.name === 'desktop.devSyncHealth') {
+    return 'Start or fix the desktop dev sync health endpoint before rerunning Phase 2.';
+  }
+  if (item.name === 'phase2.preflight') {
+    return item.message;
+  }
+  return item.message;
+}
+
 function run(command, args) {
   try {
     return { ok: true, stdout: execFileSync(command, args, { encoding: 'utf8', stdio: 'pipe' }) };
   } catch (error) {
     return { ok: false, stdout: '', message: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function parseInstalledPackages(stdout) {
+  return stdout
+    .split('\n')
+    .map((line) => line.trim().replace(/^package:/, ''))
+    .filter(Boolean);
+}
+
+function androidPackageAndProcessChecks(env) {
+  const version = run('adb', ['version']);
+  if (!version.ok) {
+    return {
+      selectedPackage: env.android.packageName,
+      checks: [
+        check('android.package', 'fail', 'cannot resolve Android package because adb is unavailable', {
+          packageName: null,
+          serial: env.android.serial,
+        }),
+        check('android.process', 'fail', 'cannot inspect Android process because adb is unavailable', {
+          packageName: env.android.packageName,
+          pid: null,
+          failureClass: 'adb-unavailable',
+        }),
+      ],
+    };
+  }
+
+  const serialArgs = env.android.serial ? ['-s', env.android.serial] : [];
+  const packageList = run('adb', [...serialArgs, 'shell', 'pm', 'list', 'packages']);
+  const target = resolveAndroidPackageTarget({
+    env: process.env,
+    installedPackages: packageList.ok ? parseInstalledPackages(packageList.stdout) : [],
+  });
+  const packageCheck = check('android.package', target.status, target.message, {
+    packageName: target.packageName,
+    selectedPackage: target.packageName,
+    serial: env.android.serial,
+    source: target.source,
+    candidates: target.candidates,
+    installedCandidates: target.installedCandidates,
+    failureClass: target.status === 'pass' ? null : 'package-not-found',
+  });
+
+  if (target.status !== 'pass' || !target.packageName) {
+    return {
+      selectedPackage: target.packageName,
+      checks: [
+        packageCheck,
+        check('android.process', 'fail', 'cannot inspect Android PID until a package is selected', {
+          packageName: target.packageName,
+          pid: null,
+          failureClass: 'package-not-found',
+        }),
+      ],
+    };
+  }
+
+  const pid = run('adb', [...serialArgs, 'shell', 'pidof', target.packageName]);
+  const processResult = parsePidofOutput(pid.ok ? pid.stdout : '');
+  const processCheck = check('android.process', processResult.status, processResult.message, {
+    packageName: target.packageName,
+    pid: processResult.pid,
+    failureClass: processResult.failureClass,
+  });
+
+  return { selectedPackage: target.packageName, checks: [packageCheck, processCheck] };
 }
 
 function desktopSqlite3Check() {
@@ -49,18 +202,15 @@ function androidSqlite3Check(env) {
 
 async function androidReplicasApiCheck(serverUrl) {
   let reachableCount = 0;
-  let errorCount = 0;
 
   for (const kind of REPLICA_KINDS) {
     try {
       const response = await fetch(`${serverUrl}/replicas/${kind}`, { signal: AbortSignal.timeout(750) });
       if (response.ok) {
         reachableCount++;
-      } else {
-        errorCount++;
       }
     } catch {
-      errorCount++;
+      // Unreachable endpoints are summarized by reachableCount below.
     }
   }
 
@@ -160,15 +310,14 @@ async function androidHealthCheck(serverUrl) {
       version,
     });
   } catch (error) {
-    return check(
-      'android.health',
-      'fail',
-      `/health unreachable: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    const classified = classifyAndroidHealthFailure(error);
+    return check('android.health', classified.status, classified.message, {
+      failureClass: classified.failureClass,
+    });
   }
 }
 
-function adbForwardCheck(env) {
+function adbForwardCheck() {
   const version = run('adb', ['version']);
   if (!version.ok) {
     return check('adb.forward', 'warn', 'cannot check ADB forward: adb unavailable');
@@ -242,7 +391,12 @@ async function toggleContradictionCheck(env) {
 
 async function main() {
   const env = createSyncDevEnvironment();
-  const checks = [...adbChecks(env)];
+  const packageDiagnostics = androidPackageAndProcessChecks(env);
+  if (packageDiagnostics.selectedPackage) {
+    env.android.packageName = packageDiagnostics.selectedPackage;
+    env.android.readestDir = `/data/data/${packageDiagnostics.selectedPackage}/Readest`;
+  }
+  const checks = [...packageDiagnostics.checks, ...adbChecks(env)];
 
   checks.push(await androidHealthCheck(env.android.serverUrl));
   checks.push(await endpointCheck('android.manifest', `${env.android.serverUrl}/books/manifest`, true));
@@ -269,6 +423,7 @@ async function main() {
   checks.push(await androidReplicasApiCheck(env.android.serverUrl));
   checks.push(adbForwardCheck(env));
   checks.push(await toggleContradictionCheck(env));
+  checks.push(buildPhase2PreflightGate(checks));
 
   const status = checks.some((item) => item.status === 'fail')
     ? 'fail'
@@ -280,7 +435,7 @@ async function main() {
     status,
     environment: env,
     checks,
-    actions: checks.filter((item) => item.status !== 'pass').map((item) => item.message),
+    actions: checks.filter((item) => item.status !== 'pass').map((item) => normalizeDiagnosticAction(item)),
   };
 
   if (hasFlag('--json') || !process.stdout.isTTY) {
@@ -293,7 +448,9 @@ async function main() {
   if (status === 'fail') process.exitCode = 1;
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}

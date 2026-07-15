@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
@@ -67,7 +67,31 @@ export async function POST(request: Request) {
     // Body is optional — no-op for legacy callers
   }
 
-  // Execute actual sync via Node.js script (works without browser window)
+  const runId = `dev-sync-${next}-${Date.now()}`;
+
+  // ── UI-initiated sync (no dataRoot): fire-and-forget ──────────────
+  if (!dataRoot) {
+    const child = spawn('node', [join(process.cwd(), 'scripts', 'sync-execute.mjs')], {
+      env: {
+        ...process.env,
+        BIBLIOTECA_DEV_SYNC_HARNESS: '1',
+        BIBLIOTECA_SYNC_RUN_ID: runId,
+      },
+      stdio: 'ignore',
+      detached: true,
+    });
+    child.unref();
+
+    return NextResponse.json({
+      count: next,
+      namespace: NAMESPACE,
+      ok: true,
+      runId,
+      fired: true,
+    });
+  }
+
+  // ── Harness-initiated sync (has dataRoot): blocking execution ─────
   let syncResult: SyncExecuteResult = {};
   try {
     const { stdout } = await execFileAsync(
@@ -94,7 +118,7 @@ export async function POST(request: Request) {
         namespace: NAMESPACE,
         ok: false,
         status: 'fail',
-        runId: `dev-sync-${next}-${Date.now()}`,
+        runId,
         syncResult,
         evidence: { path: 'syncResult', nested: syncResult },
         error: syncResult.error ?? 'sync-execute failed',
@@ -107,7 +131,7 @@ export async function POST(request: Request) {
     count: next,
     namespace: NAMESPACE,
     ok: true,
-    runId: `dev-sync-${next}-${Date.now()}`,
+    runId,
     syncResult,
     evidence: { path: 'syncResult' },
   });

@@ -17,6 +17,7 @@ use tauri::utils::config::BackgroundThrottlingPolicy;
 use tauri::TitleBarStyle;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_fs::FsExt;
 
@@ -44,6 +45,7 @@ use tauri_plugin_native_bridge::{NativeBridgeExt, OpenExternalUrlRequest};
 #[cfg(not(target_os = "android"))]
 use tauri_plugin_opener::OpenerExt;
 use transfer_file::{download_file, upload_file};
+use visible_repo::VisibleRepository;
 
 // ── Local sync shared state ───────────────────────────────────────────────
 
@@ -56,6 +58,23 @@ pub struct LocalSyncState {
     pub server: Option<local_sync_server::SyncServer>,
     pub discovery: Option<local_sync_discovery::MdnsDiscovery>,
     pub discovered_peers: Vec<PeerInfo>,
+    pub last_lifecycle: Option<LocalSyncEnsureOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalSyncEnsureOutcomeKind {
+    Started,
+    SkippedAlreadyRunning,
+    FailedBind,
+    FailedHealthCheck,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalSyncEnsureOutcome {
+    pub outcome: LocalSyncEnsureOutcomeKind,
+    pub source: String,
+    pub port: u16,
+    pub health: local_sync_server::SyncServerHealth,
 }
 
 #[cfg(any(desktop, target_os = "ios"))]
@@ -255,6 +274,7 @@ const USB_ONLY_LOCAL_SYNC_COMMANDS: &[&str] = &[
     "list_usb_devices_detailed",
     "list_forward_rules",
     "setup_usb_tunnel",
+    "discover_usb_device",
 ];
 
 /// Start the embedded HTTP server for peer-to-peer sync.
@@ -262,38 +282,140 @@ const USB_ONLY_LOCAL_SYNC_COMMANDS: &[&str] = &[
 /// Listens on `127.0.0.1:{port}` and serves replicas from
 /// `{app_data_dir}/local-sync/replicas/`. The device name shown in
 /// `/health` responses is derived from the system hostname.
-#[tauri::command]
-fn start_local_sync_server(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<LocalSyncState>>>,
+fn log_local_sync_lifecycle(report: &LocalSyncEnsureOutcome) {
+    let event = match report.outcome {
+        LocalSyncEnsureOutcomeKind::Started => "start",
+        LocalSyncEnsureOutcomeKind::SkippedAlreadyRunning => "skip",
+        LocalSyncEnsureOutcomeKind::FailedBind | LocalSyncEnsureOutcomeKind::FailedHealthCheck => {
+            "failed"
+        }
+    };
+    let message = format!(
+        "[local-sync:lifecycle] {event} source={} port={} health={:?} detail={}",
+        report.source, report.port, report.health.status, report.health.detail
+    );
+    match report.outcome {
+        LocalSyncEnsureOutcomeKind::Started | LocalSyncEnsureOutcomeKind::SkippedAlreadyRunning => {
+            log::info!("{message}");
+        }
+        LocalSyncEnsureOutcomeKind::FailedBind | LocalSyncEnsureOutcomeKind::FailedHealthCheck => {
+            log::error!("{message}");
+        }
+    }
+}
+
+fn ensure_local_sync_server(
+    state: &Arc<Mutex<LocalSyncState>>,
     port: u16,
-) -> Result<String, String> {
-    let locked = state.lock().map_err(|e| e.to_string())?;
-    if locked.server.is_some() {
-        return Ok(format!("Server already running on port {port}"));
+    data_dir: PathBuf,
+    device_name: String,
+    visible_repo: Arc<dyn VisibleRepository>,
+    source: &str,
+) -> Result<LocalSyncEnsureOutcome, String> {
+    let mut locked = state.lock().map_err(|e| e.to_string())?;
+    if let Some(server) = locked.server.as_ref() {
+        let health = server.health_status(std::time::Duration::from_secs(2));
+        let outcome = if health.status == local_sync_server::SyncServerHealthStatus::Healthy {
+            LocalSyncEnsureOutcomeKind::SkippedAlreadyRunning
+        } else {
+            LocalSyncEnsureOutcomeKind::FailedHealthCheck
+        };
+        let report = LocalSyncEnsureOutcome {
+            outcome,
+            source: source.to_string(),
+            port: health.port,
+            health,
+        };
+        log_local_sync_lifecycle(&report);
+        locked.last_lifecycle = Some(report.clone());
+        return Ok(report);
     }
     drop(locked);
 
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let replicas_dir = data_dir.join("local-sync").join("replicas");
+    let mut server =
+        match local_sync_server::SyncServer::start(port, replicas_dir, device_name, visible_repo) {
+            Ok(server) => server,
+            Err(detail) => {
+                let report = LocalSyncEnsureOutcome {
+                    outcome: LocalSyncEnsureOutcomeKind::FailedBind,
+                    source: source.to_string(),
+                    port,
+                    health: local_sync_server::SyncServerHealth {
+                        port,
+                        status: local_sync_server::SyncServerHealthStatus::Unhealthy,
+                        detail,
+                    },
+                };
+                log_local_sync_lifecycle(&report);
+                let mut locked = state.lock().map_err(|e| e.to_string())?;
+                locked.last_lifecycle = Some(report.clone());
+                return Ok(report);
+            }
+        };
 
-    let device_name = get_device_hostname();
-
-    let visible_repo = std::sync::Arc::new(visible_repo::LibsqlVisibleRepo::new(data_dir.clone()));
-
-    let server =
-        local_sync_server::SyncServer::start(port, replicas_dir, device_name, visible_repo)?;
+    let health = server.health_status(std::time::Duration::from_secs(2));
+    let outcome = if health.status == local_sync_server::SyncServerHealthStatus::Healthy {
+        LocalSyncEnsureOutcomeKind::Started
+    } else {
+        LocalSyncEnsureOutcomeKind::FailedHealthCheck
+    };
+    let report = LocalSyncEnsureOutcome {
+        outcome,
+        source: source.to_string(),
+        port: health.port,
+        health,
+    };
+    log_local_sync_lifecycle(&report);
 
     let mut locked = state.lock().map_err(|e| e.to_string())?;
-    locked.server = Some(server);
+    if report.outcome == LocalSyncEnsureOutcomeKind::Started {
+        locked.server = Some(server);
+    } else {
+        server.stop();
+    }
+    locked.last_lifecycle = Some(report.clone());
+    Ok(report)
+}
 
-    Ok(format!("Server started on port {port}"))
+#[tauri::command]
+fn start_local_sync_server(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Mutex<LocalSyncState>>>,
+    port: u16,
+) -> Result<String, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let device_name = get_device_hostname();
+    let visible_repo = Arc::new(visible_repo::LibsqlVisibleRepo::new(data_dir.clone()));
+    let report = ensure_local_sync_server(
+        state.inner(),
+        port,
+        data_dir,
+        device_name,
+        visible_repo,
+        "command",
+    )?;
+
+    match report.outcome {
+        LocalSyncEnsureOutcomeKind::Started => {
+            Ok(format!("Server started on port {}", report.port))
+        }
+        LocalSyncEnsureOutcomeKind::SkippedAlreadyRunning => {
+            Ok(format!("Server already running on port {}", report.port))
+        }
+        LocalSyncEnsureOutcomeKind::FailedBind | LocalSyncEnsureOutcomeKind::FailedHealthCheck => {
+            Err(format!(
+                "Server failed on port {}: {}",
+                report.port, report.health.detail
+            ))
+        }
+    }
 }
 
 /// Stop the embedded HTTP server gracefully.
 #[tauri::command]
 fn stop_local_sync_server(
-    state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<LocalSyncState>>>,
+    state: tauri::State<'_, Arc<Mutex<LocalSyncState>>>,
 ) -> Result<String, String> {
     let mut locked = state.lock().map_err(|e| e.to_string())?;
     if let Some(mut server) = locked.server.take() {
@@ -403,6 +525,22 @@ struct AdbForwardRule {
     serial: String,
     local: String,
     remote: String,
+}
+
+/// Result of a USB device discovery attempt.
+///
+/// `found` is true when a device in "device" state was detected and its
+/// HTTP health endpoint responded. `health_ok` distinguishes between
+/// "device seen but health check failed" and "device seen and healthy".
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveredUsbDevice {
+    found: bool,
+    serial: Option<String>,
+    model: Option<String>,
+    health_ok: bool,
+    health_detail: Option<String>,
+    error: Option<String>,
 }
 
 /// Parse the output of `adb devices` into a list of device serial numbers.
@@ -632,6 +770,189 @@ fn setup_usb_tunnel(serial: String, port: u16) -> Result<String, String> {
     Ok(format!("Tunnel set up for {} on port {}", serial, port))
 }
 
+/// Discover a USB-connected Android device running the sync server.
+///
+/// Combined flow — matches the pattern from `scripts/dev-sync-doctor.mjs`:
+/// 1. List ADB devices (`adb devices -l`)
+/// 2. Pick the first device in "device" state
+/// 3. Ensure port 7878 is forwarded → create the tunnel if missing
+/// 4. HTTP GET `http://localhost:7878/health` (2s timeout)
+/// 5. Return structured result the frontend can render
+///
+/// Returns `found: false` when no device is connected or the health
+/// check fails — the caller polls periodically until success.
+#[tauri::command]
+async fn discover_usb_device() -> DiscoveredUsbDevice {
+    let adb = match resolve_adb() {
+        Some(p) => p,
+        None => {
+            return DiscoveredUsbDevice {
+                found: false,
+                serial: None,
+                model: None,
+                health_ok: false,
+                health_detail: None,
+                error: Some("adb not found".into()),
+            };
+        }
+    };
+
+    // ── Step 1: List devices ──────────────────────────────────────
+    let devices_output = match std::process::Command::new(&adb)
+        .args(["devices", "-l"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            return DiscoveredUsbDevice {
+                found: false,
+                serial: None,
+                model: None,
+                health_ok: false,
+                health_detail: None,
+                error: Some(format!("adb devices failed: {e}")),
+            };
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&devices_output.stdout);
+    let detailed: Vec<UsbDeviceStatus> = parse_adb_devices_detailed(&stdout);
+
+    // Only consider devices in "device" (authorized) state — unauthorized
+    // or offline devices can't service health checks.
+    let target = match detailed
+        .iter()
+        .find(|d| d.state == AdbDeviceState::Device)
+    {
+        Some(d) => d.clone(),
+        None => {
+            return DiscoveredUsbDevice {
+                found: false,
+                serial: None,
+                model: None,
+                health_ok: false,
+                health_detail: None,
+                error: Some(
+                    if detailed.is_empty() {
+                        "no USB device connected".into()
+                    } else {
+                        "no authorized USB device found".into()
+                    },
+                ),
+            };
+        }
+    };
+
+    // ── Step 2: Ensure port forward ───────────────────────────────
+    let sync_port: u16 = 7878;
+
+    // Check existing forward rules
+    let forward_check = std::process::Command::new(&adb)
+        .args(build_list_forward_rules_args(&target.serial))
+        .output();
+
+    let forward_exists = forward_check.as_ref().is_ok_and(|o| {
+        o.status.success()
+            && !parse_adb_forward_list(
+                &String::from_utf8_lossy(&o.stdout),
+                &target.serial,
+                sync_port,
+            )
+            .is_empty()
+    });
+
+    if !forward_exists {
+        // Set up the tunnel
+        if let Err(e) = std::process::Command::new(&adb)
+            .args(build_setup_usb_tunnel_args(&target.serial, sync_port))
+            .output()
+        {
+            return DiscoveredUsbDevice {
+                found: false,
+                serial: Some(target.serial),
+                model: target.model,
+                health_ok: false,
+                health_detail: None,
+                error: Some(format!("adb forward failed: {e}")),
+            };
+        }
+    }
+
+    // ── Step 3: Health check via HTTP ─────────────────────────────
+    let health_url = format!("http://localhost:{sync_port}/health");
+
+    match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    {
+        Ok(client) => match client.get(&health_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                // Try to parse version info from the JSON body for logging
+                let version_info = resp.json::<serde_json::Value>().await.ok();
+                let detail = version_info
+                    .as_ref()
+                    .and_then(|v| v.get("serverVersion").or(v.get("server_version")))
+                    .and_then(|v| v.as_str())
+                    .map(|s| format!("server version {s}"))
+                    .unwrap_or_else(|| "version unknown".into());
+
+                log::info!(
+                    "[local-sync] USB device {} ({}) health OK — {detail}",
+                    target.serial,
+                    target.model.as_deref().unwrap_or("unknown model"),
+                );
+
+                DiscoveredUsbDevice {
+                    found: true,
+                    serial: Some(target.serial),
+                    model: target.model,
+                    health_ok: true,
+                    health_detail: Some(detail),
+                    error: None,
+                }
+            }
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                DiscoveredUsbDevice {
+                    found: false,
+                    serial: Some(target.serial),
+                    model: target.model,
+                    health_ok: false,
+                    health_detail: Some(format!("/health returned HTTP {status}")),
+                    error: Some(format!("/health returned HTTP {status}")),
+                }
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                let detail = if msg.contains("Connection refused") || msg.contains("econnrefused") {
+                    "port refused".to_string()
+                } else if msg.contains("timeout") || msg.contains("timed out") {
+                    "timed out".to_string()
+                } else {
+                    msg
+                };
+
+                DiscoveredUsbDevice {
+                    found: false,
+                    serial: Some(target.serial),
+                    model: target.model,
+                    health_ok: false,
+                    health_detail: Some(detail.clone()),
+                    error: Some(detail),
+                }
+            }
+        },
+        Err(e) => DiscoveredUsbDevice {
+            found: false,
+            serial: Some(target.serial),
+            model: target.model,
+            health_ok: false,
+            health_detail: None,
+            error: Some(format!("HTTP client init failed: {e}")),
+        },
+    }
+}
+
 /// Return this device's primary non-loopback IPv4 address.
 ///
 /// Falls back to "127.0.0.1" if no non-loopback interface is found
@@ -677,6 +998,7 @@ pub fn run() {
             list_usb_devices_detailed,
             list_forward_rules,
             setup_usb_tunnel,
+            discover_usb_device,
             // Sync dedup commands (PR #1 — harness-code-path-unification)
             sync_commands::normalize_term,
             sync_commands::compute_semantic_key,
@@ -972,10 +1294,13 @@ pub fn run() {
                     .unwrap_or_default()
                     .join("Readest")
                     .join("settings.json");
-                println!("[auto-start] checking {}", settings_path.display());
+                log::info!("[local-sync:lifecycle] auto-start settings={}", settings_path.display());
                 match std::fs::read_to_string(&settings_path) {
                     Ok(contents) => {
-                        println!("[auto-start] settings read, {} bytes", contents.len());
+                        log::debug!(
+                            "[local-sync:lifecycle] auto-start settings read bytes={}",
+                            contents.len()
+                        );
                         match serde_json::from_str::<serde_json::Value>(&contents) {
                             Ok(settings) => {
                                 let enabled = settings
@@ -983,7 +1308,9 @@ pub fn run() {
                                     .and_then(|v| v.get("enabled"))
                                     .and_then(|v| v.as_bool())
                                     .unwrap_or(false);
-                                println!("[auto-start] localSync.enabled = {enabled}");
+                                log::info!(
+                                    "[local-sync:lifecycle] auto-start localSync.enabled={enabled}"
+                                );
                                 if enabled {
                                     let port = settings
                                         .get("localSync")
@@ -991,43 +1318,33 @@ pub fn run() {
                                         .and_then(|v| v.as_u64())
                                         .unwrap_or(7878) as u16;
                                     let state = app
-                                        .state::<std::sync::Arc<std::sync::Mutex<LocalSyncState>>>();
-                                    let mut locked = state.lock().unwrap();
-                                    if locked.server.is_none() {
-                                        drop(locked);
-                                        let data_dir =
-                                            app.path().app_data_dir().unwrap_or_default();
-                                        let replicas_dir =
-                                            data_dir.join("local-sync").join("replicas");
-                                        let device_name = get_device_hostname();
-                                        let visible_repo = std::sync::Arc::new(
-                                            visible_repo::LibsqlVisibleRepo::new(data_dir),
+                                        .state::<Arc<Mutex<LocalSyncState>>>();
+                                    let data_dir = app.path().app_data_dir().unwrap_or_default();
+                                    let device_name = get_device_hostname();
+                                    let visible_repo = Arc::new(
+                                        visible_repo::LibsqlVisibleRepo::new(data_dir.clone()),
+                                    );
+                                    if let Err(e) = ensure_local_sync_server(
+                                        state.inner(),
+                                        port,
+                                        data_dir,
+                                        device_name,
+                                        visible_repo,
+                                        "auto-start",
+                                    ) {
+                                        log::error!(
+                                            "[local-sync:lifecycle] failed source=auto-start port={port} error={e}"
                                         );
-                                        match local_sync_server::SyncServer::start(
-                                            port,
-                                            replicas_dir,
-                                            device_name,
-                                            visible_repo,
-                                        ) {
-                                            Ok(server) => {
-                                                let mut locked = state.lock().unwrap();
-                                                locked.server = Some(server);
-                                                println!("[auto-start] server started on port {port}");
-                                            }
-                                            Err(e) => {
-                                                println!("[auto-start] server start failed: {e}");
-                                            }
-                                        }
                                     }
                                 }
                             }
                             Err(e) => {
-                                println!("[auto-start] json parse error: {e}");
+                                log::error!("[local-sync:lifecycle] auto-start json parse error: {e}");
                             }
                         }
                     }
                     Err(e) => {
-                        println!("[auto-start] cannot read settings: {e}");
+                        log::warn!("[local-sync:lifecycle] auto-start cannot read settings: {e}");
                     }
                 }
             }
@@ -1076,6 +1393,57 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::visible_repo::VisibleRepository;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    struct MockVisibleRepo {
+        data: Mutex<HashMap<String, Vec<local_sync_server::ReplicaRow>>>,
+    }
+
+    impl MockVisibleRepo {
+        fn new() -> Self {
+            Self {
+                data: Mutex::new(HashMap::new()),
+            }
+        }
+    }
+
+    impl VisibleRepository for MockVisibleRepo {
+        fn pull(
+            &self,
+            kind: &str,
+            _since: Option<&str>,
+        ) -> Result<Vec<local_sync_server::ReplicaRow>, String> {
+            let data = self.data.lock().map_err(|e| e.to_string())?;
+            Ok(data.get(kind).cloned().unwrap_or_default())
+        }
+
+        fn push(
+            &self,
+            kind: &str,
+            rows: &[local_sync_server::ReplicaRow],
+        ) -> Result<usize, String> {
+            let mut data = self.data.lock().map_err(|e| e.to_string())?;
+            data.entry(kind.to_string())
+                .or_default()
+                .extend(rows.iter().cloned());
+            Ok(rows.len())
+        }
+
+        fn health(&self) -> bool {
+            true
+        }
+    }
+
+    fn make_mock_adapter() -> Arc<dyn VisibleRepository> {
+        Arc::new(MockVisibleRepo::new())
+    }
+
+    fn find_free_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
 
     #[test]
     fn parse_adb_devices_empty_output() {
@@ -1198,5 +1566,96 @@ mod tests {
         assert!(!USB_ONLY_LOCAL_SYNC_COMMANDS.contains(&"start_discovery"));
         assert!(!USB_ONLY_LOCAL_SYNC_COMMANDS.contains(&"stop_discovery"));
         assert!(!USB_ONLY_LOCAL_SYNC_COMMANDS.contains(&"get_discovered_peers"));
+    }
+
+    #[test]
+    fn ensure_local_sync_server_starts_once_then_skips_with_health_evidence() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = Arc::new(Mutex::new(LocalSyncState::default()));
+        let port = find_free_port();
+
+        let started = ensure_local_sync_server(
+            &state,
+            port,
+            dir.path().to_path_buf(),
+            "ensure-test".into(),
+            make_mock_adapter(),
+            "command",
+        )
+        .unwrap();
+        let skipped = ensure_local_sync_server(
+            &state,
+            port,
+            dir.path().to_path_buf(),
+            "ensure-test".into(),
+            make_mock_adapter(),
+            "auto-start",
+        )
+        .unwrap();
+
+        if let Some(mut server) = state.lock().unwrap().server.take() {
+            server.stop();
+        }
+
+        assert_eq!(started.outcome, LocalSyncEnsureOutcomeKind::Started);
+        assert_eq!(started.port, port);
+        assert_eq!(
+            started.health.status,
+            local_sync_server::SyncServerHealthStatus::Healthy
+        );
+        assert_eq!(
+            skipped.outcome,
+            LocalSyncEnsureOutcomeKind::SkippedAlreadyRunning
+        );
+        assert_eq!(skipped.port, port);
+        assert_eq!(skipped.source, "auto-start");
+        assert_eq!(
+            skipped.health.status,
+            local_sync_server::SyncServerHealthStatus::Healthy
+        );
+    }
+
+    #[test]
+    fn ensure_local_sync_server_reports_stale_existing_server_without_rebinding() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = Arc::new(Mutex::new(LocalSyncState::default()));
+        let port = find_free_port();
+        let replicas_dir = dir.path().join("local-sync").join("replicas");
+        let mut stale_server = local_sync_server::SyncServer::start(
+            port,
+            replicas_dir,
+            "stale-test".into(),
+            make_mock_adapter(),
+        )
+        .unwrap();
+        stale_server.stop();
+        state.lock().unwrap().server = Some(stale_server);
+
+        let failed = ensure_local_sync_server(
+            &state,
+            port,
+            dir.path().to_path_buf(),
+            "stale-test".into(),
+            make_mock_adapter(),
+            "auto-start",
+        )
+        .unwrap();
+
+        assert_eq!(
+            failed.outcome,
+            LocalSyncEnsureOutcomeKind::FailedHealthCheck
+        );
+        assert_eq!(failed.port, port);
+        assert_eq!(
+            failed.health.status,
+            local_sync_server::SyncServerHealthStatus::Unhealthy
+        );
+        assert!(
+            failed.health.detail.contains("Server not listening")
+                || failed.health.detail.contains("Connection refused")
+                || failed.health.detail.contains("Connection reset"),
+            "unexpected stale health detail: {}",
+            failed.health.detail
+        );
     }
 }

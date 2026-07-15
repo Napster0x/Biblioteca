@@ -41,11 +41,7 @@ pub fn compute_semantic_key(fields_jsonb: String) -> Option<String> {
 ///
 /// Returns a JSON array of rows that should be pushed/applied.
 #[command]
-pub fn filter_unchanged_replicas(
-    kind: String,
-    rows_json: String,
-    db_path: String,
-) -> String {
+pub fn filter_unchanged_replicas(kind: String, rows_json: String, db_path: String) -> String {
     let rows: Vec<ReplicaRow> = match serde_json::from_str(&rows_json) {
         Ok(r) => r,
         Err(e) => {
@@ -161,12 +157,11 @@ mod tests {
         let db_str = db_path.to_str().unwrap().to_string();
 
         // Empty rows array should return empty array
-        let result = filter_unchanged_replicas(
-            "annotation".to_string(),
-            "[]".to_string(),
-            db_str,
+        let result = filter_unchanged_replicas("annotation".to_string(), "[]".to_string(), db_str);
+        assert_eq!(
+            result, "[]",
+            "empty rows should return empty array: {result}"
         );
-        assert_eq!(result, "[]", "empty rows should return empty array: {result}");
     }
 
     // ── write_replica_metadata ─────────────────────────────────────────
@@ -193,7 +188,8 @@ mod tests {
 
     #[test]
     fn write_replica_metadata_invalid_json_returns_error() {
-        let result = write_replica_metadata("not valid json".to_string(), "/tmp/test.db".to_string());
+        let result =
+            write_replica_metadata("not valid json".to_string(), "/tmp/test.db".to_string());
         assert!(result.is_err(), "invalid JSON should return error");
     }
 
@@ -206,10 +202,15 @@ mod tests {
         let db_str = db_path.to_str().unwrap().to_string();
 
         let result = ensure_replica_tables("dictionary-entry".to_string(), db_str);
-        assert!(result.is_ok(), "table creation should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "table creation should succeed: {:?}",
+            result
+        );
 
         // Verify tables exist via the core function
-        let verify = visible_repo::ensure_replica_tables("dictionary-entry", db_path.to_str().unwrap());
+        let verify =
+            visible_repo::ensure_replica_tables("dictionary-entry", db_path.to_str().unwrap());
         assert!(verify.is_ok(), "verify should succeed: {:?}", verify);
     }
 }

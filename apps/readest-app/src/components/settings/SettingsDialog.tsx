@@ -86,7 +86,7 @@ const SettingsDialog: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     {
       tab: 'Integrations',
       icon: RiPlugLine,
-      label: _('Integrations'),
+      label: _('Sync'),
     },
   ] as TabConfig[];
 

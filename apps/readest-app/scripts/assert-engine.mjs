@@ -80,17 +80,93 @@ export function compareSnapshots(pre, post, expectDelta) {
 }
 
 const ENTITY_CONFIG = [
+  { key: 'books', entity: 'book' },
+  { key: 'dictionaryEntries', entity: 'dictionary-entry' },
   { key: 'dictionaryOccurrences', entity: 'dictionary-occurrence' },
   { key: 'quotes', entity: 'quote' },
   { key: 'annotations', entity: 'annotation' },
+  { key: 'bookNotes', entity: 'book-note' },
 ];
+
+function normalizeIdentityPart(value) {
+  return String(value ?? '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function firstValue(row, names) {
+  for (const name of names) {
+    const value = row?.[name];
+    if (value !== undefined && value !== null && value !== '') return value;
+    const envelopeValue = row?.fields_jsonb?.[name]?.v;
+    if (envelopeValue !== undefined && envelopeValue !== null && envelopeValue !== '') return envelopeValue;
+  }
+  return undefined;
+}
+
+export function bookHashIdentityKey(row) {
+  const hash = firstValue(row, ['hash', 'bookHash', 'book_hash']);
+  return hash ? `book:${normalizeIdentityPart(hash)}` : '';
+}
+
+export function dictionaryEntryIdentityKey(row) {
+  const term = normalizeIdentityPart(firstValue(row, ['term', 'word', 'selectedText', 'selected_text', 'text']));
+  const language = normalizeIdentityPart(firstValue(row, ['language', 'lang', 'locale']));
+  return term ? `dictionary-entry:${term}|${language}` : '';
+}
+
+export function dictionaryOccurrenceIdentityKey(row) {
+  const entryKey = normalizeIdentityPart(firstValue(row, ['entryKey', 'dictionaryEntryId', 'dictionary_entry_id']) ?? dictionaryEntryIdentityKey(row));
+  const bookHash = normalizeIdentityPart(firstValue(row, ['bookHash', 'book_hash', 'hash']));
+  const cfi = normalizeIdentityPart(firstValue(row, ['cfi', 'range']));
+  const selectedText = normalizeIdentityPart(firstValue(row, ['selectedText', 'selected_text', 'context', 'text']));
+  return entryKey || bookHash || cfi || selectedText ? `dictionary-occurrence:${entryKey}|${bookHash}|${cfi}|${selectedText}` : '';
+}
+
+export function quoteIdentityKey(row) {
+  const bookHash = normalizeIdentityPart(firstValue(row, ['bookHash', 'book_hash', 'hash']));
+  const cfi = normalizeIdentityPart(firstValue(row, ['cfi', 'range']));
+  const text = normalizeIdentityPart(firstValue(row, ['text', 'selectedText', 'selected_text', 'contentHash', 'content_hash']));
+  return bookHash || cfi || text ? `quote:${bookHash}|${cfi}|${text}` : '';
+}
+
+export function annotationIdentityKey(row) {
+  const bookHash = normalizeIdentityPart(firstValue(row, ['bookHash', 'book_hash', 'hash']));
+  const cfi = normalizeIdentityPart(firstValue(row, ['cfi', 'range']));
+  const text = normalizeIdentityPart(firstValue(row, ['text', 'selectedText', 'selected_text']));
+  return bookHash || cfi || text ? `annotation:${bookHash}|${cfi}|${text}` : '';
+}
+
+export function bookNoteIdentityKey(row) {
+  const bookHash = normalizeIdentityPart(firstValue(row, ['bookHash', 'book_hash', 'hash']));
+  const id = normalizeIdentityPart(firstValue(row, ['id', 'noteId']));
+  const type = normalizeIdentityPart(firstValue(row, ['type', 'kind']));
+  const cfi = normalizeIdentityPart(firstValue(row, ['cfi', 'range']));
+  const group = [
+    ['dictionaryEntryId', 'dictionary'],
+    ['citeId', 'quote'],
+    ['annotationId', 'annotation'],
+  ].find(([field]) => firstValue(row, [field]) !== undefined);
+  const groupKey = group ? `${group[1]}:${normalizeIdentityPart(firstValue(row, [group[0]]))}` : 'none';
+  return bookHash || id || type || cfi ? `book-note:${bookHash}|${id}|${type}|${cfi}|${groupKey}` : '';
+}
 
 function rowsFor(state, key) {
   return Array.isArray(state?.[key]) ? state[key] : [];
 }
 
-function logicalKey(row) {
-  return row.logicalKey ?? [row.bookHash, row.cfi, row.term ?? row.text ?? row.selectedText].filter(Boolean).join(':');
+function logicalKey(row, entity) {
+  if (row?.logicalKey) return row.logicalKey;
+  if (entity === 'book') return bookHashIdentityKey(row);
+  if (entity === 'dictionary-entry') return dictionaryEntryIdentityKey(row);
+  if (entity === 'dictionary-occurrence') return dictionaryOccurrenceIdentityKey(row);
+  if (entity === 'quote') return quoteIdentityKey(row);
+  if (entity === 'annotation') return annotationIdentityKey(row);
+  if (entity === 'book-note') return bookNoteIdentityKey(row);
+  return [row.bookHash, row.cfi, row.term ?? row.text ?? row.selectedText].filter(Boolean).join(':');
 }
 
 function isDeleted(row) {
@@ -104,7 +180,7 @@ function compareHlc(a, b) {
 function duplicateFailures(rows, entity) {
   const counts = new Map();
   for (const row of rows) {
-    const key = logicalKey(row);
+    const key = logicalKey(row, entity);
     if (!key) continue;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
@@ -120,8 +196,8 @@ function duplicateFailures(rows, entity) {
 }
 
 function convergenceFailures(desktopRows, androidRows, entity) {
-  const desktopKeys = new Set(desktopRows.map(logicalKey).filter(Boolean));
-  const androidKeys = new Set(androidRows.map(logicalKey).filter(Boolean));
+  const desktopKeys = new Set(desktopRows.map((row) => logicalKey(row, entity)).filter(Boolean));
+  const androidKeys = new Set(androidRows.map((row) => logicalKey(row, entity)).filter(Boolean));
   const failures = [];
   for (const key of desktopKeys) {
     if (!androidKeys.has(key)) {
@@ -136,10 +212,10 @@ function convergenceFailures(desktopRows, androidRows, entity) {
   return failures;
 }
 
-function latestByKey(rows) {
+function latestByKey(rows, entity) {
   const map = new Map();
   for (const row of rows) {
-    const key = logicalKey(row);
+    const key = logicalKey(row, entity);
     if (!key) continue;
     const current = map.get(key);
     if (!current || compareHlc(row.hlc, current.hlc) > 0) map.set(key, row);
@@ -148,8 +224,8 @@ function latestByKey(rows) {
 }
 
 function hlcAndTombstoneFailures(desktopRows, androidRows, entity) {
-  const desktop = latestByKey(desktopRows);
-  const android = latestByKey(androidRows);
+  const desktop = latestByKey(desktopRows, entity);
+  const android = latestByKey(androidRows, entity);
   const failures = [];
   for (const [key, dRow] of desktop.entries()) {
     const aRow = android.get(key);
@@ -169,10 +245,10 @@ function hlcAndTombstoneFailures(desktopRows, androidRows, entity) {
 }
 
 function semanticGroupFailures(desktopRows, androidRows, entity) {
-  const android = latestByKey(androidRows);
+  const android = latestByKey(androidRows, entity);
   const failures = [];
   for (const row of desktopRows) {
-    const key = logicalKey(row);
+    const key = logicalKey(row, entity);
     const other = android.get(key);
     if (!key || !other) continue;
     if (row.semanticGroup && other.semanticGroup && row.semanticGroup !== other.semanticGroup) {
@@ -216,6 +292,443 @@ function idempotenceFailures(state) {
     previousCounts = run.logicalCounts ?? {};
   }
   return failures;
+}
+
+/**
+ * Assert Case 15 convergence: same book hash appears at most once per side.
+ * Verifies no duplicate book hash in desktop library facts or Android book index.
+ *
+ * @param {{desktop?: object, android?: object}} state
+ *   Expected shape: { desktop: { books?: Array<{hash?, bookHash?}> }, android: { books?: Array<{hash?, bookHash?}> } }
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertCase15({ desktop = {}, android = {} }) {
+  const failures = [];
+  const sides = [
+    ['desktop', Array.isArray(desktop.books) ? desktop.books : []],
+    ['android', Array.isArray(android.books) ? android.books : []],
+  ];
+
+  for (const [side, books] of sides) {
+    const seen = new Map();
+    for (const book of books) {
+      const hash = book?.hash || book?.bookHash;
+      if (!hash) continue;
+      const count = (seen.get(hash) ?? 0) + 1;
+      seen.set(hash, count);
+      if (count > 1) {
+        failures.push({
+          invariant: 'case15-no-duplicate-hash',
+          entity: 'book',
+          side,
+          logicalKey: `book:${hash}`,
+          count,
+        });
+      }
+    }
+  }
+
+  return {
+    verdict: failures.length === 0 ? 'PASS' : 'FAIL',
+    failures,
+  };
+}
+
+/**
+ * Assert that a specific number of books exist on a given side (live books only, i.e. deletedAt is null/undefined).
+ * @param {number} expected - Expected book count
+ * @param {object} deviceState - State object for one device ({ books?: Array<{hash?, deletedAt?}> })
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertBookCount(expected, deviceState) {
+  const failures = [];
+  const books = Array.isArray(deviceState?.books) ? deviceState.books : [];
+  const liveBooks = books.filter((b) => b && b.deletedAt == null);
+  const count = liveBooks.length;
+  if (count !== expected) {
+    failures.push({
+      invariant: 'book-count',
+      expected,
+      actual: count,
+      totalBooks: books.length,
+      deletedBooks: books.length - count,
+    });
+  }
+  return {
+    verdict: failures.length === 0 ? 'PASS' : 'FAIL',
+    failures,
+  };
+}
+
+/**
+ * Assert that a book with the given hash has a specific metadata field value.
+ * @param {string} hash - Book hash to look up
+ * @param {string} field - Metadata field name (e.g. 'title')
+ * @param {*} expectedValue - Expected field value
+ * @param {object} deviceState - State object ({ books?: Array<{hash?, bookHash?, ...}> })
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertMetadata(hash, field, expectedValue, deviceState) {
+  const failures = [];
+  const books = Array.isArray(deviceState?.books) ? deviceState.books : [];
+  const book = books.find((b) => b && (b.hash === hash || b.bookHash === hash));
+  if (!book) {
+    failures.push({
+      invariant: 'book-not-found',
+      hash,
+      field,
+      expectedValue,
+    });
+  } else {
+    const actualValue = book[field];
+    if (actualValue !== expectedValue) {
+      failures.push({
+        invariant: 'metadata-mismatch',
+        hash,
+        field,
+        expected: expectedValue,
+        actual: actualValue,
+      });
+    }
+  }
+  return {
+    verdict: failures.length === 0 ? 'PASS' : 'FAIL',
+    failures,
+  };
+}
+
+/**
+ * Assert Case 16 convergence: same normalized dictionary term+language appears at most once per side.
+ * Uses dictionaryEntryIdentityKey for semantic identity matching.
+ *
+ * @param {{desktop?: object, android?: object}} state
+ *   Expected shape: { desktop: { dictionaryEntries?: Array<object> }, android: { dictionaryEntries?: Array<object> } }
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertCase16({ desktop = {}, android = {} }) {
+  const failures = [];
+  const sides = [
+    ['desktop', Array.isArray(desktop.dictionaryEntries) ? desktop.dictionaryEntries : []],
+    ['android', Array.isArray(android.dictionaryEntries) ? android.dictionaryEntries : []],
+  ];
+
+  for (const [side, rows] of sides) {
+    const seen = new Map();
+    for (const row of rows) {
+      const key = dictionaryEntryIdentityKey(row);
+      if (!key) continue;
+      const count = (seen.get(key) ?? 0) + 1;
+      seen.set(key, count);
+      if (count > 1) {
+        failures.push({
+          invariant: 'case16-no-duplicate-dictionary-entry',
+          entity: 'dictionary-entry',
+          side,
+          logicalKey: key,
+          count,
+        });
+      }
+    }
+  }
+
+  return {
+    verdict: failures.length === 0 ? 'PASS' : 'FAIL',
+    failures,
+  };
+}
+
+/**
+ * Assert Case 17 convergence: same quote (bookHash|cfi|text) appears at most once per side.
+ * Uses quoteIdentityKey for semantic identity matching.
+ *
+ * @param {{desktop?: object, android?: object}} state
+ *   Expected shape: { desktop: { quotes?: Array<object> }, android: { quotes?: Array<object> } }
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertCase17({ desktop = {}, android = {} }) {
+  const failures = [];
+  const sides = [
+    ['desktop', Array.isArray(desktop.quotes) ? desktop.quotes : []],
+    ['android', Array.isArray(android.quotes) ? android.quotes : []],
+  ];
+
+  for (const [side, rows] of sides) {
+    const seen = new Map();
+    for (const row of rows) {
+      const key = quoteIdentityKey(row);
+      if (!key) continue;
+      const count = (seen.get(key) ?? 0) + 1;
+      seen.set(key, count);
+      if (count > 1) {
+        failures.push({
+          invariant: 'case17-no-duplicate-quote',
+          entity: 'quote',
+          side,
+          logicalKey: key,
+          count,
+        });
+      }
+    }
+  }
+
+  return {
+    verdict: failures.length === 0 ? 'PASS' : 'FAIL',
+    failures,
+  };
+}
+
+/**
+ * Find a row in sqlite tables by matching a field value (entityId) across known columns.
+ * The sqliteSection is an object with kind keys (dictionary, annotations, quotes),
+ * each containing { available, tables: [{ name, rows }] }.
+ */
+function findSqliteRow(sqliteSection, entityType, entityId) {
+  if (!sqliteSection) return undefined;
+  const kind = KIND_FOR_ENTITY[entityType];
+  if (!kind) return undefined;
+  const db = sqliteSection[kind];
+  if (!db?.available) return undefined;
+  const tableName = TABLE_FOR_ENTITY[entityType];
+  if (!tableName) return undefined;
+  const table = (db.tables || []).find((t) => t.name === tableName);
+  if (!table?.rows?.length) return undefined;
+  const idFields = ID_FIELDS_FOR_ENTITY[entityType] || ['id'];
+  return table.rows.find((row) => idFields.some((field) => String(row?.[field] ?? '') === String(entityId)));
+}
+
+const KIND_FOR_ENTITY = {
+  'dictionary-entry': 'dictionary',
+  'annotation': 'annotations',
+  'dictionary-occurrence': 'dictionary',
+  'quote': 'quotes',
+};
+
+/**
+ * Find a row in android replica data by matching entity ID.
+ */
+function findReplicaRow(replicasSection, entityType, entityId) {
+  const replicaKind = REPLICA_KIND_FOR_ENTITY[entityType];
+  if (!replicaKind) return undefined;
+  const replica = replicasSection?.[replicaKind];
+  if (!replica?.reachable || !replica?.rows?.length) return undefined;
+  const idFields = ID_FIELDS_FOR_ENTITY[entityType] || ['id'];
+  return replica.rows.find((row) => idFields.some((field) => String(row?.[field] ?? '') === String(entityId)));
+}
+
+/**
+ * Find a book fact by hash in library facts.
+ */
+function findLibraryFact(state, entityId) {
+  const facts = state?.library?.facts;
+  if (!Array.isArray(facts)) return undefined;
+  return facts.find((fact) => fact?.hash === entityId || fact?.bookHash === entityId);
+}
+
+const TABLE_FOR_ENTITY = {
+  'dictionary-entry': 'dictionary_entries',
+  'annotation': 'annotations',
+  'dictionary-occurrence': 'dictionary_occurrences',
+  'quote': 'quotes',
+};
+
+const ID_FIELDS_FOR_ENTITY = {
+  'dictionary-entry': ['term', 'word', 'id'],
+  'annotation': ['id'],
+  'book': ['hash', 'bookHash'],
+  'dictionary-occurrence': ['id'],
+  'quote': ['id'],
+};
+
+const REPLICA_KIND_FOR_ENTITY = {
+  'dictionary-entry': 'dictionary-entry',
+  'annotation': 'annotation',
+  'dictionary-occurrence': 'dictionary-occurrence',
+  'quote': 'quote',
+};
+
+/**
+ * Assert a specific field on a specific entity has a specific value.
+ *
+ * @param {string} entityType - 'dictionary-entry' | 'annotation' | 'book'
+ * @param {string} entityId - Normalized term for dict, hash for book, id for annotation
+ * @param {string} field - Field name ('definition', 'note', 'title')
+ * @param {*} expectedValue - Expected field value
+ * @param {object} state - Device state snapshot (desktop or android)
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertFieldValue(entityType, entityId, field, expectedValue, state) {
+  const failures = [];
+
+  // Try book entity from library facts
+  if (entityType === 'book') {
+    const fact = findLibraryFact(state, entityId);
+    if (!fact) {
+      failures.push({ invariant: 'entity-not-found', entityType, entityId, field, expected: expectedValue });
+      return { verdict: 'FAIL', failures };
+    }
+    const actualValue = fact[field];
+    if (actualValue !== expectedValue) {
+      failures.push({ invariant: 'field-value-mismatch', entityType, entityId, field, expected: expectedValue, actual: actualValue });
+    }
+    return { verdict: failures.length === 0 ? 'PASS' : 'FAIL', failures };
+  }
+
+  // Try sqlite tables (desktop state)
+  let row = findSqliteRow(state?.sqlite, entityType, entityId);
+
+  // Fall back to replicas (android state) if not found in sqlite
+  if (!row && state?.replicas) {
+    row = findReplicaRow(state.replicas, entityType, entityId);
+  }
+
+  if (!row) {
+    const sourceAvail = state?.sqlite?.[entityType === 'dictionary-entry' ? 'dictionary' : entityType === 'annotation' ? 'annotations' : 'quotes']?.available;
+    if (sourceAvail === false) {
+      failures.push({ invariant: 'source-unavailable', entityType, entityId, field });
+    } else {
+      failures.push({ invariant: 'entity-not-found', entityType, entityId, field, expected: expectedValue });
+    }
+    return { verdict: 'FAIL', failures };
+  }
+
+  const actualValue = row[field];
+  if (actualValue !== expectedValue) {
+    failures.push({ invariant: 'field-value-mismatch', entityType, entityId, field, expected: expectedValue, actual: actualValue });
+  }
+
+  return { verdict: failures.length === 0 ? 'PASS' : 'FAIL', failures };
+}
+
+/**
+ * Determine if an entity is LIVE or TOMBSTONED by checking deleted_at/deletedAt.
+ *
+ * @param {string} entityType - 'dictionary-entry' | 'annotation' | 'book'
+ * @param {string} entityId - Entity identifier
+ * @param {object} state - Device state snapshot
+ * @returns {{state: 'live'|'tombstone'|'not-found', evidence: object}}
+ */
+export function assertEntityState(entityType, entityId, state) {
+  // Book entity from library facts
+  if (entityType === 'book') {
+    const fact = findLibraryFact(state, entityId);
+    if (!fact) return { state: 'not-found', evidence: {} };
+    const deletedAt = fact.deletedAt ?? fact.deleted_at;
+    return {
+      state: deletedAt != null ? 'tombstone' : 'live',
+      evidence: { deletedAt, updatedAt: fact.updatedAt },
+    };
+  }
+
+  // Sqlite entity
+  let row = findSqliteRow(state?.sqlite, entityType, entityId);
+  if (!row && state?.replicas) {
+    row = findReplicaRow(state.replicas, entityType, entityId);
+  }
+
+  if (!row) {
+    return { state: 'not-found', evidence: {} };
+  }
+
+  const deletedAt = row.deleted_at ?? row.deletedAt ?? row.deleted_at_ts;
+  return {
+    state: deletedAt != null ? 'tombstone' : 'live',
+    evidence: { deletedAt, updatedAt: row.updated_at ?? row.updatedAt },
+  };
+}
+
+/**
+ * Validate that a config.json BookNote entry has the correct type-entity reference pair.
+ *
+ * @param {string} _bookHash - Book hash (used for context, not required for lookups)
+ * @param {string} noteId - The BookNote.id in config.json
+ * @param {'dictionary'|'quote'|'annotation'} expectedType - Expected semantic type
+ * @param {string} expectedEntityId - Expected entity ID in the pointer field
+ * @param {object} config - Config.json state (from bookConfig)
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertBookNoteIntegrity(_bookHash, noteId, expectedType, expectedEntityId, config) {
+  const failures = [];
+
+  if (!config || !Array.isArray(config.booknotes) || config.booknotes.length === 0) {
+    failures.push({ invariant: 'booknote-not-found', noteId, expectedType, expectedEntityId, reason: 'config missing or empty booknotes' });
+    return { verdict: 'FAIL', failures };
+  }
+
+  const note = config.booknotes.find((n) => n.id === noteId);
+  if (!note) {
+    failures.push({ invariant: 'booknote-not-found', noteId, expectedType, expectedEntityId });
+    return { verdict: 'FAIL', failures };
+  }
+
+  // Check type first
+  if (note.type !== expectedType) {
+    failures.push({ invariant: 'booknote-type-mismatch', noteId, expected: expectedType, actual: note.type });
+    return { verdict: 'FAIL', failures };
+  }
+
+  // Check pointer field matches the type
+  let pointerField;
+  let actualEntityId;
+  if (expectedType === 'dictionary') {
+    pointerField = 'dictionaryEntryId';
+    actualEntityId = note.dictionaryEntryId;
+  } else if (expectedType === 'quote') {
+    pointerField = 'citeId';
+    actualEntityId = note.citeId;
+  } else if (expectedType === 'annotation') {
+    pointerField = 'annotationId';
+    actualEntityId = note.annotationId;
+  }
+
+  if (!pointerField) {
+    failures.push({ invariant: 'booknote-unknown-type', noteId, expectedType });
+    return { verdict: 'FAIL', failures };
+  }
+
+  // Check if the pointer field has the expected value
+  if (actualEntityId !== expectedEntityId) {
+    failures.push({
+      invariant: 'booknote-pointer-mismatch',
+      noteId,
+      expectedType,
+      field: pointerField,
+      expected: expectedEntityId,
+      actual: actualEntityId,
+    });
+  }
+
+  return { verdict: failures.length === 0 ? 'PASS' : 'FAIL', failures };
+}
+
+/**
+ * Assert the semantic type of a BookNote. Simpler than integrity check — only checks type field.
+ *
+ * @param {string} _bookHash - Book hash (used for context)
+ * @param {string} noteId - The BookNote.id in config.json
+ * @param {'dictionary'|'quote'|'annotation'} expectedType - Expected semantic type
+ * @param {object} config - Config.json state (from bookConfig)
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertBookNoteType(_bookHash, noteId, expectedType, config) {
+  const failures = [];
+
+  if (!config || !Array.isArray(config.booknotes) || config.booknotes.length === 0) {
+    failures.push({ invariant: 'booknote-not-found', noteId, expectedType, reason: 'config missing or empty booknotes' });
+    return { verdict: 'FAIL', failures };
+  }
+
+  const note = config.booknotes.find((n) => n.id === noteId);
+  if (!note) {
+    failures.push({ invariant: 'booknote-not-found', noteId, expectedType });
+    return { verdict: 'FAIL', failures };
+  }
+
+  if (note.type !== expectedType) {
+    failures.push({ invariant: 'booknote-type-mismatch', noteId, expected: expectedType, actual: note.type });
+    return { verdict: 'FAIL', failures };
+  }
+
+  return { verdict: 'PASS', failures: [] };
 }
 
 export function compareSemanticState({ desktop = {}, android = {} }) {

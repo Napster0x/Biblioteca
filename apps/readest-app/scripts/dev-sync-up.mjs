@@ -1,13 +1,12 @@
 import { execSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { reinitializeAndroidAfterClean } from './android-clean-reinit.mjs';
 import { createSyncDevEnvironment, requireDevHarness } from './sync-dev-env.mjs';
 
 const env = createSyncDevEnvironment();
 const DESKTOP_HEALTH = env.desktop.devSyncHealthUrl;
-const ANDROID_HEALTH = `${env.android.serverUrl}/health`;
-const ANDROID_PKG = env.android.packageName;
-const ANDROID_READEST = env.android.readestDir;
 
 async function fetchOk(url, timeout = 3000) {
   try {
@@ -41,10 +40,17 @@ function writeDesktopToggle() {
   console.log(`✅ Desktop toggle ON`);
 }
 
-function writeAndroidToggle() {
-  const json = JSON.stringify({ localSync: { enabled: true, port: 7878 } });
-  execSync(`adb shell 'echo '"'"'${json}'"'"' | run-as ${ANDROID_PKG} sh -c '"'"'mkdir -p ${ANDROID_READEST} && cat > ${ANDROID_READEST}/settings.json'"'"''`, { stdio: 'pipe' });
-  console.log(`✅ Android toggle ON`);
+export async function prepareAndroidForSync({
+  env: syncEnv = env,
+  reinitialize = reinitializeAndroidAfterClean,
+} = {}) {
+  const result = await reinitialize({ env: syncEnv });
+  return {
+    ok: result.ok === true,
+    diagnostics: result.diagnostics || [],
+    stages: result.stages || [],
+    ready: result.ready,
+  };
 }
 
 async function main() {
@@ -55,7 +61,6 @@ async function main() {
   catch { console.log('❌ adb reverse'); process.exit(1); }
 
   writeDesktopToggle();
-  try { writeAndroidToggle(); } catch { console.log('⚠️ Android settings write failed'); }
 
   const dOk = await fetchOk(DESKTOP_HEALTH, 2000);
   if (!dOk) {
@@ -66,15 +71,17 @@ async function main() {
   await waitFor(DESKTOP_HEALTH, 'Desktop (:3000)');
 
   console.log('');
-  execSync(`adb shell am start -n ${ANDROID_PKG}/.MainActivity`, { stdio: 'pipe' });
-  console.log('📱 Android launched');
-  await waitFor(ANDROID_HEALTH, 'Android (:7878)', 60);
+  const androidReady = await prepareAndroidForSync({ env });
+  if (androidReady.ok) console.log('📱 Android launched and ready');
+  else console.log(`❌ Android readiness failed: ${androidReady.diagnostics[0]?.message || 'unknown error'}`);
 
   const dReady = (await fetchOk(DESKTOP_HEALTH)) !== null;
-  const aReady = (await fetchOk(ANDROID_HEALTH)) !== null;
+  const aReady = androidReady.ok;
   console.log(`\nDesktop: ${dReady ? '✅' : '❌'}  Android: ${aReady ? '✅' : '❌'}`);
   if (dReady && aReady) { console.log('\n🚀 Ready. pnpm dev:sync:doctor'); process.exit(0); }
   else { process.exit(1); }
 }
 
-main().catch(err => { console.error(err.message); process.exit(1); });
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch(err => { console.error(err.message); process.exit(1); });
+}

@@ -27,16 +27,42 @@ export function normalizeTerm(s) {
 }
 
 /**
- * Compute a semantic key for dictionary-entry dedup.
- * Key format: `${normalizedTerm}|${normalizedLanguage}`
- * Returns null for rows without a valid term or without fields_jsonb.
+ * Compute a semantic key for dedup, keyed by replica kind.
+ * Returns null for rows without a valid fields_jsonb or without
+ * the required fields for the given kind.
  */
-export function computeSemanticKey(row) {
+export function computeSemanticKey(row, kind) {
   if (!row?.fields_jsonb) return null;
-  const term = row.fields_jsonb?.term?.v;
-  const language = row.fields_jsonb?.language?.v;
-  if (!term || typeof term !== 'string' || term.trim() === '') return null;
-  return `${normalizeTerm(term)}|${normalizeTerm(language ?? '')}`;
+  const f = row.fields_jsonb;
+
+  if (kind === 'dictionary-entry') {
+    const term = f?.term?.v;
+    const language = f?.language?.v;
+    if (!term || typeof term !== 'string' || term.trim() === '') return null;
+    return `${normalizeTerm(term)}|${normalizeTerm(language ?? '')}`;
+  }
+  if (kind === 'dictionary-occurrence') {
+    const entryId = f?.entryId?.v;
+    const bookHash = f?.bookHash?.v;
+    const cfi = f?.cfi?.v;
+    if (!entryId || !bookHash || !cfi) return null;
+    return `${entryId}|${bookHash}|${cfi}`;
+  }
+  if (kind === 'quote') {
+    const bookHash = f?.bookHash?.v;
+    const cfi = f?.cfi?.v;
+    const contentHash = f?.contentHash?.v;
+    if (!bookHash || !cfi || !contentHash) return null;
+    return `${bookHash}|${cfi}|${contentHash}`;
+  }
+  if (kind === 'annotation') {
+    const bookHash = f?.bookHash?.v;
+    const cfi = f?.cfi?.v;
+    const text = f?.text?.v;
+    if (!bookHash || !cfi || !text) return null;
+    return `${bookHash}|${cfi}|${text}`;
+  }
+  return null;
 }
 
 // -----------------------------------------------------------------------
@@ -78,12 +104,12 @@ export function newerOrEqualReplicaExists(dbPath, replicaId, updatedAtTs) {
 }
 
 /**
- * Check if a dictionary-entry replica with the same semantic_key exists
+ * Check if a replica with the same semantic_key AND kind exists
  * with equal-or-higher HLC.
  */
-export function newerOrEqualSemanticReplicaExists(dbPath, semanticKey, updatedAtTs) {
+export function newerOrEqualSemanticReplicaExists(dbPath, semanticKey, updatedAtTs, kind) {
   if (!semanticKey) return false;
-  const rows = readSqliteJson(dbPath, `SELECT updated_at_ts FROM _replicas WHERE semantic_key = ${sqlValue(semanticKey)} AND kind = 'dictionary-entry' LIMIT 1`);
+  const rows = readSqliteJson(dbPath, `SELECT updated_at_ts FROM _replicas WHERE semantic_key = ${sqlValue(semanticKey)} AND kind = ${sqlValue(kind)} LIMIT 1`);
   return typeof rows[0]?.updated_at_ts === 'string' && rows[0].updated_at_ts >= updatedAtTs;
 }
 
@@ -93,18 +119,18 @@ export function newerOrEqualSemanticReplicaExists(dbPath, semanticKey, updatedAt
  *
  * Two-pass filter:
  *   Pass 1: Exact replica_id match (all kinds)
- *   Pass 2: Semantic key match (dictionary-entry only) — matches by
- *           normalized term|language even if replica_id differs.
+ *   Pass 2: Semantic key match (all kinds if kind is truthy) — matches by
+ *           computed semantic key even if replica_id differs.
  */
 export function filterUnchangedReplicas(dbPath, replicas, kind) {
   if (!tableExists(dbPath, '_replicas')) return replicas;
   return replicas.filter(r => {
     // Pass 1: exact replica_id match (all kinds)
     if (newerOrEqualReplicaExists(dbPath, r.replica_id, r.updated_at_ts)) return false;
-    // Pass 2 (dict-entry only): semantic match against normalized term|language
-    if (kind === 'dictionary-entry') {
-      const sk = computeSemanticKey(r);
-      if (sk && newerOrEqualSemanticReplicaExists(dbPath, sk, r.updated_at_ts)) return false;
+    // Pass 2: semantic match (all kinds) — skips if kind is falsy (legacy/undefined)
+    if (kind) {
+      const sk = computeSemanticKey(r, kind);
+      if (sk && newerOrEqualSemanticReplicaExists(dbPath, sk, r.updated_at_ts, kind)) return false;
     }
     return true;
   });
@@ -112,11 +138,11 @@ export function filterUnchangedReplicas(dbPath, replicas, kind) {
 
 /**
  * Write (upsert) a ReplicaRow into _replicas, computing and storing
- * the semantic_key column for dictionary-entry rows.
+ * the semantic_key column for all kinds (when row.kind and fields_jsonb are present).
  */
 export function writeReplicaMetadata(dbPath, row) {
-  const semanticKey = row.kind === 'dictionary-entry' && row?.fields_jsonb
-    ? computeSemanticKey(row)
+  const semanticKey = row.kind && row?.fields_jsonb
+    ? computeSemanticKey(row, row.kind)
     : null;
   execSqlite(dbPath, `
     INSERT OR REPLACE INTO _replicas (replica_id, kind, user_id, fields_jsonb, manifest_jsonb, deleted_at_ts, reincarnation, updated_at_ts, schema_version, semantic_key)
@@ -152,7 +178,7 @@ const APP_TABLE_DDL = {
     CREATE TABLE IF NOT EXISTS quotes (
       id TEXT PRIMARY KEY, book_hash TEXT, book_title TEXT, book_author TEXT, cfi TEXT,
       section_href TEXT, page INTEGER, text TEXT, context_before TEXT, context_after TEXT,
-      content_hash TEXT, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER
+      content_hash TEXT, replica_timestamps TEXT, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER
     );`,
   annotation: `
     CREATE TABLE IF NOT EXISTS annotations (
@@ -181,6 +207,7 @@ export function ensureReplicaTables(dbPath, kind) {
     ${appDdl}
   `);
   maybeAddSemanticKeyColumn(dbPath);
+  if (kind === 'quote') maybeAddReplicaTimestampsToQuotes(dbPath);
 }
 
 /**
@@ -195,5 +222,20 @@ function maybeAddSemanticKeyColumn(dbPath) {
     }
   } catch {
     // _replicas table doesn't exist yet — nothing to migrate
+  }
+}
+
+/**
+ * Migration: add replica_timestamps column to existing quotes tables that lack it.
+ * No-op if column already exists or quotes table doesn't exist.
+ */
+function maybeAddReplicaTimestampsToQuotes(dbPath) {
+  try {
+    const cols = readSqliteJson(dbPath, 'PRAGMA table_info(quotes)');
+    if (!cols.some(c => c.name === 'replica_timestamps')) {
+      execSqlite(dbPath, 'ALTER TABLE quotes ADD COLUMN replica_timestamps TEXT');
+    }
+  } catch {
+    // quotes table doesn't exist yet — nothing to migrate
   }
 }

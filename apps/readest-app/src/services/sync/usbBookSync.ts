@@ -185,6 +185,28 @@ function manifestBooks(manifest: UsbBookManifest): Map<string, Book> {
   return new Map(manifest.books.map((entry) => [entry.hash, entry.book]));
 }
 
+async function pullRemoteLibraryBooks(
+  transport: SyncTransport,
+  result: UsbBookSyncResult,
+): Promise<Book[]> {
+  if (!transport.pullBookLibrary) return [];
+  try {
+    return await transport.pullBookLibrary();
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    result.errors.push(`pullBookLibrary: ${msg}`);
+    return [];
+  }
+}
+
+function mergeRemoteBooks(manifest: UsbBookManifest, libraryBooks: Book[]): Map<string, Book> {
+  const books = manifestBooks(manifest);
+  for (const book of libraryBooks) {
+    books.set(book.hash, book);
+  }
+  return books;
+}
+
 function isLocalReimportAfterRemoteDelete(localBook: Book, remoteBook: Book): boolean {
   return (
     !localBook.deletedAt && !!remoteBook.deletedAt && localBook.createdAt > remoteBook.deletedAt
@@ -247,7 +269,8 @@ export async function syncUsbBooks(
 
   const localLibrary = await readLocalLibrary(files);
   const remoteManifest = await transport.pullBookManifest();
-  const remoteBooks = manifestBooks(remoteManifest);
+  const remoteLibraryBooks = await pullRemoteLibraryBooks(transport, result);
+  const remoteBooks = mergeRemoteBooks(remoteManifest, remoteLibraryBooks);
   const receivedBooks: Book[] = [];
   const sentBooks: Book[] = [];
 
@@ -257,8 +280,7 @@ export async function syncUsbBooks(
   // reimport after the delete and must be pushed back to the peer.
   let localChanged = false;
   const localReimportsToPush = new Set<string>();
-  for (const entry of remoteManifest.books) {
-    const remoteBook = entry.book;
+  for (const remoteBook of remoteBooks.values()) {
     if (!remoteBook.deletedAt) continue;
     const localBook = localLibrary.find((b) => b.hash === remoteBook.hash && !b.deletedAt);
     if (!localBook) continue;
@@ -276,7 +298,7 @@ export async function syncUsbBooks(
   // Receive new books from remote (skip tombstones — their assets
   // are already gone and we only need the deletedAt marker propagated).
   for (const entry of remoteManifest.books) {
-    if (entry.book.deletedAt) continue;
+    if (entry.book.deletedAt || remoteBooks.get(entry.hash)?.deletedAt) continue;
     if (hasBook(localLibrary, entry.hash)) continue;
     try {
       receivedBooks.push(await receiveBook(entry, transport, files));

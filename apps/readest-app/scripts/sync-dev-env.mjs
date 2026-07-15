@@ -6,6 +6,10 @@ export const DESKTOP_DEV_MARKER_FILE = '.biblioteca-dev-sync';
 
 const DEFAULT_DESKTOP_DATA_ROOT = '/home/napster/.local/share/io.github.Napster0x.biblioteca.dev';
 const DEFAULT_ANDROID_PACKAGE = 'io.github.Napster0x.biblioteca';
+export const DEFAULT_ANDROID_PACKAGE_CANDIDATES = Object.freeze([
+  'io.github.Napster0x.biblioteca',
+  'io.github.Napster0x.biblioteca.dev',
+]);
 const DEFAULT_ANDROID_SERVER_URL = 'http://localhost:7878';
 const DEFAULT_DESKTOP_SYNC_TRIGGER_URL = 'http://localhost:3000/api/sync-trigger';
 const DEFAULT_DESKTOP_DEV_SYNC_HEALTH_URL = 'http://localhost:3000/api/dev-sync/health';
@@ -27,6 +31,9 @@ export function createSyncDevEnvironment(env = process.env) {
     },
     android: {
       packageName: androidPackage,
+      packageCandidates: env.BIBLIOTECA_DEV_ANDROID_PACKAGE
+        ? [env.BIBLIOTECA_DEV_ANDROID_PACKAGE]
+        : [...DEFAULT_ANDROID_PACKAGE_CANDIDATES],
       serial: androidSerial || null,
       readestDir: `/data/data/${androidPackage}/Readest`,
       serverUrl: env.BIBLIOTECA_DEV_ANDROID_SERVER_URL || DEFAULT_ANDROID_SERVER_URL,
@@ -36,6 +43,101 @@ export function createSyncDevEnvironment(env = process.env) {
         direction: 'host-to-android',
       },
     },
+  };
+}
+
+export function resolveAndroidPackageTarget({ env = process.env, installedPackages = [] } = {}) {
+  const override = env.BIBLIOTECA_DEV_ANDROID_PACKAGE || '';
+  const candidates = override ? [override] : [...DEFAULT_ANDROID_PACKAGE_CANDIDATES];
+  const knownCandidates = override && !DEFAULT_ANDROID_PACKAGE_CANDIDATES.includes(override)
+    ? [override, ...DEFAULT_ANDROID_PACKAGE_CANDIDATES]
+    : [...DEFAULT_ANDROID_PACKAGE_CANDIDATES];
+  const installedCandidates = knownCandidates.filter((candidate) => installedPackages.includes(candidate));
+
+  if (override) {
+    return {
+      status: 'pass',
+      packageName: override,
+      source: 'env',
+      candidates,
+      installedCandidates,
+      message: `using Android package override ${override}`,
+    };
+  }
+
+  if (installedCandidates.length > 0) {
+    const packageName = installedCandidates[0];
+    return {
+      status: 'pass',
+      packageName,
+      source: 'installed-candidate',
+      candidates,
+      installedCandidates,
+      message: `selected installed Android package ${packageName}`,
+    };
+  }
+
+  return {
+    status: 'fail',
+    packageName: null,
+    source: 'installed-candidate',
+    candidates,
+    installedCandidates,
+    message: `No supported Android package found. Checked: ${candidates.join(', ')}`,
+  };
+}
+
+export function parsePidofOutput(stdout) {
+  const pid = typeof stdout === 'string' ? stdout.trim().split(/\s+/).filter(Boolean)[0] : null;
+  if (pid) {
+    return {
+      status: 'pass',
+      pid,
+      failureClass: null,
+      message: `Android app process is running with PID ${pid}`,
+    };
+  }
+  return {
+    status: 'fail',
+    pid: null,
+    failureClass: 'app-process-absent',
+    message: 'Android app process is not running',
+  };
+}
+
+export function classifyAndroidHealthFailure(failure) {
+  if (failure && typeof failure === 'object' && typeof failure.status === 'number') {
+    return {
+      status: 'fail',
+      failureClass: 'http-error',
+      message: `Android /health returned HTTP ${failure.status}`,
+    };
+  }
+
+  const name = failure && typeof failure === 'object' && 'name' in failure ? String(failure.name) : '';
+  const message = failure instanceof Error ? failure.message : String(failure ?? 'unknown error');
+  const lowerMessage = message.toLowerCase();
+
+  if (lowerMessage.includes('econnrefused') || lowerMessage.includes('connection refused')) {
+    return {
+      status: 'fail',
+      failureClass: 'port-refused',
+      message: 'Android /health port refused',
+    };
+  }
+
+  if (name === 'TimeoutError' || name === 'AbortError' || lowerMessage.includes('timeout') || lowerMessage.includes('timed out')) {
+    return {
+      status: 'fail',
+      failureClass: 'timeout',
+      message: 'Android /health timed out',
+    };
+  }
+
+  return {
+    status: 'fail',
+    failureClass: 'unknown',
+    message: `Android /health failed: ${message}`,
   };
 }
 

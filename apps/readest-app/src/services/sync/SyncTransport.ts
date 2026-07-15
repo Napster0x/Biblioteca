@@ -77,6 +77,8 @@ export interface SyncTransport {
 
   pullBookManifest?(): Promise<UsbBookManifest>;
 
+  pullBookLibrary?(): Promise<Book[]>;
+
   pushBookLibrary?(books: Book[]): Promise<void>;
 
   pullBookAsset?(

@@ -68,7 +68,7 @@ export function createPeerTransport(peer: PeerInfo): SyncTransport {
 // runSyncCycle
 // ---------------------------------------------------------------------------
 
-const ALL_KINDS: readonly SyncCategory[] = [
+export const ALL_KINDS: readonly SyncCategory[] = [
   'annotation',
   'quote',
   'dictionary-entry',
@@ -185,14 +185,31 @@ async function filterUnchangedViaInvoke(
     const { invoke } = await import('@tauri-apps/api/core');
     const result = await invoke('filter_unchanged_replicas', {
       kind,
-      rows_json: rows,
+      rows_json: JSON.stringify(rows),
       db_path: dbPath,
     });
+    if (typeof result === 'string') {
+      const parsed: unknown = JSON.parse(result);
+      return Array.isArray(parsed) ? (parsed as ReplicaRow[]) : rows;
+    }
     // Defensive: if invoke returns undefined or non-array, fall back to all rows
     return Array.isArray(result) ? (result as ReplicaRow[]) : rows;
   } catch (err) {
     console.warn('[sync] filter_unchanged_replicas invoke failed, using all rows', err);
     return rows;
+  }
+}
+
+async function writeReplicaMetadataViaInvoke(rows: ReplicaRow[], dbPath: string): Promise<void> {
+  if (!dbPath || rows.length === 0) return;
+
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    for (const row of rows) {
+      await invoke('write_replica_metadata', { row_json: JSON.stringify(row), db_path: dbPath });
+    }
+  } catch (err) {
+    console.warn('[sync] write_replica_metadata invoke failed, skipping metadata write', err);
   }
 }
 
@@ -313,7 +330,7 @@ export async function runSyncCycle(
     }
     // USB local sync always forces full bidirectional seed — visible DB
     // changes bypass the CRDT outbox, so incremental sync would miss them.
-    const isFirstSyncForKind = peerId ? (transport.kind === 'usb' ? true : !since) : false;
+    const isFirstSyncForKind = transport.kind === 'usb' ? true : peerId ? !since : false;
     // Force full pull for USB so the server scans visible tables.
     const pullCursor: Hlc | undefined = transport.kind === 'usb' ? undefined : since;
 
@@ -361,19 +378,7 @@ export async function runSyncCycle(
         }
 
         // ── Write replica metadata to _replicas table ──
-        if (dbPath) {
-          try {
-            const { invoke } = await import('@tauri-apps/api/core');
-            for (const row of toPush) {
-              await invoke('write_replica_metadata', { row_json: row, db_path: dbPath });
-            }
-          } catch (err) {
-            console.warn(
-              '[sync] write_replica_metadata invoke failed, skipping metadata write',
-              err,
-            );
-          }
-        }
+        await writeReplicaMetadataViaInvoke(toPush, dbPath);
       } catch (err: unknown) {
         const msg = errorMessageFromUnknown(err);
         errors.push({
@@ -439,6 +444,7 @@ export async function runSyncCycle(
       }
 
       kindsResult[kind]!.pulled = remoteRows.length;
+      await writeReplicaMetadataViaInvoke(remoteRows, dbPath);
 
       // Dictionary image sync — validate against manifest and surface retryable errors
       if (kind === 'dictionary-entry') {

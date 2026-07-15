@@ -189,6 +189,35 @@ describe('usbBookSync', () => {
     ]);
   });
 
+  it('applies a remote library tombstone when the asset manifest is empty', async () => {
+    const localBook = makeBook('library-deleted', 'Library Deleted');
+    const remoteTombstone: Book = {
+      ...localBook,
+      updatedAt: 20,
+      deletedAt: 21,
+      downloadedAt: null,
+    };
+    const transport = {
+      ...makeTransport({ books: [] }),
+      pullBookLibrary: vi.fn().mockResolvedValue([remoteTombstone]),
+    };
+    const files = makeFileService([localBook]);
+    const { syncUsbBooks } = await import('@/services/sync/usbBookSync');
+
+    const result = await syncUsbBooks(transport, files);
+
+    expect(result.sent).toBe(0);
+    expect(result.received).toBe(0);
+    expect(transport.pullBookLibrary).toHaveBeenCalledOnce();
+    expect(transport.pushBookLibrary).not.toHaveBeenCalled();
+    expect(transport.pushBookAsset).not.toHaveBeenCalled();
+    expect(transport.pullBookAsset).not.toHaveBeenCalled();
+    const nextLibrary = JSON.parse(files.texts.get('library.json')!) as Book[];
+    expect(nextLibrary).toEqual([
+      expect.objectContaining({ hash: 'library-deleted', deletedAt: 21 }),
+    ]);
+  });
+
   it('re-pushes a local re-add when local createdAt is newer than the remote tombstone deletedAt', async () => {
     const localReimport: Book = {
       ...makeBook('reimport-local', 'Reimport Local'),
@@ -223,6 +252,47 @@ describe('usbBookSync', () => {
         { hash: 'reimport-local', asset: 'book' },
         { hash: 'reimport-local', asset: 'cover.png' },
         { hash: 'reimport-local', asset: 'config.json' },
+      ]),
+    );
+    expect(files.texts.has('library.json')).toBe(false);
+  });
+
+  it('re-pushes a local re-add when local createdAt is newer than a remote library tombstone', async () => {
+    const localReimport: Book = {
+      ...makeBook('library-reimport', 'Library Reimport'),
+      createdAt: 200,
+      updatedAt: 201,
+      deletedAt: null,
+    };
+    const remoteTombstone: Book = {
+      ...localReimport,
+      createdAt: 1,
+      updatedAt: 100,
+      deletedAt: 101,
+      downloadedAt: null,
+    };
+    const transport = {
+      ...makeTransport({ books: [] }),
+      pullBookLibrary: vi.fn().mockResolvedValue([remoteTombstone]),
+    };
+    const files = makeFileService([localReimport]);
+    const { syncUsbBooks } = await import('@/services/sync/usbBookSync');
+
+    const result = await syncUsbBooks(transport, files);
+
+    expect(result.sent).toBe(1);
+    expect(transport.pullBookLibrary).toHaveBeenCalledOnce();
+    expect(transport.pushBookLibrary).toHaveBeenCalledWith([
+      expect.objectContaining({ hash: 'library-reimport', createdAt: 200, deletedAt: null }),
+    ]);
+    const pushedAssets = vi
+      .mocked(transport.pushBookAsset!)
+      .mock.calls.map(([hash, asset]) => ({ hash, asset }));
+    expect(pushedAssets).toEqual(
+      expect.arrayContaining([
+        { hash: 'library-reimport', asset: 'book' },
+        { hash: 'library-reimport', asset: 'cover.png' },
+        { hash: 'library-reimport', asset: 'config.json' },
       ]),
     );
     expect(files.texts.has('library.json')).toBe(false);

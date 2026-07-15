@@ -82,7 +82,13 @@ export interface SyncResult {
   finishedAt: number;
 }
 
-export type SyncPhase = 'connecting' | 'pulling' | 'merging' | 'pushing' | 'finalizing';
+export type SyncPhase =
+  | 'connecting'
+  | 'pulling'
+  | 'merging'
+  | 'pushing'
+  | 'finalizing'
+  | 'syncing-books';
 
 export interface SyncStep {
   phase: SyncPhase;

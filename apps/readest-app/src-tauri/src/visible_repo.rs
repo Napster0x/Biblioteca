@@ -149,7 +149,9 @@ impl LibsqlVisibleRepo {
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
 
-        let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare pull: {e}"))?;
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| format!("prepare pull: {e}"))?;
 
         let row_iter = stmt
             .query_map(param_refs.as_slice(), |row| {
@@ -176,24 +178,22 @@ impl LibsqlVisibleRepo {
         Ok(result)
     }
 
-    fn seed_replicas_from_visible(
-        &self,
-        conn: &Connection,
-        kind: &str,
-    ) -> Result<(), String> {
+    fn seed_replicas_from_visible(&self, conn: &Connection, kind: &str) -> Result<(), String> {
         // Helper: build a ReplicaRow with real HLCs. Phantom rows (null id) are
         // returned as None and filtered out after collection.
-        let replica_rows: Vec<ReplicaRow> = match kind {
-            "annotation" => {
-                let seed = || -> Result<Vec<ReplicaRow>, String> {
-                    let mut stmt = conn
+        let replica_rows: Vec<ReplicaRow> =
+            match kind {
+                "annotation" => {
+                    let seed =
+                        || -> Result<Vec<ReplicaRow>, String> {
+                            let mut stmt = conn
                         .prepare(
                             "SELECT id, book_hash, book_title, book_author, cfi, section_href, \
                              page, text, note, style, color, created_at, updated_at, deleted_at \
                              FROM annotations ORDER BY updated_at, created_at",
                         )
                         .map_err(|e| format!("prepare annotations: {e}"))?;
-                    let rows = stmt
+                            let rows = stmt
                         .query_map([], |row| {
                             let id: Option<String> = row.get(0)?;
                             let Some(id) = id else {
@@ -235,13 +235,14 @@ impl LibsqlVisibleRepo {
                             }))
                         })
                         .map_err(|e| format!("scan annotations: {e}"))?;
-                    Ok(rows.filter_map(|r| r.ok().flatten()).collect())
-                };
-                seed().unwrap_or_default()
-            }
-            "quote" => {
-                let seed = || -> Result<Vec<ReplicaRow>, String> {
-                    let mut stmt = conn
+                            Ok(rows.filter_map(|r| r.ok().flatten()).collect())
+                        };
+                    seed().unwrap_or_default()
+                }
+                "quote" => {
+                    let seed =
+                        || -> Result<Vec<ReplicaRow>, String> {
+                            let mut stmt = conn
                         .prepare(
                             "SELECT id, book_hash, book_title, book_author, cfi, section_href, \
                              page, text, context_before, context_after, content_hash, \
@@ -249,7 +250,7 @@ impl LibsqlVisibleRepo {
                              FROM quotes ORDER BY updated_at, created_at",
                         )
                         .map_err(|e| format!("prepare quotes: {e}"))?;
-                    let rows = stmt
+                            let rows = stmt
                         .query_map([], |row| {
                             let id: Option<String> = row.get(0)?;
                             let Some(id) = id else {
@@ -292,130 +293,138 @@ impl LibsqlVisibleRepo {
                             }))
                         })
                         .map_err(|e| format!("scan quotes: {e}"))?;
-                    Ok(rows.filter_map(|r| r.ok().flatten()).collect())
-                };
-                seed().unwrap_or_default()
-            }
-            "dictionary-entry" => {
-                let seed_entries = || -> Result<Vec<ReplicaRow>, String> {
-                    let mut stmt = conn
-                        .prepare(
-                            "SELECT id, term, display_term, language, definition, \
+                            Ok(rows.filter_map(|r| r.ok().flatten()).collect())
+                        };
+                    seed().unwrap_or_default()
+                }
+                "dictionary-entry" => {
+                    let seed_entries = || -> Result<Vec<ReplicaRow>, String> {
+                        let mut stmt = conn
+                            .prepare(
+                                "SELECT id, term, display_term, language, definition, \
                              image_path, curiosity, enrichment_status, \
                              created_at, updated_at, deleted_at \
                              FROM dictionary_entries ORDER BY updated_at, created_at",
-                        )
-                        .map_err(|e| format!("prepare entries: {e}"))?;
-                    let rows = stmt
-                        .query_map([], |row| {
-                            let id: Option<String> = row.get(0)?;
-                            let Some(id) = id else {
-                                return Ok(None);
-                            };
-                            let created_ts: Option<i64> = row.get(8)?;
-                            let updated_ts: Option<i64> = row.get(9)?;
-                            let deleted_ts: Option<i64> = row.get(10)?;
+                            )
+                            .map_err(|e| format!("prepare entries: {e}"))?;
+                        let rows = stmt
+                            .query_map([], |row| {
+                                let id: Option<String> = row.get(0)?;
+                                let Some(id) = id else {
+                                    return Ok(None);
+                                };
+                                let created_ts: Option<i64> = row.get(8)?;
+                                let updated_ts: Option<i64> = row.get(9)?;
+                                let deleted_ts: Option<i64> = row.get(10)?;
 
-                            let hlc_base = updated_ts.or(created_ts).unwrap_or(0);
-                            let hlc = make_hlc(hlc_base);
+                                let hlc_base = updated_ts.or(created_ts).unwrap_or(0);
+                                let hlc = make_hlc(hlc_base);
 
-                            let field_keys: [(usize, &str); 7] = [
-                                (1, "term"), (2, "displayTerm"),
-                                (3, "language"), (4, "definition"),
-                                (5, "imagePath"), (6, "curiosity"),
-                                (7, "enrichmentStatus"),
-                            ];
-                            let mut fields = serde_json::json!({});
-                            for (col, key) in field_keys.iter() {
-                                if let Some(v) = col_str(row, *col)? {
-                                    fields[key] = serde_json::json!(
-                                        {"v": v, "t": &hlc, "s": "visible"}
-                                    );
+                                let field_keys: [(usize, &str); 7] = [
+                                    (1, "term"),
+                                    (2, "displayTerm"),
+                                    (3, "language"),
+                                    (4, "definition"),
+                                    (5, "imagePath"),
+                                    (6, "curiosity"),
+                                    (7, "enrichmentStatus"),
+                                ];
+                                let mut fields = serde_json::json!({});
+                                for (col, key) in field_keys.iter() {
+                                    if let Some(v) = col_str(row, *col)? {
+                                        fields[key] = serde_json::json!(
+                                            {"v": v, "t": &hlc, "s": "visible"}
+                                        );
+                                    }
                                 }
-                            }
 
-                            Ok(Some(ReplicaRow {
-                                replica_id: {
-                                    let clean = extract_item_id(&id, "dictionary-entry");
-                                    format!("dictionary-entry:{clean}")
-                                },
-                                kind: "dictionary-entry".into(),
-                                user_id: "visible".into(),
-                                fields_jsonb: fields,
-                                manifest_jsonb: None,
-                                deleted_at_ts: deleted_ts.map(|ts| make_hlc(ts)),
-                                reincarnation: None,
-                                updated_at_ts: hlc,
-                                schema_version: 1,
-                            }))
-                        })
-                        .map_err(|e| format!("scan entries: {e}"))?;
-                    Ok(rows.filter_map(|r| r.ok().flatten()).collect())
-                };
-                seed_entries().unwrap_or_default()
-            }
-            "dictionary-occurrence" => {
-                let seed_occurrences = || -> Result<Vec<ReplicaRow>, String> {
-                    let mut stmt = conn
-                        .prepare(
-                            "SELECT id, entry_id, book_hash, book_title, book_author, \
+                                Ok(Some(ReplicaRow {
+                                    replica_id: {
+                                        let clean = extract_item_id(&id, "dictionary-entry");
+                                        format!("dictionary-entry:{clean}")
+                                    },
+                                    kind: "dictionary-entry".into(),
+                                    user_id: "visible".into(),
+                                    fields_jsonb: fields,
+                                    manifest_jsonb: None,
+                                    deleted_at_ts: deleted_ts.map(|ts| make_hlc(ts)),
+                                    reincarnation: None,
+                                    updated_at_ts: hlc,
+                                    schema_version: 1,
+                                }))
+                            })
+                            .map_err(|e| format!("scan entries: {e}"))?;
+                        Ok(rows.filter_map(|r| r.ok().flatten()).collect())
+                    };
+                    seed_entries().unwrap_or_default()
+                }
+                "dictionary-occurrence" => {
+                    let seed_occurrences = || -> Result<Vec<ReplicaRow>, String> {
+                        let mut stmt = conn
+                            .prepare(
+                                "SELECT id, entry_id, book_hash, book_title, book_author, \
                              cfi, section_href, page, selected_text, context_before, \
                              context_after, highlight_note_id, created_at, deleted_at \
                              FROM dictionary_occurrences ORDER BY created_at",
-                        )
-                        .map_err(|e| format!("prepare occurrences: {e}"))?;
-                    let rows = stmt
-                        .query_map([], |row| {
-                            let id: Option<String> = row.get(0)?;
-                            let Some(id) = id else {
-                                return Ok(None);
-                            };
-                            let created_ts: Option<i64> = row.get(12)?;
-                            let deleted_ts: Option<i64> = row.get(13)?;
+                            )
+                            .map_err(|e| format!("prepare occurrences: {e}"))?;
+                        let rows = stmt
+                            .query_map([], |row| {
+                                let id: Option<String> = row.get(0)?;
+                                let Some(id) = id else {
+                                    return Ok(None);
+                                };
+                                let created_ts: Option<i64> = row.get(12)?;
+                                let deleted_ts: Option<i64> = row.get(13)?;
 
-                            // occurrences have NO updated_at — use created_at
-                            let hlc_base = created_ts.unwrap_or(0);
-                            let hlc = make_hlc(hlc_base);
+                                // occurrences have NO updated_at — use created_at
+                                let hlc_base = created_ts.unwrap_or(0);
+                                let hlc = make_hlc(hlc_base);
 
-                            let field_keys: [(usize, &str); 11] = [
-                                (1, "entryId"), (2, "bookHash"),
-                                (3, "bookTitle"), (4, "bookAuthor"),
-                                (5, "cfi"), (6, "sectionHref"),
-                                (7, "page"), (8, "selectedText"),
-                                (9, "contextBefore"), (10, "contextAfter"),
-                                (11, "highlightNoteId"),
-                            ];
-                            let mut fields = serde_json::json!({});
-                            for (col, key) in field_keys.iter() {
-                                if let Some(v) = col_str(row, *col)? {
-                                    fields[key] = serde_json::json!(
-                                        {"v": v, "t": &hlc, "s": "visible"}
-                                    );
+                                let field_keys: [(usize, &str); 11] = [
+                                    (1, "entryId"),
+                                    (2, "bookHash"),
+                                    (3, "bookTitle"),
+                                    (4, "bookAuthor"),
+                                    (5, "cfi"),
+                                    (6, "sectionHref"),
+                                    (7, "page"),
+                                    (8, "selectedText"),
+                                    (9, "contextBefore"),
+                                    (10, "contextAfter"),
+                                    (11, "highlightNoteId"),
+                                ];
+                                let mut fields = serde_json::json!({});
+                                for (col, key) in field_keys.iter() {
+                                    if let Some(v) = col_str(row, *col)? {
+                                        fields[key] = serde_json::json!(
+                                            {"v": v, "t": &hlc, "s": "visible"}
+                                        );
+                                    }
                                 }
-                            }
 
-                            Ok(Some(ReplicaRow {
-                                replica_id: {
-                                    let clean = extract_item_id(&id, "dictionary-occurrence");
-                                    format!("dictionary-occurrence:{clean}")
-                                },
-                                kind: "dictionary-occurrence".into(),
-                                user_id: "visible".into(),
-                                fields_jsonb: fields,
-                                manifest_jsonb: None,
-                                deleted_at_ts: deleted_ts.map(|ts| make_hlc(ts)),
-                                reincarnation: None,
-                                updated_at_ts: hlc,
-                                schema_version: 1,
-                            }))
-                        })
-                        .map_err(|e| format!("scan occurrences: {e}"))?;
-                    Ok(rows.filter_map(|r| r.ok().flatten()).collect())
-                };
-                seed_occurrences().unwrap_or_default()
-            }
-            _ => return Ok(()), // unknown kind — no visible tables
-        };
+                                Ok(Some(ReplicaRow {
+                                    replica_id: {
+                                        let clean = extract_item_id(&id, "dictionary-occurrence");
+                                        format!("dictionary-occurrence:{clean}")
+                                    },
+                                    kind: "dictionary-occurrence".into(),
+                                    user_id: "visible".into(),
+                                    fields_jsonb: fields,
+                                    manifest_jsonb: None,
+                                    deleted_at_ts: deleted_ts.map(|ts| make_hlc(ts)),
+                                    reincarnation: None,
+                                    updated_at_ts: hlc,
+                                    schema_version: 1,
+                                }))
+                            })
+                            .map_err(|e| format!("scan occurrences: {e}"))?;
+                        Ok(rows.filter_map(|r| r.ok().flatten()).collect())
+                    };
+                    seed_occurrences().unwrap_or_default()
+                }
+                _ => return Ok(()), // unknown kind — no visible tables
+            };
 
         // HLC-wins upsert: only overwrite when incoming HLC > existing.
         for row in &replica_rows {
@@ -490,9 +499,7 @@ fn make_hlc(ts_ms: i64) -> String {
 fn col_str(row: &rusqlite::Row, idx: usize) -> rusqlite::Result<Option<String>> {
     match row.get_ref(idx)? {
         rusqlite::types::ValueRef::Null => Ok(None),
-        rusqlite::types::ValueRef::Text(s) => {
-            Ok(Some(String::from_utf8_lossy(s).into_owned()))
-        }
+        rusqlite::types::ValueRef::Text(s) => Ok(Some(String::from_utf8_lossy(s).into_owned())),
         rusqlite::types::ValueRef::Integer(i) => Ok(Some(i.to_string())),
         rusqlite::types::ValueRef::Real(f) => Ok(Some(f.to_string())),
         rusqlite::types::ValueRef::Blob(_) => Ok(None),
@@ -500,11 +507,19 @@ fn col_str(row: &rusqlite::Row, idx: usize) -> rusqlite::Result<Option<String>> 
 }
 
 /// Try to parse an HLC string to Unix milliseconds (first 13 hex chars).
-/// Fallback: current system time.
+/// Fallback: T<millis> harness format (decimal parsing).
+/// Absolute fallback: current system time.
 fn hlc_to_ms(hlc: &str) -> i64 {
     if hlc.len() >= 13 {
         if let Ok(ms) = u64::from_str_radix(&hlc[..13], 16) {
             return ms as i64;
+        }
+    }
+    // Harness generates timestamps as T<millis> (e.g., T1783984749748).
+    // Parse decimal after stripping the T prefix.
+    if let Some(rest) = hlc.strip_prefix('T') {
+        if let Ok(ms) = rest.parse::<i64>() {
+            return ms;
         }
     }
     std::time::SystemTime::now()
@@ -587,10 +602,7 @@ fn merge_fields_jsonb(
     if let Some(incoming_obj) = incoming.as_object() {
         for (key, incoming_env) in incoming_obj {
             let existing_env = merged.get(key);
-            let incoming_t = incoming_env
-                .get("t")
-                .and_then(|t| t.as_str())
-                .unwrap_or("");
+            let incoming_t = incoming_env.get("t").and_then(|t| t.as_str()).unwrap_or("");
             let should_overwrite = match existing_env {
                 None => true,
                 Some(env) => {
@@ -610,7 +622,7 @@ fn merge_fields_jsonb(
 ///
 /// For dictionary-entry: matches by normalized(term) + language.
 /// For quote:            matches by book_hash + content_hash.
-/// For annotation:       matches by book_hash + cfi.
+/// For annotation:       matches by book_hash + cfi + text.
 /// For dictionary-occurrence: always returns None (distinct events).
 ///
 /// Returns Some(canonical_replica_id) if a matching row already exists.
@@ -677,12 +689,13 @@ fn resolve_semantic_id(
         "annotation" => {
             let book_hash = field_str(fields, "bookHash");
             let cfi = field_str(fields, "cfi");
+            let text = field_str(fields, "text");
             if let (Some(bh), Some(c)) = (book_hash, cfi) {
                 tx.query_row(
                     "SELECT id FROM annotations \
-                     WHERE book_hash = ?1 AND cfi = ?2 \
+                     WHERE book_hash = ?1 AND cfi = ?2 AND text = ?4 \
                      AND deleted_at IS NULL AND id != ?3",
-                    rusqlite::params![bh, c, item_id],
+                    rusqlite::params![bh, c, item_id, text],
                     |r| r.get::<_, String>(0),
                 )
                 .map(|id| Some(format!("annotation:{id}")))
@@ -729,18 +742,65 @@ fn sync_to_app_table(
             .map_err(|e| format!("ensure annotations table: {e}"))?;
 
             if let Some(del_ms) = deleted_ms {
+                // When the row already exists, overwrite data fields from the
+                // tombstone's fields_jsonb (authoritative post-delete snapshot).
+                // When the row is new, insert a placeholder with the tombstone's
+                // field values rather than empty defaults.
                 let affected = tx
                     .execute(
-                        "UPDATE annotations SET deleted_at = ?1 WHERE id = ?2",
-                        rusqlite::params![del_ms, &item_id],
+                        "UPDATE annotations SET \
+                           deleted_at = ?1, \
+                           book_hash = COALESCE(?3, book_hash), \
+                           book_title = COALESCE(?4, book_title), \
+                           book_author = COALESCE(?5, book_author), \
+                           cfi = COALESCE(?6, cfi), \
+                           section_href = COALESCE(?7, section_href), \
+                           page = COALESCE(?8, page), \
+                           text = COALESCE(?9, text), \
+                           note = COALESCE(?10, note), \
+                           style = COALESCE(?11, style), \
+                           color = COALESCE(?12, color), \
+                           updated_at = ?13 \
+                         WHERE id = ?2",
+                        rusqlite::params![
+                            del_ms,
+                            &item_id,
+                            &field_str(fields, "bookHash"),
+                            &field_str(fields, "bookTitle"),
+                            &field_str(fields, "bookAuthor"),
+                            &field_str(fields, "cfi"),
+                            &field_str(fields, "sectionHref"),
+                            &field_str(fields, "page").and_then(|s| s.parse::<i64>().ok()),
+                            &field_str(fields, "text"),
+                            &field_str(fields, "note").unwrap_or_default(),
+                            &field_str(fields, "style").unwrap_or_else(|| "highlight".into()),
+                            &field_str(fields, "color").unwrap_or_else(|| "yellow".into()),
+                            &now_ms,
+                        ],
                     )
                     .map_err(|e| format!("tombstone annotation: {e}"))?;
                 if affected == 0 {
                     tx.execute(
                         "INSERT INTO annotations \
-                         (id, text, note, style, color, created_at, updated_at, deleted_at) \
-                         VALUES (?1, '', '', 'highlight', 'yellow', ?2, ?3, ?4)",
-                        rusqlite::params![&item_id, &now_ms, &now_ms, &del_ms],
+                         (id, book_hash, book_title, book_author, cfi, section_href, page, \
+                          text, note, style, color, created_at, updated_at, deleted_at) \
+                         VALUES (?1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?2, ?13, ?14)",
+                        rusqlite::params![
+                            &item_id,
+                            &now_ms,
+                            &field_str(fields, "bookHash"),
+                            &field_str(fields, "bookTitle"),
+                            &field_str(fields, "bookAuthor"),
+                            &field_str(fields, "cfi"),
+                            &field_str(fields, "sectionHref"),
+                            &field_str(fields, "page").and_then(|s| s.parse::<i64>().ok()),
+                            &field_str(fields, "text"),
+                            &field_str(fields, "note").unwrap_or_default(),
+                            &field_str(fields, "style").unwrap_or_else(|| "highlight".into()),
+                            &field_str(fields, "color").unwrap_or_else(|| "yellow".into()),
+                            &now_ms,
+                            &del_ms,
+                        ],
                     )
                     .map_err(|e| format!("tombstone annotation insert: {e}"))?;
                 }
@@ -795,17 +855,64 @@ fn sync_to_app_table(
             .map_err(|e| format!("ensure quotes table: {e}"))?;
 
             if let Some(del_ms) = deleted_ms {
+                // When the row already exists, overwrite data fields from the
+                // tombstone's fields_jsonb (authoritative post-delete snapshot).
                 let affected = tx
                     .execute(
-                        "UPDATE quotes SET deleted_at = ?1 WHERE id = ?2",
-                        rusqlite::params![del_ms, &item_id],
+                        "UPDATE quotes SET \
+                           deleted_at = ?1, \
+                           book_hash = COALESCE(?3, book_hash), \
+                           book_title = COALESCE(?4, book_title), \
+                           book_author = COALESCE(?5, book_author), \
+                           cfi = COALESCE(?6, cfi), \
+                           section_href = COALESCE(?7, section_href), \
+                           page = COALESCE(?8, page), \
+                           text = COALESCE(?9, text), \
+                           context_before = COALESCE(?10, context_before), \
+                           context_after = COALESCE(?11, context_after), \
+                           content_hash = COALESCE(?12, content_hash), \
+                           updated_at = ?13 \
+                         WHERE id = ?2",
+                        rusqlite::params![
+                            del_ms,
+                            &item_id,
+                            &field_str(fields, "bookHash"),
+                            &field_str(fields, "bookTitle"),
+                            &field_str(fields, "bookAuthor"),
+                            &field_str(fields, "cfi"),
+                            &field_str(fields, "sectionHref"),
+                            &field_str(fields, "page").and_then(|s| s.parse::<i64>().ok()),
+                            &field_str(fields, "text"),
+                            &field_str(fields, "contextBefore"),
+                            &field_str(fields, "contextAfter"),
+                            &field_str(fields, "contentHash"),
+                            &now_ms,
+                        ],
                     )
                     .map_err(|e| format!("tombstone quote: {e}"))?;
                 if affected == 0 {
                     tx.execute(
-                        "INSERT INTO quotes (id, text, content_hash, created_at, updated_at, deleted_at) \
-                         VALUES (?1, '', '', ?2, ?3, ?4)",
-                        rusqlite::params![&item_id, &now_ms, &now_ms, &del_ms],
+                        "INSERT INTO quotes \
+                         (id, book_hash, book_title, book_author, cfi, section_href, page, \
+                          text, context_before, context_after, content_hash, \
+                          created_at, updated_at, deleted_at) \
+                         VALUES (?1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?2, ?13, ?14)",
+                        rusqlite::params![
+                            &item_id,
+                            &now_ms,
+                            &field_str(fields, "bookHash"),
+                            &field_str(fields, "bookTitle"),
+                            &field_str(fields, "bookAuthor"),
+                            &field_str(fields, "cfi"),
+                            &field_str(fields, "sectionHref"),
+                            &field_str(fields, "page").and_then(|s| s.parse::<i64>().ok()),
+                            &field_str(fields, "text"),
+                            &field_str(fields, "contextBefore"),
+                            &field_str(fields, "contextAfter"),
+                            &field_str(fields, "contentHash"),
+                            &now_ms,
+                            &del_ms,
+                        ],
                     )
                     .map_err(|e| format!("tombstone quote insert: {e}"))?;
                 }
@@ -999,20 +1106,56 @@ fn sync_to_app_table(
                 .map_err(|e| format!("ensure dictionary_entries: {e}"))?;
 
                 if let Some(del_ms) = deleted_ms {
-                    // Tombstone: mark deleted_at. If the row doesn't exist yet,
-                    // insert a minimal placeholder so the tombstone is visible.
+                    // When the row already exists, overwrite data fields from the
+                    // tombstone's fields_jsonb (authoritative post-delete snapshot).
+                    // When the row is new, insert with the tombstone's field values
+                    // rather than empty defaults.
                     let affected = tx
                         .execute(
-                            "UPDATE dictionary_entries SET deleted_at = ?1 WHERE id = ?2",
-                            rusqlite::params![del_ms, &item_id],
+                            "UPDATE dictionary_entries SET \
+                               deleted_at = ?1, \
+                               term = COALESCE(?3, term), \
+                               display_term = COALESCE(?4, display_term), \
+                               language = COALESCE(?5, language), \
+                               definition = COALESCE(?6, definition), \
+                               enrichment_status = COALESCE(?7, enrichment_status), \
+                               image_path = COALESCE(?8, image_path), \
+                               curiosity = COALESCE(?9, curiosity), \
+                               updated_at = ?10 \
+                             WHERE id = ?2",
+                            rusqlite::params![
+                                del_ms,
+                                &item_id,
+                                &field_str(fields, "term"),
+                                &field_str(fields, "displayTerm"),
+                                &field_str(fields, "language"),
+                                &field_str(fields, "definition"),
+                                &field_str(fields, "enrichmentStatus").unwrap_or_else(|| "pending".into()),
+                                &field_str(fields, "imagePath"),
+                                &field_str(fields, "curiosity"),
+                                &now_ms,
+                            ],
                         )
                         .map_err(|e| format!("tombstone dictionary_entry: {e}"))?;
                     if affected == 0 {
                         tx.execute(
                             "INSERT INTO dictionary_entries \
-                             (id, term, display_term, enrichment_status, created_at, updated_at, deleted_at) \
-                             VALUES (?1, '', '', 'none', ?2, ?3, ?4)",
-                            rusqlite::params![&item_id, &now_ms, &now_ms, &del_ms],
+                             (id, term, display_term, language, definition, enrichment_status, \
+                              image_path, curiosity, created_at, updated_at, deleted_at) \
+                             VALUES (?1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?2, ?10, ?11)",
+                            rusqlite::params![
+                                &item_id,
+                                &now_ms,
+                                &field_str(fields, "term"),
+                                &field_str(fields, "displayTerm"),
+                                &field_str(fields, "language"),
+                                &field_str(fields, "definition"),
+                                &field_str(fields, "enrichmentStatus").unwrap_or_else(|| "pending".into()),
+                                &field_str(fields, "imagePath"),
+                                &field_str(fields, "curiosity"),
+                                &now_ms,
+                                &del_ms,
+                            ],
                         )
                         .map_err(|e| format!("tombstone dictionary_entry insert: {e}"))?;
                     }
@@ -1092,11 +1235,13 @@ impl VisibleRepository for LibsqlVisibleRepo {
             // Cycle 3: resolve semantic identity — if an existing row matches
             // by content (not replica_id), remap to the canonical id before
             // HLC gate, merge, and app-table sync.
+            let original_replica_id = row.replica_id.clone();
             if let Some(canonical_id) =
                 resolve_semantic_id(&tx, kind, &row).map_err(|e| format!("semantic id: {e}"))?
             {
                 row.replica_id = canonical_id;
             }
+            let is_semantic_remap = row.replica_id != original_replica_id;
 
             // Check if replica already exists with higher/equal HLC
             let existing_hlc_and_deleted: Option<(String, Option<String>)> = tx
@@ -1113,15 +1258,14 @@ impl VisibleRepository for LibsqlVisibleRepo {
                 // accept the live row as long as its HLC is strictly higher than
                 // the tombstone's deleted_at HLC OR the incoming row has field-level
                 // timestamps that are newer than the delete.
-                    let is_existing_tombstone = existing_deleted.is_some();
+                let is_existing_tombstone = existing_deleted.is_some();
                 let is_incoming_live = row.deleted_at_ts.is_none();
 
                 if is_existing_tombstone && is_incoming_live {
                     // Tombstone resurrection: accept a live row when its HLC is
                     // strictly higher than the tombstone's deleted_at_ts, OR when
                     // any incoming field HLC is newer than the delete HLC.
-                    let tombstone_hlc: &str =
-                        existing_deleted.as_deref().unwrap_or(existing_hlc);
+                    let tombstone_hlc: &str = existing_deleted.as_deref().unwrap_or(existing_hlc);
                     let fields_have_newer = row.fields_jsonb.as_object().map_or(false, |obj| {
                         obj.values().any(|v| {
                             v.as_object()
@@ -1138,8 +1282,15 @@ impl VisibleRepository for LibsqlVisibleRepo {
                     }
                     // Otherwise: tombstone resurrection — proceed with upsert
                 } else if !hlc_gt(&row.updated_at_ts, existing_hlc) {
-                    // Standard CRDT: HLC not strictly higher → skip
-                    continue;
+                    // Standard CRDT: HLC not strictly higher → skip.
+                    // EXCEPTION: semantic remap with equal HLC — let the
+                    // merge proceed so merge_fields_jsonb can do per-field
+                    // HLC comparison. Skip only when incoming is strictly
+                    // lower than existing.
+                    if !is_semantic_remap || hlc_gt(existing_hlc, &row.updated_at_ts) {
+                        continue;
+                    }
+                    // Semantic remap with equal HLC: fall through to merge.
                 }
             }
 
@@ -1157,12 +1308,33 @@ impl VisibleRepository for LibsqlVisibleRepo {
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or(serde_json::json!({}));
-            let merged_fields = merge_fields_jsonb(&existing_fields, &row.fields_jsonb);
+
+            // Compute the authoritative fields for BOTH _replicas storage
+            // AND app-table sync. Same logic prevents divergence.
+            //
+            // When the incoming row is a tombstone, the tombstone's fields
+            // represent the authoritative post-delete snapshot — use them
+            // directly and overlay existing fields only for keys the
+            // tombstone does NOT carry. For live rows, use per-field-HLC
+            // merge so concurrent edits converge correctly.
+            let merged_fields = if row.deleted_at_ts.is_some() {
+                let mut base = row.fields_jsonb.clone();
+                if let Some(existing_obj) = existing_fields.as_object() {
+                    for (key, value) in existing_obj {
+                        if !base.as_object().map_or(true, |o| o.contains_key(key)) {
+                            base[key] = value.clone();
+                        }
+                    }
+                }
+                base
+            } else {
+                merge_fields_jsonb(&existing_fields, &row.fields_jsonb)
+            };
 
             let fields_str = merged_fields.to_string();
             let manifest_str = row.manifest_jsonb.as_ref().map(|m| m.to_string());
 
-            // Upsert into _replicas with MERGED fields_jsonb
+            // Upsert into _replicas with merged fields_jsonb
             tx.execute(
                 "INSERT OR REPLACE INTO _replicas \
                  (replica_id, kind, user_id, fields_jsonb, manifest_jsonb, \
@@ -1182,16 +1354,16 @@ impl VisibleRepository for LibsqlVisibleRepo {
             )
             .map_err(|e| format!("upsert _replicas: {e}"))?;
 
-            // Build a merged row for app-table sync so the sync function
-            // sees the fully-merged fields (not just the incoming subset).
-            let merged_row = ReplicaRow {
-                fields_jsonb: merged_fields.clone(),
+            // Build the row for app-table sync using the same merged_fields
+            // (already tombstone-aware — no separate computation needed).
+            let app_row = ReplicaRow {
+                fields_jsonb: merged_fields,
                 ..row.clone()
             };
 
             // Sync to application table (best-effort: skip rows that fail
             // constraints, e.g. occurrence referencing a missing entry).
-            if let Err(e) = sync_to_app_table(&tx, kind, &merged_row) {
+            if let Err(e) = sync_to_app_table(&tx, kind, &app_row) {
                 eprintln!("sync_to_app_table({kind} {}): {e}", row.replica_id);
                 continue;
             }
@@ -1940,7 +2112,14 @@ mod tests {
             conn.execute(
                 "INSERT INTO annotations (id, book_hash, text, note, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params!["ann-1", "hashABC", "hello world", "my note", created_ts, updated_ts],
+                rusqlite::params![
+                    "ann-1",
+                    "hashABC",
+                    "hello world",
+                    "my note",
+                    created_ts,
+                    updated_ts
+                ],
             )
             .unwrap();
         }
@@ -1969,9 +2148,11 @@ mod tests {
             assert_eq!(kind, "annotation");
             assert_eq!(hlc, expected_hlc);
 
-            let fields: serde_json::Value =
-                serde_json::from_str(&fields_raw).unwrap();
-            let text = fields.get("text").and_then(|e| e.get("v")).and_then(|v| v.as_str());
+            let fields: serde_json::Value = serde_json::from_str(&fields_raw).unwrap();
+            let text = fields
+                .get("text")
+                .and_then(|e| e.get("v"))
+                .and_then(|v| v.as_str());
             assert_eq!(text, Some("hello world"));
         }
     }
@@ -2070,7 +2251,8 @@ mod tests {
         {
             let conns = repo.conn_for_kind("dictionary-occurrence").unwrap();
             let conn = conns.get("dictionary-occurrence").unwrap();
-            repo.seed_replicas_from_visible(conn, "dictionary-occurrence").unwrap();
+            repo.seed_replicas_from_visible(conn, "dictionary-occurrence")
+                .unwrap();
         }
 
         // Verify HLC derives from created_at
@@ -2236,9 +2418,19 @@ mod tests {
                  section_href, page, text, note, style, color, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 rusqlite::params![
-                    "annot-rt", "hashABC", "My Book", "John Doe",
-                    "/4/2/1", "/chapter1.html", 42i64, "highlighted text",
-                    "My note", "underline", "blue", 1000i64, updated_ts,
+                    "annot-rt",
+                    "hashABC",
+                    "My Book",
+                    "John Doe",
+                    "/4/2/1",
+                    "/chapter1.html",
+                    42i64,
+                    "highlighted text",
+                    "My note",
+                    "underline",
+                    "blue",
+                    1000i64,
+                    updated_ts,
                 ],
             )
             .unwrap();
@@ -2259,7 +2451,10 @@ mod tests {
         assert_eq!(super::field_str(f, "bookTitle").unwrap(), "My Book");
         assert_eq!(super::field_str(f, "bookAuthor").unwrap(), "John Doe");
         assert_eq!(super::field_str(f, "cfi").unwrap(), "/4/2/1");
-        assert_eq!(super::field_str(f, "sectionHref").unwrap(), "/chapter1.html");
+        assert_eq!(
+            super::field_str(f, "sectionHref").unwrap(),
+            "/chapter1.html"
+        );
         assert_eq!(super::field_str(f, "page").unwrap(), "42");
         assert_eq!(super::field_str(f, "text").unwrap(), "highlighted text");
         assert_eq!(super::field_str(f, "note").unwrap(), "My note");
@@ -2293,10 +2488,19 @@ mod tests {
                  created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 rusqlite::params![
-                    "qt-rt", "hashXYZ", "Great Book", "Jane Smith",
-                    "/6/4/1", "/ch2.html", 10i64, "To be or not to be",
-                    "before text", "after text", "content-hash-123",
-                    500i64, updated_ts,
+                    "qt-rt",
+                    "hashXYZ",
+                    "Great Book",
+                    "Jane Smith",
+                    "/6/4/1",
+                    "/ch2.html",
+                    10i64,
+                    "To be or not to be",
+                    "before text",
+                    "after text",
+                    "content-hash-123",
+                    500i64,
+                    updated_ts,
                 ],
             )
             .unwrap();
@@ -2320,7 +2524,10 @@ mod tests {
         assert_eq!(super::field_str(f, "text").unwrap(), "To be or not to be");
         assert_eq!(super::field_str(f, "contextBefore").unwrap(), "before text");
         assert_eq!(super::field_str(f, "contextAfter").unwrap(), "after text");
-        assert_eq!(super::field_str(f, "contentHash").unwrap(), "content-hash-123");
+        assert_eq!(
+            super::field_str(f, "contentHash").unwrap(),
+            "content-hash-123"
+        );
     }
 
     /// CRT-4: Full roundtrip for dictionary-entry — all fields map correctly.
@@ -2349,9 +2556,16 @@ mod tests {
                   enrichment_status, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
-                    "dict-rt", "hello", "Hello", "en", "A greeting",
-                    "/img/hello.png", "From Old English", "enriched",
-                    500i64, updated_ts,
+                    "dict-rt",
+                    "hello",
+                    "Hello",
+                    "en",
+                    "A greeting",
+                    "/img/hello.png",
+                    "From Old English",
+                    "enriched",
+                    500i64,
+                    updated_ts,
                 ],
             )
             .unwrap();
@@ -2371,7 +2585,10 @@ mod tests {
         assert_eq!(super::field_str(f, "language").unwrap(), "en");
         assert_eq!(super::field_str(f, "definition").unwrap(), "A greeting");
         assert_eq!(super::field_str(f, "imagePath").unwrap(), "/img/hello.png");
-        assert_eq!(super::field_str(f, "curiosity").unwrap(), "From Old English");
+        assert_eq!(
+            super::field_str(f, "curiosity").unwrap(),
+            "From Old English"
+        );
         assert_eq!(super::field_str(f, "enrichmentStatus").unwrap(), "enriched");
     }
 
@@ -2454,15 +2671,27 @@ mod tests {
             let conns = repo.conn_for_kind("annotation").unwrap();
             let conn = conns.get("annotation").unwrap();
             let text: String = conn
-                .query_row("SELECT text FROM annotations WHERE id = ?1", ["fc-1"], |r| r.get(0))
+                .query_row(
+                    "SELECT text FROM annotations WHERE id = ?1",
+                    ["fc-1"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(text, "hello");
             let note: String = conn
-                .query_row("SELECT note FROM annotations WHERE id = ?1", ["fc-1"], |r| r.get(0))
+                .query_row(
+                    "SELECT note FROM annotations WHERE id = ?1",
+                    ["fc-1"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(note, "world");
             let color: String = conn
-                .query_row("SELECT color FROM annotations WHERE id = ?1", ["fc-1"], |r| r.get(0))
+                .query_row(
+                    "SELECT color FROM annotations WHERE id = ?1",
+                    ["fc-1"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(color, "red");
         }
@@ -2528,7 +2757,10 @@ mod tests {
             );
             let text_env = fields.get("text").unwrap();
             let text_t = text_env.get("t").and_then(|t| t.as_str()).unwrap();
-            assert_eq!(text_t, "T500", "HLC of surviving field must be T500 (original)");
+            assert_eq!(
+                text_t, "T500",
+                "HLC of surviving field must be T500 (original)"
+            );
         }
 
         // Verify app table also kept the high-priority text
@@ -2536,7 +2768,11 @@ mod tests {
             let conns = repo.conn_for_kind("annotation").unwrap();
             let conn = conns.get("annotation").unwrap();
             let text: String = conn
-                .query_row("SELECT text FROM annotations WHERE id = ?1", ["fc-2"], |r| r.get(0))
+                .query_row(
+                    "SELECT text FROM annotations WHERE id = ?1",
+                    ["fc-2"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(text, "high-priority");
         }
@@ -2607,15 +2843,27 @@ mod tests {
             let conns = repo.conn_for_kind("annotation").unwrap();
             let conn = conns.get("annotation").unwrap();
             let text: String = conn
-                .query_row("SELECT text FROM annotations WHERE id = ?1", ["fc-3"], |r| r.get(0))
+                .query_row(
+                    "SELECT text FROM annotations WHERE id = ?1",
+                    ["fc-3"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(text, "survive me");
             let note: String = conn
-                .query_row("SELECT note FROM annotations WHERE id = ?1", ["fc-3"], |r| r.get(0))
+                .query_row(
+                    "SELECT note FROM annotations WHERE id = ?1",
+                    ["fc-3"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(note, "keep me");
             let color: String = conn
-                .query_row("SELECT color FROM annotations WHERE id = ?1", ["fc-3"], |r| r.get(0))
+                .query_row(
+                    "SELECT color FROM annotations WHERE id = ?1",
+                    ["fc-3"],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(color, "blue");
         }
@@ -2708,10 +2956,22 @@ mod tests {
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .unwrap();
-            assert_eq!(text_val, "original", "text must survive tombstone resurrection");
-            assert_eq!(note_val, "original note", "note must survive tombstone resurrection");
-            assert_eq!(color_val, "green", "new color must be merged on resurrection");
-            assert!(deleted_val.is_none(), "deleted_at must be cleared on resurrection");
+            assert_eq!(
+                text_val, "original",
+                "text must survive tombstone resurrection"
+            );
+            assert_eq!(
+                note_val, "original note",
+                "note must survive tombstone resurrection"
+            );
+            assert_eq!(
+                color_val, "green",
+                "new color must be merged on resurrection"
+            );
+            assert!(
+                deleted_val.is_none(),
+                "deleted_at must be cleared on resurrection"
+            );
         }
     }
 
@@ -2744,9 +3004,19 @@ mod tests {
                   created_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 rusqlite::params![
-                    "occ-rt", "dict-99", "hashOCC", "Dict Book", "Author X",
-                    "/1/2/3", "/ch3.html", 7i64, "selected", "before", "after",
-                    "hl-note-1", created_ts,
+                    "occ-rt",
+                    "dict-99",
+                    "hashOCC",
+                    "Dict Book",
+                    "Author X",
+                    "/1/2/3",
+                    "/ch3.html",
+                    7i64,
+                    "selected",
+                    "before",
+                    "after",
+                    "hl-note-1",
+                    created_ts,
                 ],
             )
             .unwrap();
@@ -2782,30 +3052,15 @@ mod tests {
     #[test]
     fn normalize_dictionary_term_nfc_lowercase_soft_hyphen() {
         // Same case → lowercased
-        assert_eq!(
-            super::normalize_dictionary_term("Zozobrar"),
-            "zozobrar"
-        );
+        assert_eq!(super::normalize_dictionary_term("Zozobrar"), "zozobrar");
         // Accented → NFC decomposed + lowercased
-        assert_eq!(
-            super::normalize_dictionary_term("Café"),
-            "café"
-        );
+        assert_eq!(super::normalize_dictionary_term("Café"), "café");
         // Soft hyphen (U+00AD) removed
-        assert_eq!(
-            super::normalize_dictionary_term("hell\u{00AD}o"),
-            "hello"
-        );
+        assert_eq!(super::normalize_dictionary_term("hell\u{00AD}o"), "hello");
         // Multi-word string — only NFC + lowercase + soft-hyphen, no multi-word logic
-        assert_eq!(
-            super::normalize_dictionary_term("Río Grande"),
-            "río grande"
-        );
+        assert_eq!(super::normalize_dictionary_term("Río Grande"), "río grande");
         // Already lowercase stays lowercase
-        assert_eq!(
-            super::normalize_dictionary_term("zozobrar"),
-            "zozobrar"
-        );
+        assert_eq!(super::normalize_dictionary_term("zozobrar"), "zozobrar");
     }
 
     /// SID-1: Dictionary dedup — push 2 rows with same term+language,
@@ -2911,7 +3166,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1, "same book_hash+content_hash should merge into ONE quote");
+        assert_eq!(
+            count, 1,
+            "same book_hash+content_hash should merge into ONE quote"
+        );
     }
 
     /// SID-3: Annotation dedup — push 2 rows same book_hash+cfi,
@@ -2960,7 +3218,62 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1, "same book_hash+cfi should merge into ONE annotation");
+        assert_eq!(
+            count, 2,
+            "same book_hash+cfi but DIFFERENT text should keep TWO distinct annotations"
+        );
+    }
+
+    /// With the 3-field composite key (book_hash + cfi + text), annotations
+    /// that share book_hash, cfi, AND text are still deduped correctly.
+    #[test]
+    fn annotations_with_same_bookhash_cfi_and_text_still_dedup() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = LibsqlVisibleRepo::new(dir.path().to_path_buf());
+
+        let make_ann = |id: &str, book: &str, cfi: &str, text: &str, hlc: &str| -> ReplicaRow {
+            ReplicaRow {
+                user_id: "dev-a".into(),
+                kind: "annotation".into(),
+                replica_id: format!("annotation:{id}"),
+                fields_jsonb: serde_json::json!({
+                    "bookHash": {"v": book, "t": hlc, "s": "dev-a"},
+                    "cfi": {"v": cfi, "t": hlc, "s": "dev-a"},
+                    "text": {"v": text, "t": hlc, "s": "dev-a"},
+                    "note": {"v": "a note", "t": hlc, "s": "dev-a"},
+                    "style": {"v": "highlight", "t": hlc, "s": "dev-a"},
+                    "color": {"v": "yellow", "t": hlc, "s": "dev-a"}
+                }),
+                manifest_jsonb: None,
+                deleted_at_ts: None,
+                reincarnation: None,
+                updated_at_ts: hlc.into(),
+                schema_version: 1,
+            }
+        };
+
+        // Push first annotation
+        let row_a = make_ann("ann-C1", "B2", "/6/4", "Same text", "T100");
+        repo.push("annotation", &[row_a]).unwrap();
+
+        // Push second annotation — same book_hash + cfi + text (identical)
+        let row_b = make_ann("ann-D1", "B2", "/6/4", "Same text", "T200");
+        repo.push("annotation", &[row_b]).unwrap();
+
+        // Verify only ONE annotation survives (identical 3-field key = dedup)
+        let conns = repo.conn_for_kind("annotation").unwrap();
+        let conn = conns.get("annotation").unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM annotations WHERE deleted_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "same book_hash+cfi+text should merge into ONE annotation"
+        );
     }
 
     /// SID-1: Occurrence no-dedup — push 2 occurrences, assert both survive.
@@ -3010,8 +3323,16 @@ mod tests {
         };
 
         // Push two occurrences
-        repo.push("dictionary-occurrence", &[make_occ("occ-1", "dict-parent", "T200")]).unwrap();
-        repo.push("dictionary-occurrence", &[make_occ("occ-2", "dict-parent", "T300")]).unwrap();
+        repo.push(
+            "dictionary-occurrence",
+            &[make_occ("occ-1", "dict-parent", "T200")],
+        )
+        .unwrap();
+        repo.push(
+            "dictionary-occurrence",
+            &[make_occ("occ-2", "dict-parent", "T300")],
+        )
+        .unwrap();
 
         // Both must survive — occurrences are distinct events
         let conns = repo.conn_for_kind("dictionary-occurrence").unwrap();
@@ -3023,7 +3344,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 2, "occurrences must NOT be deduped — each is a distinct event");
+        assert_eq!(
+            count, 2,
+            "occurrences must NOT be deduped — each is a distinct event"
+        );
     }
 
     // ── compute_semantic_key ──────────────────────────────────────────
@@ -3204,7 +3528,10 @@ mod tests {
             schema_version: 1,
         };
         let result = filter_unchanged_replicas("dictionary-entry", &[row], db_str).unwrap();
-        assert!(result.is_empty(), "dict entry with same semantic_key+equal HLC should be excluded");
+        assert!(
+            result.is_empty(),
+            "dict entry with same semantic_key+equal HLC should be excluded"
+        );
     }
 
     #[test]
@@ -3263,7 +3590,11 @@ mod tests {
             schema_version: 1,
         };
         let result = filter_unchanged_replicas("dictionary-entry", &[row], db_str).unwrap();
-        assert_eq!(result.len(), 1, "row with higher HLC must pass even with semantic match");
+        assert_eq!(
+            result.len(),
+            1,
+            "row with higher HLC must pass even with semantic match"
+        );
     }
 
     #[test]
@@ -3371,7 +3702,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(semantic_key, None, "non-dict kinds must have NULL semantic_key");
+        assert_eq!(
+            semantic_key, None,
+            "non-dict kinds must have NULL semantic_key"
+        );
     }
 
     #[test]
@@ -3538,7 +3872,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(definition, "embarcación", "higher-HLC definition must survive dedup");
+        assert_eq!(
+            definition, "embarcación",
+            "higher-HLC definition must survive dedup"
+        );
 
         // Verify curiosity field survived (absent in row2 → preserved from row1)
         let curiosity: String = conn
@@ -3548,6 +3885,684 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(curiosity, "From Latin", "absent field must survive field-level merge during dedup");
+        assert_eq!(
+            curiosity, "From Latin",
+            "absent field must survive field-level merge during dedup"
+        );
+    }
+
+    /// PC-1: equal-HLC push with semantic remap + diverging field-level HLCs.
+    /// Two replicas with same semantic key, different replica_ids, EQUAL top-level
+    /// HLCs, but incoming row has a higher-HLC definition field value. Before the
+    /// fix the gate skips, so the incoming definition is lost. After the fix the
+    /// merge proceeds and the higher field-level HLC wins.
+    #[test]
+    fn equal_hlc_semantic_remap_field_level_merge_wins() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = LibsqlVisibleRepo::new(dir.path().to_path_buf());
+
+        // Both rows share the same top-level HLC but fields have different
+        // per-field timestamps — the incoming "definition" field has a higher
+        // per-field HLC than the existing one.
+        let top_hlc = "0000000000000-00000000-alpha";
+
+        // Row A: alpha device creates entry first with definition="greeting"
+        let row_alpha = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "dictionary-entry".into(),
+            replica_id: "dictionary-entry:alpha".into(),
+            fields_jsonb: serde_json::json!({
+                "term": {"v": "hello", "t": top_hlc, "s": "dev-a"},
+                "displayTerm": {"v": "Hello", "t": top_hlc, "s": "dev-a"},
+                "language": {"v": "en", "t": top_hlc, "s": "dev-a"},
+                "definition": {"v": "greeting", "t": top_hlc, "s": "dev-a"},
+                "enrichmentStatus": {"v": "pending", "t": top_hlc, "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: top_hlc.into(),
+            schema_version: 1,
+        };
+        repo.push("dictionary-entry", &[row_alpha]).unwrap();
+
+        // Row B: beta device concurrently creates same entry.
+        // Same top-level HLC, but definition field has higher per-field HLC.
+        let beta_field_hlc = "0000000000001-00000000-beta";
+
+        let row_beta = ReplicaRow {
+            user_id: "dev-b".into(),
+            kind: "dictionary-entry".into(),
+            replica_id: "dictionary-entry:beta".into(),
+            fields_jsonb: serde_json::json!({
+                "term": {"v": "hello", "t": top_hlc, "s": "dev-b"},
+                "displayTerm": {"v": "Hello", "t": top_hlc, "s": "dev-b"},
+                "language": {"v": "en", "t": top_hlc, "s": "dev-b"},
+                "definition": {"v": "salutation", "t": beta_field_hlc, "s": "dev-b"},
+                "enrichmentStatus": {"v": "pending", "t": top_hlc, "s": "dev-b"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: top_hlc.into(),
+            schema_version: 1,
+        };
+        repo.push("dictionary-entry", &[row_beta]).unwrap();
+
+        // Verify exactly 1 entry survives (semantic dedup merged, not duplicate)
+        let conns = repo.conn_for_kind("dictionary-entry").unwrap();
+        let conn = conns.get("dictionary-entry").unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dictionary_entries WHERE deleted_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "semantic remap with equal top-level HLC must merge into single entry"
+        );
+
+        // After the fix, merge_fields_jsonb compares per-field HLCs.
+        // beta's definition field has higher HLC → "salutation" must win.
+        let definition: String = conn
+            .query_row(
+                "SELECT definition FROM dictionary_entries WHERE deleted_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            definition, "salutation",
+            "higher field-level HLC definition must survive semantic remap merge"
+        );
+    }
+
+    /// PC-1: semantic_remap with incoming top-level HLC > existing HLC.
+    /// Simulates 21a/21b: same semantic key, different replica_ids,
+    /// incoming has higher HLC on the definition field AND higher top-level HLC.
+    #[test]
+    fn semantic_remap_with_higher_top_hlc_field_wins() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = LibsqlVisibleRepo::new(dir.path().to_path_buf());
+
+        let hlc_low = "0000000000000-00000000-alpha";
+        let hlc_high = "0000000000001-00000000-beta";
+
+        // Push entry with definition="profound void" at lower HLC
+        let row_low = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "dictionary-entry".into(),
+            replica_id: "dictionary-entry:alpha".into(),
+            fields_jsonb: serde_json::json!({
+                "term": {"v": "abyss", "t": hlc_low, "s": "dev-a"},
+                "displayTerm": {"v": "Abyss", "t": hlc_low, "s": "dev-a"},
+                "language": {"v": "en", "t": hlc_low, "s": "dev-a"},
+                "definition": {"v": "profound void", "t": hlc_low, "s": "dev-a"},
+                "enrichmentStatus": {"v": "pending", "t": hlc_low, "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: hlc_low.into(),
+            schema_version: 1,
+        };
+        repo.push("dictionary-entry", &[row_low]).unwrap();
+
+        // Push same term (normalized), different replica_id, higher HLC on definition
+        let row_high = ReplicaRow {
+            user_id: "dev-b".into(),
+            kind: "dictionary-entry".into(),
+            replica_id: "dictionary-entry:beta".into(),
+            fields_jsonb: serde_json::json!({
+                "term": {"v": "abyss", "t": hlc_high, "s": "dev-b"},
+                "displayTerm": {"v": "ABYSS", "t": hlc_high, "s": "dev-b"},
+                "language": {"v": "en", "t": hlc_high, "s": "dev-b"},
+                "definition": {"v": "very deep", "t": hlc_high, "s": "dev-b"},
+                "enrichmentStatus": {"v": "pending", "t": hlc_high, "s": "dev-b"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: hlc_high.into(),
+            schema_version: 1,
+        };
+        repo.push("dictionary-entry", &[row_high]).unwrap();
+
+        // Verify only ONE entry exists
+        let conns = repo.conn_for_kind("dictionary-entry").unwrap();
+        let conn = conns.get("dictionary-entry").unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dictionary_entries WHERE deleted_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "semantic dedup with higher top-level HLC must merge into single entry"
+        );
+
+        // Verify definition was overwritten by higher-HLC field
+        let definition: String = conn
+            .query_row(
+                "SELECT definition FROM dictionary_entries WHERE deleted_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            definition, "very deep",
+            "higher-HLC definition (very deep) must win over lower (profound void)"
+        );
+
+        // Verify displayTerm was also overwritten by higher-HLC field
+        let display_term: String = conn
+            .query_row(
+                "SELECT display_term FROM dictionary_entries WHERE deleted_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(display_term, "ABYSS", "higher-HLC displayTerm must win");
+    }
+
+    // ── hlc_to_ms T<millis> harness timestamp format (RED) ────────────
+    // Phase 6 discovery: harness generates timestamps as T<millis> which
+    // hlc_to_ms cannot parse → falls back to SystemTime::now() → inflates
+    // HLC comparison, bypassing the is_semantic_remap gate.
+
+    /// T1783984749748 → 1783984749748 (preserves the original millis value).
+    #[test]
+    fn hlc_to_ms_parses_t_millis_long_format() {
+        let ms = hlc_to_ms("T1783984749748");
+        assert_eq!(ms, 1783984749748, "T prefix + decimal millis must be parsed, NOT fallback to now()");
+    }
+
+    /// T0 → 0 (boundary: zero millis).
+    #[test]
+    fn hlc_to_ms_parses_t_millis_zero() {
+        let ms = hlc_to_ms("T0");
+        assert_eq!(ms, 0);
+    }
+
+    /// T100 → 100 (short harness value).
+    #[test]
+    fn hlc_to_ms_parses_t_millis_short() {
+        let ms = hlc_to_ms("T100");
+        assert_eq!(ms, 100);
+    }
+
+    /// Standard hex HLC format still works: 00000000003e8-... → 1000 (0x3e8).
+    #[test]
+    fn hlc_to_ms_standard_hex_format_still_works() {
+        let ms = hlc_to_ms("00000000003e8-00000001-android");
+        assert_eq!(ms, 1000, "standard hex HLC format must not be broken by T prefix fix");
+    }
+
+    // ── Tombstone field overwrite ────────────────────────────────────────
+
+    /// TF-1: Tombstone overwrites edit values with original values in app table.
+    ///
+    /// Scenario (case 22c):
+    /// 1. Create annotation with note:"original"
+    /// 2. Edit annotation — note becomes "updated"
+    /// 3. Delete — tombstone arrives carrying note:"original" (pre-edit value)
+    /// 4. Expected: app table shows deleted_at IS NOT NULL AND note = "original"
+    /// 5. Bug: before fix, only deleted_at was set, note stayed "updated"
+    #[test]
+    fn tombstone_overwrites_edit_fields_with_original_values() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = LibsqlVisibleRepo::new(dir.path().to_path_buf());
+
+        // Step 1: create annotation with note:"original", text:"hello"
+        let row_create = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "annotation".into(),
+            replica_id: "annotation:tf-1".into(),
+            fields_jsonb: serde_json::json!({
+                "bookHash": {"v": "hash-tf1", "t": "T100", "s": "dev-a"},
+                "cfi": {"v": "/6/4", "t": "T100", "s": "dev-a"},
+                "text": {"v": "hello", "t": "T100", "s": "dev-a"},
+                "note": {"v": "original", "t": "T100", "s": "dev-a"},
+                "style": {"v": "highlight", "t": "T100", "s": "dev-a"},
+                "color": {"v": "yellow", "t": "T100", "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: "T100".into(),
+            schema_version: 1,
+        };
+        repo.push("annotation", &[row_create]).unwrap();
+
+        // Verify creation: note is "original"
+        {
+            let conns = repo.conn_for_kind("annotation").unwrap();
+            let conn = conns.get("annotation").unwrap();
+            let note: String = conn
+                .query_row(
+                    "SELECT note FROM annotations WHERE id = ?1",
+                    ["tf-1"],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(note, "original", "create must set note to original");
+        }
+
+        // Step 2: edit annotation — note becomes "updated" at higher HLC T200
+        let row_edit = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "annotation".into(),
+            replica_id: "annotation:tf-1".into(),
+            fields_jsonb: serde_json::json!({
+                "note": {"v": "updated", "t": "T200", "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: "T200".into(),
+            schema_version: 1,
+        };
+        repo.push("annotation", &[row_edit]).unwrap();
+
+        // Verify edit: note is "updated"
+        {
+            let conns = repo.conn_for_kind("annotation").unwrap();
+            let conn = conns.get("annotation").unwrap();
+            let note: String = conn
+                .query_row(
+                    "SELECT note FROM annotations WHERE id = ?1",
+                    ["tf-1"],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(note, "updated", "edit must set note to updated");
+        }
+
+        // Step 3: push tombstone — carries original field values (pre-edit)
+        let row_tombstone = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "annotation".into(),
+            replica_id: "annotation:tf-1".into(),
+            fields_jsonb: serde_json::json!({
+                "bookHash": {"v": "hash-tf1", "t": "T100", "s": "dev-a"},
+                "cfi": {"v": "/6/4", "t": "T100", "s": "dev-a"},
+                "text": {"v": "hello", "t": "T100", "s": "dev-a"},
+                "note": {"v": "original", "t": "T100", "s": "dev-a"},
+                "style": {"v": "highlight", "t": "T100", "s": "dev-a"},
+                "color": {"v": "yellow", "t": "T100", "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: Some("T300".into()),
+            reincarnation: None,
+            updated_at_ts: "T300".into(),
+            schema_version: 1,
+        };
+        repo.push("annotation", &[row_tombstone]).unwrap();
+
+        // Step 4: verify tombstone applied correctly
+        // - deleted_at must be set (tombstoned)
+        // - note must be "original" (tombstone overwrites edit value)
+        // - text must be "hello" (tombstone preserves original value)
+        {
+            let conns = repo.conn_for_kind("annotation").unwrap();
+            let conn = conns.get("annotation").unwrap();
+            let (note, text, deleted_at): (String, String, Option<i64>) = conn
+                .query_row(
+                    "SELECT note, text, deleted_at FROM annotations WHERE id = ?1",
+                    ["tf-1"],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert!(
+                deleted_at.is_some(),
+                "tombstone must set deleted_at"
+            );
+            assert_eq!(
+                note, "original",
+                "tombstone must overwrite note with original value, not leave the edit value 'updated'"
+            );
+            assert_eq!(
+                text, "hello",
+                "tombstone must preserve text from original create"
+            );
+        }
+    }
+
+    /// TF-2: Tombstone fields overwrite even newer local edits.
+    ///
+    /// When a tombstone arrives, its fields represent the authoritative
+    /// post-delete snapshot from the source device. These fields overwrite
+    /// any local edit values — the delete (highest row-level HLC) reverts
+    /// the row to its state at the time of deletion.
+    #[test]
+    fn tombstone_fields_overwrite_local_edits() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = LibsqlVisibleRepo::new(dir.path().to_path_buf());
+
+        // Step 1: create annotation with note:"original" at T100
+        let row_create = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "annotation".into(),
+            replica_id: "annotation:tf-2".into(),
+            fields_jsonb: serde_json::json!({
+                "bookHash": {"v": "hash-tf2", "t": "T100", "s": "dev-a"},
+                "cfi": {"v": "/6/5", "t": "T100", "s": "dev-a"},
+                "text": {"v": "alpha", "t": "T100", "s": "dev-a"},
+                "note": {"v": "original", "t": "T100", "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: "T100".into(),
+            schema_version: 1,
+        };
+        repo.push("annotation", &[row_create]).unwrap();
+
+        // Step 2: local edit — note becomes "local-edit" at T500 (newer)
+        // But the remote also made an edit to "text" at T400 (newer than T100 but older than T500)
+        let row_local_edit = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "annotation".into(),
+            replica_id: "annotation:tf-2".into(),
+            fields_jsonb: serde_json::json!({
+                "note": {"v": "local-edit", "t": "T500", "s": "dev-a"},
+                "text": {"v": "local-text", "t": "T400", "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: "T500".into(),
+            schema_version: 1,
+        };
+        repo.push("annotation", &[row_local_edit]).unwrap();
+
+        // Step 3: remote tombstone arrives — carries old field values
+        // note:"original" at T100 (older than T500) → should NOT overwrite
+        // text:"alpha" at T100 (older than T400) → should NOT overwrite
+        let row_tombstone = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "annotation".into(),
+            replica_id: "annotation:tf-2".into(),
+            fields_jsonb: serde_json::json!({
+                "note": {"v": "original", "t": "T100", "s": "dev-a"},
+                "text": {"v": "alpha", "t": "T100", "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: Some("T600".into()),
+            reincarnation: None,
+            updated_at_ts: "T600".into(),
+            schema_version: 1,
+        };
+        repo.push("annotation", &[row_tombstone]).unwrap();
+
+        // Verify: deleted_at set, fields reflect tombstone's snapshot
+        // (tombstone overwrites edit values regardless of per-field HLC)
+        {
+            let conns = repo.conn_for_kind("annotation").unwrap();
+            let conn = conns.get("annotation").unwrap();
+            let (note, text, deleted_at): (String, String, Option<i64>) = conn
+                .query_row(
+                    "SELECT note, text, deleted_at FROM annotations WHERE id = ?1",
+                    ["tf-2"],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert!(deleted_at.is_some(), "tombstone must set deleted_at");
+            assert_eq!(
+                note, "original",
+                "tombstone must overwrite note with original value from delete snapshot"
+            );
+            assert_eq!(
+                text, "alpha",
+                "tombstone must overwrite text with original value from delete snapshot"
+            );
+        }
+
+        // Also verify _replicas fields_jsonb matches app table (no divergence).
+        {
+            let conns = repo.conn_for_kind("annotation").unwrap();
+            let conn = conns.get("annotation").unwrap();
+            let fields_raw: String = conn
+                .query_row(
+                    "SELECT fields_jsonb FROM _replicas WHERE replica_id = ?1",
+                    ["annotation:tf-2"],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let fields: serde_json::Value = serde_json::from_str(&fields_raw).unwrap();
+            assert_eq!(
+                super::field_str(&fields, "note").unwrap(),
+                "original",
+                "_replicas fields must match app table: note = original"
+            );
+            assert_eq!(
+                super::field_str(&fields, "text").unwrap(),
+                "alpha",
+                "_replicas fields must match app table: text = alpha"
+            );
+        }
+    }
+
+    /// TF-3: Quote tombstone also overwrites edit fields with original values.
+    #[test]
+    fn quote_tombstone_overwrites_edit_fields_with_original_values() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = LibsqlVisibleRepo::new(dir.path().to_path_buf());
+
+        // Step 1: create quote with text:"original quote"
+        let row_create = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "quote".into(),
+            replica_id: "quote:tf-3".into(),
+            fields_jsonb: serde_json::json!({
+                "bookHash": {"v": "hash-tf3", "t": "T100", "s": "dev-a"},
+                "contentHash": {"v": "ch-tf3", "t": "T100", "s": "dev-a"},
+                "text": {"v": "original quote", "t": "T100", "s": "dev-a"},
+                "cfi": {"v": "/7/1", "t": "T100", "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: "T100".into(),
+            schema_version: 1,
+        };
+        repo.push("quote", &[row_create]).unwrap();
+
+        // Step 2: edit quote — text becomes "edited quote"
+        let row_edit = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "quote".into(),
+            replica_id: "quote:tf-3".into(),
+            fields_jsonb: serde_json::json!({
+                "text": {"v": "edited quote", "t": "T200", "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: "T200".into(),
+            schema_version: 1,
+        };
+        repo.push("quote", &[row_edit]).unwrap();
+
+        // Step 3: push tombstone with original values
+        let row_tombstone = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "quote".into(),
+            replica_id: "quote:tf-3".into(),
+            fields_jsonb: serde_json::json!({
+                "bookHash": {"v": "hash-tf3", "t": "T100", "s": "dev-a"},
+                "contentHash": {"v": "ch-tf3", "t": "T100", "s": "dev-a"},
+                "text": {"v": "original quote", "t": "T100", "s": "dev-a"},
+                "cfi": {"v": "/7/1", "t": "T100", "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: Some("T300".into()),
+            reincarnation: None,
+            updated_at_ts: "T300".into(),
+            schema_version: 1,
+        };
+        repo.push("quote", &[row_tombstone]).unwrap();
+
+        // Verify tombstone applied: deleted_at set, text="original quote"
+        {
+            let conns = repo.conn_for_kind("quote").unwrap();
+            let conn = conns.get("quote").unwrap();
+            let (text, deleted_at): (String, Option<i64>) = conn
+                .query_row(
+                    "SELECT text, deleted_at FROM quotes WHERE id = ?1",
+                    ["tf-3"],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert!(deleted_at.is_some(), "quote tombstone must set deleted_at");
+            assert_eq!(
+                text, "original quote",
+                "quote tombstone must overwrite text with original value"
+            );
+        }
+    }
+
+    /// TF-SR: Semantic-remap tombstone — `_replicas` fields must match app table.
+    ///
+    /// Reproduces the case 22c divergence: when a tombstone arrives via a
+    /// different replica_id that semantic-remaps to a canonical id, the
+    /// per-field-HLC merge would previously pick the newer edit HLC over
+    /// the tombstone's original HLC for `_replicas`.fields_jsonb, while
+    /// the app table correctly used the authoritative tombstone snapshot.
+    ///
+    /// Steps:
+    /// 1. Create canonical annotation with note:"original" at T100
+    /// 2. Edit canonical → note:"updated" at T200 (newer HLC)
+    /// 3. Push tombstone via different replica_id (semantic remap) carrying
+    ///    original values at T100, deleted_at_ts = T300
+    /// 4. Assert: _replicas.fields_jsonb note = "original" AND
+    ///    annotations.note = "original" (both match, no divergence)
+    #[test]
+    fn semantic_remap_tombstone_replicas_matches_app_table() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = LibsqlVisibleRepo::new(dir.path().to_path_buf());
+
+        // Step 1: create canonical annotation (Android-side)
+        let row_create = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "annotation".into(),
+            replica_id: "annotation:canonical".into(),
+            fields_jsonb: serde_json::json!({
+                "bookHash": {"v": "hash-sr", "t": "T100", "s": "dev-a"},
+                "cfi": {"v": "/6/99", "t": "T100", "s": "dev-a"},
+                "text": {"v": "hello sr", "t": "T100", "s": "dev-a"},
+                "note": {"v": "original", "t": "T100", "s": "dev-a"},
+                "style": {"v": "highlight", "t": "T100", "s": "dev-a"},
+                "color": {"v": "yellow", "t": "T100", "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: "T100".into(),
+            schema_version: 1,
+        };
+        repo.push("annotation", &[row_create]).unwrap();
+
+        // Step 2: edit canonical — note becomes "updated" at T200 (newer)
+        let row_edit = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "annotation".into(),
+            replica_id: "annotation:canonical".into(),
+            fields_jsonb: serde_json::json!({
+                "note": {"v": "updated", "t": "T200", "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: None,
+            reincarnation: None,
+            updated_at_ts: "T200".into(),
+            schema_version: 1,
+        };
+        repo.push("annotation", &[row_edit]).unwrap();
+
+        // Step 3: push tombstone from a DIFFERENT replica_id (desktop-side).
+        // Same bookHash + cfi + text → resolve_semantic_id remaps
+        // annotation:desktop → annotation:canonical.
+        // The tombstone carries note:"original" at T100 (older than T200).
+        let row_tombstone = ReplicaRow {
+            user_id: "dev-a".into(),
+            kind: "annotation".into(),
+            replica_id: "annotation:desktop".into(),
+            fields_jsonb: serde_json::json!({
+                "bookHash": {"v": "hash-sr", "t": "T100", "s": "dev-a"},
+                "cfi": {"v": "/6/99", "t": "T100", "s": "dev-a"},
+                "text": {"v": "hello sr", "t": "T100", "s": "dev-a"},
+                "note": {"v": "original", "t": "T100", "s": "dev-a"},
+                "style": {"v": "highlight", "t": "T100", "s": "dev-a"},
+                "color": {"v": "yellow", "t": "T100", "s": "dev-a"}
+            }),
+            manifest_jsonb: None,
+            deleted_at_ts: Some("T300".into()),
+            reincarnation: None,
+            updated_at_ts: "T300".into(),
+            schema_version: 1,
+        };
+        repo.push("annotation", &[row_tombstone]).unwrap();
+
+        // Step 4a: Verify annotations app table — tombstone applied,
+        // note = "original" (not "updated")
+        {
+            let conns = repo.conn_for_kind("annotation").unwrap();
+            let conn = conns.get("annotation").unwrap();
+            let (note, text, deleted_at): (String, String, Option<i64>) = conn
+                .query_row(
+                    "SELECT note, text, deleted_at FROM annotations WHERE id = ?1",
+                    ["canonical"],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert!(
+                deleted_at.is_some(),
+                "tombstone must set deleted_at on canonical row"
+            );
+            assert_eq!(
+                note, "original",
+                "app table: tombstone must overwrite note with original"
+            );
+            assert_eq!(
+                text, "hello sr",
+                "app table: text must be preserved from create"
+            );
+        }
+
+        // Step 4b: Verify _replicas fields_jsonb matches app table.
+        // CRITICAL: before fix, _replicas would have note="updated"
+        // because per-field-HLC merge picked T200 "updated" > T100 "original".
+        {
+            let conns = repo.conn_for_kind("annotation").unwrap();
+            let conn = conns.get("annotation").unwrap();
+            let fields_raw: String = conn
+                .query_row(
+                    "SELECT fields_jsonb FROM _replicas WHERE replica_id = ?1",
+                    ["annotation:canonical"],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let fields: serde_json::Value =
+                serde_json::from_str(&fields_raw).unwrap();
+            assert_eq!(
+                super::field_str(&fields, "note").unwrap(),
+                "original",
+                "_replicas: tombstone must set note = original (NOT per-field-HLC merged 'updated')"
+            );
+            assert_eq!(
+                super::field_str(&fields, "text").unwrap(),
+                "hello sr",
+                "_replicas: text must be preserved from create"
+            );
+            assert_eq!(
+                super::field_str(&fields, "style").unwrap(),
+                "highlight",
+                "_replicas: style must be preserved from create"
+            );
+        }
     }
 }

@@ -1137,39 +1137,43 @@ según HLC/política:
 
 ---
 
-## 14.8. A borra highlight, B edita dato
+## 14.8. Borrado semántico de highlight y dato asociado
 
 ```txt
-A: delete H_D
-B: edit D(definición="nueva")
+A: delete H_D desde la cruz roja semántica del reader
 ->
 A/B:
-  H_D eliminado/detached
-  D conservado con definición nueva
+  H_D eliminado (soft-delete en BookNote)
+  D eliminado (soft-delete del dato semántico asociado)
 ```
 
-El dato no debe depender existencialmente del highlight.
+VERIFICADO EN CÓDIGO: en los flujos semánticos reales, highlight y dato
+asociado son bidireccionales para borrado:
+
+- borrar H_D desde la cruz roja borra la entrada/ocurrencia de Diccionario;
+- borrar H_C desde la cruz roja borra la Cita;
+- borrar H_N desde la cruz roja borra la Anotación;
+- borrar el dato desde su módulo también marca los BookNotes asociados como
+  borrados si el libro/config existe.
+
+Por tanto, el caso antiguo "borrar highlight y conservar dato" NO representa
+el comportamiento de usuario real y no debe formar parte de Fase 2.
 
 ---
 
-## 14.9. A borra dato, B edita highlight
+## 14.9. Borrado de dato y highlight asociado
 
 ```txt
 A: delete D
-B: edit H_D(color="azul")
 ->
-resultado esperado:
-  no debe quedar H_D apuntando a un D eliminado sin estado explícito.
+A/B:
+  D eliminado (soft-delete)
+  H_D asociado eliminado si el libro/config existe
 ```
 
-Opciones:
-
-```txt
-1. H_D queda unresolved.
-2. H_D queda detached.
-3. H_D se elimina visualmente.
-4. D se restaura si la política add/update-wins lo permite.
-```
+Los highlights (BookNote) no se editan. No existe caso real de usuario donde
+"B edita H_D" cambiando color/rango/tipo. Si se borra el dato semántico, el
+highlight asociado debe quedar soft-deleted cuando el libro existe.
 
 ---
 
@@ -1936,18 +1940,27 @@ A/B:
 
 ---
 
-## 23.4. Se elimina una aparición, pero no la entrada global
+## 23.4. Se elimina una aparición por borrado semántico
 
 ```txt
-A: delete H_D1
+A: delete H_D1 desde la cruz roja semántica
 B: D("zozobrar") + H_D2 + F_D2
 ->
 A/B:
-  D("zozobrar") sigue existiendo
-  H_D1 eliminado/detached
+  H_D1 eliminado
+  F_D1 eliminado
+  D("zozobrar") según política de Diccionario:
+    - si H_D2/F_D2 mantiene la palabra activa, D sigue existiendo;
+    - si era la última aparición y el usuario borró el dato semántico,
+      D queda soft-deleted.
   H_D2 conservado
   F_D2 conservada
 ```
+
+Este caso NO significa "borrar highlight y conservar siempre el dato". En el
+flujo real de usuario, el borrado semántico del highlight también borra el dato
+asociado; la entrada global solo puede seguir viva si existe otra aparición/dato
+activo que la justifique.
 
 ---
 
@@ -2387,7 +2400,7 @@ Si el sistema solo usa `bookId + tombstone permanente`, puede ocurrir el bug pel
 | T062 | Editar nota de anotación | O edita N(nota), sync | Solo note se actualiza. text (selectedText) inmutable. |
 | T063 | Editar dato con highlight fijo | O edita D(definición), sync | Highlight (BookNote) NO cambia. Es marcador visual inmutable. |
 | T064 | Editar dato y borrar libro | O edita D, M borra L, sync | L borrado; D editada permanece. H_D detached/unresolved. |
-| T065 | Editar dato y borrar highlight | O edita D, M borra H_D, sync | D conserva edición; H_D eliminado/detached. |
+| T065 | Editar dato vs borrado semántico de highlight | O edita D, M borra H_D desde cruz roja, sync | Conflicto edit/delete sobre el dato semántico: gana HLC/política; H_D no debe quedar activo si D queda borrado. |
 | T066 | Editar libro y borrar libro | O renombra L, M borra L, sync | Según política: remove-wins, HLC o conflicto. Registrar en Engram. |
 | T067 | (eliminado — las citas no se editan) | | |
 | T068 | Editar anotación y borrar libro | O edita N(nota), M borra L, sync | L borrado; N editada permanece. text (selectedText) conservado. |
@@ -2408,9 +2421,9 @@ Si el sistema solo usa `bookId + tombstone permanente`, puede ocurrir el bug pel
 | T078 | Borrar libro y borrar anotación | O borra L, M borra N, sync | L borrado; N borrada si delete explícito gana. |
 | T079 | Delete viejo no borra dato nuevo | M delete D gen1 HLC10, O create D gen2 HLC20, sync | D gen2 existe. |
 | T080 | Delete nuevo borra dato viejo | O update HLC10, M delete HLC20, sync | Dato eliminado. |
-| T081 | Borrar highlight no borra Diccionario | O borra H_D, sync | D(definición+imagen) permanecen. |
-| T082 | Borrar highlight de cita | O borra H_C, sync | C permanece o queda detached según política. |
-| T083 | Borrar highlight de anotación | O borra H_N, sync | N(nota) permanece o queda detached según política. |
+| T081 | Borrado semántico de highlight de Diccionario | O borra H_D desde cruz roja, sync | H_D y D/F_D quedan soft-deleted según flujo real. |
+| T082 | Borrado semántico de highlight de cita | O borra H_C desde cruz roja, sync | H_C y C quedan soft-deleted según flujo real. |
+| T083 | Borrado semántico de highlight de anotación | O borra H_N desde cruz roja, sync | H_N y N quedan soft-deleted según flujo real. |
 | T084 | (eliminado — annotations.text es inmutable, no se puede borrar explícitamente) | | |
 | T085 | (eliminado — quotes.text es la entidad misma, no hay "texto citado" por separado) | | |
 
@@ -2599,6 +2612,16 @@ Espejo del Bloque A, pero los datos se crean en Android y se sincronizan hacia d
 
 El usuario edita lo que recogió o borra un libro.
 
+Al igual que la Fase 1, la Fase 2 debe ejecutarse en dos direcciones para validar
+bidireccionalidad real:
+
+| Dirección | Creador / editor / borrador | Sync | Receptor |
+|-----------|------------------------------|------|----------|
+| **O→M** | Ordenador (desktop) | desktop → Android | Android |
+| **M→O** | Android (móvil) | Android → desktop | Desktop |
+
+### Bloque A — Dirección O→M (desktop → Android)
+
 | # | Grupo | Casos | Ref. |
 |---|-------|-------|------|
 | 9 | Editar campo en UN dispositivo | Cambiar título/autor/portada/grupo/metadatos del libro; definición/imagen de diccionario; nota de anotación | §13.1 |
@@ -2606,7 +2629,26 @@ El usuario edita lo que recogió o borra un libro.
 | 11 | Datos sin libro (detached) | D/F_D/IMG_D, C, N sin L → sobreviven | §10.1-10.5 |
 | 12 | Editar dato conservado sin libro | Editar definición/imagen de D detached; editar N detached. C no se edita (es textual). T_N no se edita (es el texto base). | §17.5, §18.3 |
 | 13 | Reimportar libro tras borrarlo | delete L → reimport → sync → L vuelve | T005-T006 |
-| 14 | Borrar highlight y conservar dato | delete H_D → D permanece | §14.8-14.9 |
+| 14 | Borrado semántico highlight↔dato | delete H_D/H_C/H_N desde cruz roja → también se borra D/C/N asociado | §14.8-14.9 |
+
+### Bloque B — Dirección M→O (Android → desktop)
+
+Espejo del Bloque A, pero las ediciones y borrados se realizan en Android y se
+sincronizan hacia desktop.
+
+| # | Grupo | Casos | Ref. |
+|---|-------|-------|------|
+| 9M | Editar campo en UN dispositivo | Android cambia título/autor/portada/grupo/metadatos del libro; definición/imagen de diccionario; nota de anotación → desktop converge | §13.1 (invertido) |
+| 10M | Borrar libro conserva datos | Android delete L → D/C/N sobreviven en ambos | §14.1-14.4 (invertido) |
+| 11M | Datos sin libro (detached) | D/F_D/IMG_D, C, N sin L en Android → sobreviven y convergen en desktop | §10.1-10.5 (invertido) |
+| 12M | Editar dato conservado sin libro | Android edita definición/imagen de D detached; edita N detached → desktop converge | §17.5, §18.3 (invertido) |
+| 13M | Reimportar libro tras borrarlo | Android delete L → reimport → sync → L vuelve en ambos | T005-T006 (invertido) |
+| 14M | Borrado semántico highlight↔dato | Android delete H_D/H_C/H_N desde cruz roja → también se borra D/C/N asociado en ambos | §14.8-14.9 (invertido) |
+
+> **Nota:** La Fase 2 completa queda compuesta por el bloque O→M y su espejo
+> M→O. Si el harness no puede ejecutar aún una acción realista en Android
+> —por ejemplo, borrar highlights `BookNote`— el caso debe reportarse como
+> `BLOCKED` o `WARN` con la limitación exacta del harness.
 
 ## 🥉 Capa 3 — Ocasional (conflictos ligeros)
 
@@ -2654,7 +2696,7 @@ Casos de sistema, borde, que casi ningún usuario encontrará.
 
 ```txt
 Fase 1 — Capa 1 (uso diario):      ~16 casos  (8 O→M + 8 M→O)
-Fase 2 — Capa 2 (frecuente):        ~15 casos
+Fase 2 — Capa 2 (frecuente):        ~30 ejecuciones  (~15 O→M + ~15 M→O)
 Fase 3 — Capa 3 (ocasional):        ~12 casos
 Fase 4 — Capa 4 (raro):             ~10 casos
 Fase 5 — Capa 5 (muy rebuscado):    ~40 casos

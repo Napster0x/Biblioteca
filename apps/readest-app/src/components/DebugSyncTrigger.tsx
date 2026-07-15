@@ -9,6 +9,7 @@ const USB_PEER: PeerInfo = {
   host: 'localhost',
   port: 7878,
   deviceName: 'Android',
+  version: '1.0.0',
 };
 
 const ALL_KINDS = ['annotation', 'quote', 'dictionary-entry', 'dictionary-occurrence'] as const;
@@ -37,7 +38,7 @@ type SyncResultEvidence = Awaited<ReturnType<typeof runSyncCycle>> & {
 function defaultDebugSyncEnv(): DebugSyncTriggerEnv {
   return {
     nodeEnv: process.env.NODE_ENV,
-    devHarness: process.env.NEXT_PUBLIC_BIBLIOTECA_DEV_SYNC_HARNESS,
+    devHarness: process.env['NEXT_PUBLIC_BIBLIOTECA_DEV_SYNC_HARNESS'],
   };
 }
 
