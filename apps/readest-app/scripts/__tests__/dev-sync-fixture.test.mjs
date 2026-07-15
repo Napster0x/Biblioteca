@@ -2,8 +2,19 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { dispatchFixture, parseFixtureArgs } from '../dev-sync-fixture.mjs';
+import {
+  dispatchFixture,
+  injectBookNoteMutation,
+  injectInvalidBookNoteRef,
+  mutateBookNoteInConfig,
+  invalidateBookNoteRefInConfig,
+  parseFixtureArgs,
+} from '../dev-sync-fixture.mjs';
+import { updateBook } from '../sync-dev-inject.mjs';
 
 function makeDeps(overrides = {}) {
   const calls = [];
@@ -264,6 +275,22 @@ describe('dispatchFixture', () => {
     ]);
   });
 
+  it('passes explicit HLC time to desktop book edits so 21c ordering is deterministic', async () => {
+    const deps = makeDeps();
+
+    await dispatchFixture(
+      parseFixtureArgs(['--target', 'desktop', '--edit', 'books:book-1:title=Desktop Title', '--hlc', '1719500000000']),
+      deps,
+    );
+
+    assert.deepEqual(deps.calls[0], [
+      'updateBook',
+      'book-1',
+      { title: 'Desktop Title' },
+      { dataRoot: '/tmp/readest-data', now: 1719500000000 },
+    ]);
+  });
+
   it('routes android-http book edits through the safe book-index HTTP updater', async () => {
     const deps = makeDeps();
 
@@ -500,5 +527,307 @@ describe('dispatchFixture', () => {
       () => dispatchFixture(parseFixtureArgs(['--target', 'desktop', '--dict', 'zozobrar', '--book', 'book-1', '--delete', 'annotations:ann-1']), makeDeps()),
       /Choose exactly one fixture operation/,
     );
+  });
+});
+
+describe('updateBook deterministic timestamps', () => {
+  function makeLibrary(library) {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'sync-fixture-book-edit-'));
+    const booksDir = join(dataRoot, 'Readest', 'Books');
+    mkdirSync(booksDir, { recursive: true });
+    const libraryPath = join(booksDir, 'library.json');
+    writeFileSync(libraryPath, JSON.stringify(library, null, 2), 'utf8');
+    return { dataRoot, libraryPath };
+  }
+
+  it('uses the explicit numeric fixture timestamp instead of wall-clock time', () => {
+    const { dataRoot, libraryPath } = makeLibrary([{ hash: 'book-21c', title: 'Original', updatedAt: '2026-01-01T00:00:00.000Z' }]);
+
+    const result = updateBook('book-21c', { title: 'Desktop Title' }, { dataRoot, now: 1719500000000 });
+
+    assert.equal(result.action, 'updated');
+    const [book] = JSON.parse(readFileSync(libraryPath, 'utf8'));
+    assert.equal(book.title, 'Desktop Title');
+    assert.equal(book.updatedAt, '2024-06-27T14:53:20.000Z');
+  });
+
+  it('preserves an explicit HLC string timestamp for full tuple ordering evidence', () => {
+    const hlc = '001905a2fcb00-00000002-desktop';
+    const { dataRoot, libraryPath } = makeLibrary([{ hash: 'book-21d', title: 'Original', updatedAt: '001905a2fcb00-00000001-android' }]);
+
+    updateBook('book-21d', { title: 'Tie Title' }, { dataRoot, now: hlc });
+
+    const [book] = JSON.parse(readFileSync(libraryPath, 'utf8'));
+    assert.equal(book.title, 'Tie Title');
+    assert.equal(book.updatedAt, hlc);
+  });
+});
+
+describe('mutateBookNoteInConfig', () => {
+  const baseConfig = {
+    status: 'pass',
+    booknoteCount: 2,
+    booknotes: [
+      { id: 'bn1', type: 'annotation', annotationId: 'ann-1', cfi: '/6/4' },
+      { id: 'bn2', type: 'dictionary', dictionaryEntryId: 'dict-1', cfi: '/6/2' },
+    ],
+  };
+
+  it('changes the type of a specific BookNote', () => {
+    const result = mutateBookNoteInConfig(baseConfig, 'bn1', 'dictionary');
+    assert.equal(result.booknotes[0].type, 'dictionary');
+    assert.equal(result.booknotes[0].annotationId, 'ann-1');
+    assert.equal(result.booknotes[1].type, 'dictionary');
+  });
+
+  it('preserves other BookNotes unchanged', () => {
+    const result = mutateBookNoteInConfig(baseConfig, 'bn1', 'quote');
+    assert.equal(result.booknotes[1].id, 'bn2');
+    assert.equal(result.booknotes[1].type, 'dictionary');
+  });
+
+  it('returns the same config when noteId not found', () => {
+    const result = mutateBookNoteInConfig(baseConfig, 'nonexistent', 'quote');
+    assert.deepEqual(result, baseConfig);
+  });
+
+  it('handles null or empty config gracefully', () => {
+    const nullResult = mutateBookNoteInConfig(null, 'bn1', 'quote');
+    assert.deepEqual(nullResult, { booknotes: [] });
+
+    const emptyResult = mutateBookNoteInConfig({ booknotes: [] }, 'bn1', 'quote');
+    assert.deepEqual(emptyResult, { booknotes: [] });
+  });
+});
+
+describe('invalidateBookNoteRefInConfig', () => {
+  const dictConfig = {
+    status: 'pass',
+    booknoteCount: 1,
+    booknotes: [{ id: 'bn1', type: 'dictionary', dictionaryEntryId: 'dict-1', cfi: '/6/4' }],
+  };
+
+  it('replaces dictionary pointer with quote pointer (H_D→C)', () => {
+    const result = invalidateBookNoteRefInConfig(dictConfig, 'bn1', 'quote', 'quote-entity-1');
+    assert.equal(result.booknotes[0].dictionaryEntryId, undefined);
+    assert.equal(result.booknotes[0].citeId, 'quote-entity-1');
+    assert.equal(result.booknotes[0].annotationId, undefined);
+  });
+
+  it('replaces dictionary pointer with annotation pointer (H_D→N)', () => {
+    const result = invalidateBookNoteRefInConfig(dictConfig, 'bn1', 'annotation', 'ann-entity-1');
+    assert.equal(result.booknotes[0].dictionaryEntryId, undefined);
+    assert.equal(result.booknotes[0].annotationId, 'ann-entity-1');
+  });
+
+  it('preserves other fields of the BookNote', () => {
+    const result = invalidateBookNoteRefInConfig(dictConfig, 'bn1', 'quote', 'quote-entity-1');
+    assert.equal(result.booknotes[0].id, 'bn1');
+    assert.equal(result.booknotes[0].cfi, '/6/4');
+    assert.equal(result.booknotes[0].type, 'dictionary');
+  });
+
+  it('returns config unchanged when noteId not found', () => {
+    const result = invalidateBookNoteRefInConfig(dictConfig, 'nonexistent', 'quote', 'id');
+    assert.deepEqual(result, dictConfig);
+  });
+
+  it('handles null config gracefully', () => {
+    const result = invalidateBookNoteRefInConfig(null, 'bn1', 'quote', 'id');
+    assert.deepEqual(result, { booknotes: [] });
+  });
+});
+
+describe('booknote fixture ops — parseFixtureArgs', () => {
+  it('parses --booknote-mutate format', () => {
+    const opts = parseFixtureArgs([
+      '--target', 'desktop',
+      '--booknote-mutate', 'book123:bn1:cite',
+      '--book', 'book123',
+    ]);
+    assert.equal(opts.booknoteMutate, 'book123:bn1:cite');
+    assert.equal(opts.bookHash, 'book123');
+  });
+
+  it('parses --booknote-invalid-ref format', () => {
+    const opts = parseFixtureArgs([
+      '--target', 'android-http',
+      '--booknote-invalid-ref', 'book123:bn1:quote:wrongCiteId',
+      '--book', 'book123',
+    ]);
+    assert.equal(opts.booknoteInvalidRef, 'book123:bn1:quote:wrongCiteId');
+    assert.equal(opts.bookHash, 'book123');
+    assert.equal(opts.target, 'android-http');
+  });
+});
+
+describe('injectBookNoteMutation — config seeding (Fix B2)', () => {
+  it('seeds config.json before mutation cycle when config is missing', async () => {
+    const calls = [];
+    // Mock fetch: first GET returns 404 (config missing),
+    // subsequent calls (PUTs) return ok
+    const mockFetch = async (url, init) => {
+      calls.push(['fetch', url, init]);
+      if (init?.method === 'PUT') {
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+      // GET returns 404 — config doesn't exist
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+
+    const result = await injectBookNoteMutation('android-http', 'book-h1', 'note-real-1', 'quote', {
+      fetch: mockFetch,
+    });
+
+    assert.equal(result.ok, true, 'should succeed by seeding config then mutating');
+    assert.equal(result.action, 'booknote-mutate-android');
+
+    // Find the seed PUT call (PUT with seed config containing noteId)
+    const seedPut = calls.find(
+      ([, url, init]) => init?.method === 'PUT' && init?.body && init.body.includes('note-real-1'),
+    );
+    assert.ok(seedPut, 'should PUT a seed config containing the target noteId');
+
+    // Verify the mutate PUT was called (second PUT)
+    const mutatePuts = calls.filter(([, , init]) => init?.method === 'PUT');
+    assert.ok(mutatePuts.length >= 2, 'should PUT at least twice: seed + mutate');
+  });
+
+  it('returns error if seed PUT fails', async () => {
+    const mockFetch = async (url, init) => {
+      if (init?.method === 'PUT') {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+
+    const result = await injectBookNoteMutation('android-http', 'book-h1', 'note-real-1', 'quote', {
+      fetch: mockFetch,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.action, 'booknote-mutate-seed');
+  });
+
+  it('fails explicitly when existing Android config does not contain the target noteId', async () => {
+    const staleConfig = {
+      booknotes: [{ id: 'stale-note', type: 'annotation', annotationId: 'stale-ann' }],
+      updatedAt: 123,
+    };
+    const putBodies = [];
+    const mockFetch = async (url, init) => {
+      if (init?.method === 'PUT') {
+        putBodies.push(JSON.parse(init.body));
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+      return { ok: true, status: 200, json: async () => staleConfig };
+    };
+
+    const result = await injectBookNoteMutation('android-http', 'book-h1', 'missing-note', 'quote', {
+      fetch: mockFetch,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.action, 'booknote-mutate-missing-note');
+    assert.match(result.error, /missing-note/);
+    assert.deepEqual(putBodies, [], 'must not PUT unchanged stale config as a successful mutation');
+  });
+
+  it('fails explicitly when an existing Android target note would not change', async () => {
+    const config = { booknotes: [{ id: 'note-real-1', type: 'quote', annotationId: 'ann-1' }] };
+    const mockFetch = async (url, init) => {
+      assert.notEqual(init?.method, 'PUT', 'no-op mutation must not be persisted');
+      return { ok: true, status: 200, json: async () => config };
+    };
+
+    const result = await injectBookNoteMutation('android-http', 'book-h1', 'note-real-1', 'quote', {
+      fetch: mockFetch,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.action, 'booknote-mutate-noop');
+  });
+});
+
+describe('injectInvalidBookNoteRef — config seeding (Fix B2)', () => {
+  it('seeds config.json before invalid-ref cycle when config is missing', async () => {
+    const calls = [];
+    const mockFetch = async (url, init) => {
+      calls.push(['fetch', url, init]);
+      if (init?.method === 'PUT') {
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+
+    const result = await injectInvalidBookNoteRef('android-http', 'book-h1', 'note-real-1', 'quote', 'wrong-entity-1', {
+      fetch: mockFetch,
+    });
+
+    assert.equal(result.ok, true, 'should succeed by seeding config then invalidating');
+    assert.equal(result.action, 'booknote-invalid-ref-android');
+
+    const seedPut = calls.find(
+      ([, url, init]) => init?.method === 'PUT' && init?.body && init.body.includes('note-real-1'),
+    );
+    assert.ok(seedPut, 'should PUT a seed config containing the target noteId');
+
+    const invalidatePuts = calls.filter(([, , init]) => init?.method === 'PUT');
+    assert.ok(invalidatePuts.length >= 2, 'should PUT at least twice: seed + invalidate');
+  });
+
+  it('returns error if seed PUT fails for invalid-ref', async () => {
+    const mockFetch = async (url, init) => {
+      if (init?.method === 'PUT') {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+
+    const result = await injectInvalidBookNoteRef('android-http', 'book-h1', 'note-real-1', 'quote', 'wrong-entity-1', {
+      fetch: mockFetch,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.action, 'booknote-invalid-ref-seed');
+  });
+
+  it('fails explicitly when existing Android config does not contain the target noteId', async () => {
+    const staleConfig = {
+      booknotes: [{ id: 'stale-note', type: 'dictionary', dictionaryEntryId: 'stale-dict' }],
+      updatedAt: 123,
+    };
+    const putBodies = [];
+    const mockFetch = async (url, init) => {
+      if (init?.method === 'PUT') {
+        putBodies.push(JSON.parse(init.body));
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+      return { ok: true, status: 200, json: async () => staleConfig };
+    };
+
+    const result = await injectInvalidBookNoteRef('android-http', 'book-h1', 'missing-note', 'quote', 'wrong-entity-1', {
+      fetch: mockFetch,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.action, 'booknote-invalid-ref-missing-note');
+    assert.match(result.error, /missing-note/);
+    assert.deepEqual(putBodies, [], 'must not PUT unchanged stale config as a successful invalid-ref mutation');
+  });
+
+  it('fails explicitly when an existing Android invalid-ref target would not change', async () => {
+    const config = { booknotes: [{ id: 'note-real-1', type: 'dictionary', citeId: 'wrong-entity-1' }] };
+    const mockFetch = async (url, init) => {
+      assert.notEqual(init?.method, 'PUT', 'no-op invalid-ref mutation must not be persisted');
+      return { ok: true, status: 200, json: async () => config };
+    };
+
+    const result = await injectInvalidBookNoteRef('android-http', 'book-h1', 'note-real-1', 'quote', 'wrong-entity-1', {
+      fetch: mockFetch,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.action, 'booknote-invalid-ref-noop');
   });
 });

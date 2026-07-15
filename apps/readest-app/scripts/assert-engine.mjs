@@ -477,6 +477,260 @@ export function assertCase17({ desktop = {}, android = {} }) {
   };
 }
 
+/**
+ * Find a row in sqlite tables by matching a field value (entityId) across known columns.
+ * The sqliteSection is an object with kind keys (dictionary, annotations, quotes),
+ * each containing { available, tables: [{ name, rows }] }.
+ */
+function findSqliteRow(sqliteSection, entityType, entityId) {
+  if (!sqliteSection) return undefined;
+  const kind = KIND_FOR_ENTITY[entityType];
+  if (!kind) return undefined;
+  const db = sqliteSection[kind];
+  if (!db?.available) return undefined;
+  const tableName = TABLE_FOR_ENTITY[entityType];
+  if (!tableName) return undefined;
+  const table = (db.tables || []).find((t) => t.name === tableName);
+  if (!table?.rows?.length) return undefined;
+  const idFields = ID_FIELDS_FOR_ENTITY[entityType] || ['id'];
+  return table.rows.find((row) => idFields.some((field) => String(row?.[field] ?? '') === String(entityId)));
+}
+
+const KIND_FOR_ENTITY = {
+  'dictionary-entry': 'dictionary',
+  'annotation': 'annotations',
+  'dictionary-occurrence': 'dictionary',
+  'quote': 'quotes',
+};
+
+/**
+ * Find a row in android replica data by matching entity ID.
+ */
+function findReplicaRow(replicasSection, entityType, entityId) {
+  const replicaKind = REPLICA_KIND_FOR_ENTITY[entityType];
+  if (!replicaKind) return undefined;
+  const replica = replicasSection?.[replicaKind];
+  if (!replica?.reachable || !replica?.rows?.length) return undefined;
+  const idFields = ID_FIELDS_FOR_ENTITY[entityType] || ['id'];
+  return replica.rows.find((row) => idFields.some((field) => String(row?.[field] ?? '') === String(entityId)));
+}
+
+/**
+ * Find a book fact by hash in library facts.
+ */
+function findLibraryFact(state, entityId) {
+  const facts = state?.library?.facts;
+  if (!Array.isArray(facts)) return undefined;
+  return facts.find((fact) => fact?.hash === entityId || fact?.bookHash === entityId);
+}
+
+const TABLE_FOR_ENTITY = {
+  'dictionary-entry': 'dictionary_entries',
+  'annotation': 'annotations',
+  'dictionary-occurrence': 'dictionary_occurrences',
+  'quote': 'quotes',
+};
+
+const ID_FIELDS_FOR_ENTITY = {
+  'dictionary-entry': ['term', 'word', 'id'],
+  'annotation': ['id'],
+  'book': ['hash', 'bookHash'],
+  'dictionary-occurrence': ['id'],
+  'quote': ['id'],
+};
+
+const REPLICA_KIND_FOR_ENTITY = {
+  'dictionary-entry': 'dictionary-entry',
+  'annotation': 'annotation',
+  'dictionary-occurrence': 'dictionary-occurrence',
+  'quote': 'quote',
+};
+
+/**
+ * Assert a specific field on a specific entity has a specific value.
+ *
+ * @param {string} entityType - 'dictionary-entry' | 'annotation' | 'book'
+ * @param {string} entityId - Normalized term for dict, hash for book, id for annotation
+ * @param {string} field - Field name ('definition', 'note', 'title')
+ * @param {*} expectedValue - Expected field value
+ * @param {object} state - Device state snapshot (desktop or android)
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertFieldValue(entityType, entityId, field, expectedValue, state) {
+  const failures = [];
+
+  // Try book entity from library facts
+  if (entityType === 'book') {
+    const fact = findLibraryFact(state, entityId);
+    if (!fact) {
+      failures.push({ invariant: 'entity-not-found', entityType, entityId, field, expected: expectedValue });
+      return { verdict: 'FAIL', failures };
+    }
+    const actualValue = fact[field];
+    if (actualValue !== expectedValue) {
+      failures.push({ invariant: 'field-value-mismatch', entityType, entityId, field, expected: expectedValue, actual: actualValue });
+    }
+    return { verdict: failures.length === 0 ? 'PASS' : 'FAIL', failures };
+  }
+
+  // Try sqlite tables (desktop state)
+  let row = findSqliteRow(state?.sqlite, entityType, entityId);
+
+  // Fall back to replicas (android state) if not found in sqlite
+  if (!row && state?.replicas) {
+    row = findReplicaRow(state.replicas, entityType, entityId);
+  }
+
+  if (!row) {
+    const sourceAvail = state?.sqlite?.[entityType === 'dictionary-entry' ? 'dictionary' : entityType === 'annotation' ? 'annotations' : 'quotes']?.available;
+    if (sourceAvail === false) {
+      failures.push({ invariant: 'source-unavailable', entityType, entityId, field });
+    } else {
+      failures.push({ invariant: 'entity-not-found', entityType, entityId, field, expected: expectedValue });
+    }
+    return { verdict: 'FAIL', failures };
+  }
+
+  const actualValue = row[field];
+  if (actualValue !== expectedValue) {
+    failures.push({ invariant: 'field-value-mismatch', entityType, entityId, field, expected: expectedValue, actual: actualValue });
+  }
+
+  return { verdict: failures.length === 0 ? 'PASS' : 'FAIL', failures };
+}
+
+/**
+ * Determine if an entity is LIVE or TOMBSTONED by checking deleted_at/deletedAt.
+ *
+ * @param {string} entityType - 'dictionary-entry' | 'annotation' | 'book'
+ * @param {string} entityId - Entity identifier
+ * @param {object} state - Device state snapshot
+ * @returns {{state: 'live'|'tombstone'|'not-found', evidence: object}}
+ */
+export function assertEntityState(entityType, entityId, state) {
+  // Book entity from library facts
+  if (entityType === 'book') {
+    const fact = findLibraryFact(state, entityId);
+    if (!fact) return { state: 'not-found', evidence: {} };
+    const deletedAt = fact.deletedAt ?? fact.deleted_at;
+    return {
+      state: deletedAt != null ? 'tombstone' : 'live',
+      evidence: { deletedAt, updatedAt: fact.updatedAt },
+    };
+  }
+
+  // Sqlite entity
+  let row = findSqliteRow(state?.sqlite, entityType, entityId);
+  if (!row && state?.replicas) {
+    row = findReplicaRow(state.replicas, entityType, entityId);
+  }
+
+  if (!row) {
+    return { state: 'not-found', evidence: {} };
+  }
+
+  const deletedAt = row.deleted_at ?? row.deletedAt ?? row.deleted_at_ts;
+  return {
+    state: deletedAt != null ? 'tombstone' : 'live',
+    evidence: { deletedAt, updatedAt: row.updated_at ?? row.updatedAt },
+  };
+}
+
+/**
+ * Validate that a config.json BookNote entry has the correct type-entity reference pair.
+ *
+ * @param {string} _bookHash - Book hash (used for context, not required for lookups)
+ * @param {string} noteId - The BookNote.id in config.json
+ * @param {'dictionary'|'quote'|'annotation'} expectedType - Expected semantic type
+ * @param {string} expectedEntityId - Expected entity ID in the pointer field
+ * @param {object} config - Config.json state (from bookConfig)
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertBookNoteIntegrity(_bookHash, noteId, expectedType, expectedEntityId, config) {
+  const failures = [];
+
+  if (!config || !Array.isArray(config.booknotes) || config.booknotes.length === 0) {
+    failures.push({ invariant: 'booknote-not-found', noteId, expectedType, expectedEntityId, reason: 'config missing or empty booknotes' });
+    return { verdict: 'FAIL', failures };
+  }
+
+  const note = config.booknotes.find((n) => n.id === noteId);
+  if (!note) {
+    failures.push({ invariant: 'booknote-not-found', noteId, expectedType, expectedEntityId });
+    return { verdict: 'FAIL', failures };
+  }
+
+  // Check type first
+  if (note.type !== expectedType) {
+    failures.push({ invariant: 'booknote-type-mismatch', noteId, expected: expectedType, actual: note.type });
+    return { verdict: 'FAIL', failures };
+  }
+
+  // Check pointer field matches the type
+  let pointerField;
+  let actualEntityId;
+  if (expectedType === 'dictionary') {
+    pointerField = 'dictionaryEntryId';
+    actualEntityId = note.dictionaryEntryId;
+  } else if (expectedType === 'quote') {
+    pointerField = 'citeId';
+    actualEntityId = note.citeId;
+  } else if (expectedType === 'annotation') {
+    pointerField = 'annotationId';
+    actualEntityId = note.annotationId;
+  }
+
+  if (!pointerField) {
+    failures.push({ invariant: 'booknote-unknown-type', noteId, expectedType });
+    return { verdict: 'FAIL', failures };
+  }
+
+  // Check if the pointer field has the expected value
+  if (actualEntityId !== expectedEntityId) {
+    failures.push({
+      invariant: 'booknote-pointer-mismatch',
+      noteId,
+      expectedType,
+      field: pointerField,
+      expected: expectedEntityId,
+      actual: actualEntityId,
+    });
+  }
+
+  return { verdict: failures.length === 0 ? 'PASS' : 'FAIL', failures };
+}
+
+/**
+ * Assert the semantic type of a BookNote. Simpler than integrity check — only checks type field.
+ *
+ * @param {string} _bookHash - Book hash (used for context)
+ * @param {string} noteId - The BookNote.id in config.json
+ * @param {'dictionary'|'quote'|'annotation'} expectedType - Expected semantic type
+ * @param {object} config - Config.json state (from bookConfig)
+ * @returns {{verdict: 'PASS'|'FAIL', failures: Array<object>}}
+ */
+export function assertBookNoteType(_bookHash, noteId, expectedType, config) {
+  const failures = [];
+
+  if (!config || !Array.isArray(config.booknotes) || config.booknotes.length === 0) {
+    failures.push({ invariant: 'booknote-not-found', noteId, expectedType, reason: 'config missing or empty booknotes' });
+    return { verdict: 'FAIL', failures };
+  }
+
+  const note = config.booknotes.find((n) => n.id === noteId);
+  if (!note) {
+    failures.push({ invariant: 'booknote-not-found', noteId, expectedType });
+    return { verdict: 'FAIL', failures };
+  }
+
+  if (note.type !== expectedType) {
+    failures.push({ invariant: 'booknote-type-mismatch', noteId, expected: expectedType, actual: note.type });
+    return { verdict: 'FAIL', failures };
+  }
+
+  return { verdict: 'PASS', failures: [] };
+}
+
 export function compareSemanticState({ desktop = {}, android = {} }) {
   const failures = [];
   for (const config of ENTITY_CONFIG) {

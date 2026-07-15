@@ -495,6 +495,112 @@ describe('updateReplicaViaHttp', () => {
     mock.restoreAll();
   });
 
+  it('preserves dictionary identity fields when applying a partial Android HTTP edit', async () => {
+    const fetchMock = mockFetch(async (url, opts = {}) => {
+      if (!opts.method) {
+        assert.equal(url, `${TEST_SERVER}/replicas/dictionary-entry`);
+        return new Response(JSON.stringify([
+          {
+            replica_id: 'dictionary-entry:entry-identity',
+            fields_jsonb: {
+              term: { v: 'abyss', t: '001905a2fcb00-00000001-visible', s: 'visible' },
+              displayTerm: { v: 'Abyss', t: '001905a2fcb00-00000001-visible', s: 'visible' },
+              language: { v: 'en', t: '001905a2fcb00-00000001-visible', s: 'visible' },
+              definition: { v: 'deep void', t: '001905a2fcb00-00000001-visible', s: 'visible' },
+            },
+          },
+        ]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    const { updateReplicaViaHttp } = await import('../sync-dev-inject-http.mjs');
+
+    await updateReplicaViaHttp(
+      TEST_SERVER,
+      'dictionary-entry',
+      [{ id: 'entry-identity', definition: 'very deep chasm' }],
+      { fieldMap: MINIMAL_FIELDS, hlcTimestamp: 1719500000000 },
+    );
+
+    assert.equal(fetchMock.mock.calls.length, 2, 'partial update must read existing replica before PUT');
+    const body = JSON.parse(fetchMock.mock.calls[1].arguments[1].body);
+    assert.equal(body[0].fields_jsonb.term.v, 'abyss');
+    assert.equal(body[0].fields_jsonb.displayTerm.v, 'Abyss');
+    assert.equal(body[0].fields_jsonb.language.v, 'en');
+    assert.equal(body[0].fields_jsonb.definition.v, 'very deep chasm');
+    assert.equal(body[0].fields_jsonb.definition.t, EXPLICIT_HLC);
+  });
+
+  it('preserves annotation identity fields when applying a partial Android HTTP note edit', async () => {
+    const fetchMock = mockFetch(async (url, opts = {}) => {
+      if (!opts.method) {
+        assert.equal(url, `${TEST_SERVER}/replicas/annotation`);
+        return new Response(JSON.stringify([
+          {
+            replica_id: 'annotation:ann-identity',
+            fields_jsonb: {
+              bookHash: { v: 'book-hash-1', t: '001905a2fcb00-00000001-visible', s: 'visible' },
+              cfi: { v: '/6/2[sel]', t: '001905a2fcb00-00000001-visible', s: 'visible' },
+              text: { v: 'selected', t: '001905a2fcb00-00000001-visible', s: 'visible' },
+              note: { v: 'original analysis', t: '001905a2fcb00-00000001-visible', s: 'visible' },
+            },
+          },
+        ]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    const { updateReplicaViaHttp, TABLE_REPLICA_MAP } = await import('../sync-dev-inject-http.mjs');
+
+    await updateReplicaViaHttp(
+      TEST_SERVER,
+      'annotation',
+      [{ id: 'ann-identity', note: 'alternative interpretation' }],
+      { fieldMap: TABLE_REPLICA_MAP.annotations.fields, hlcTimestamp: 1719500000000 },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[1].arguments[1].body);
+    assert.equal(body[0].fields_jsonb.bookHash.v, 'book-hash-1');
+    assert.equal(body[0].fields_jsonb.cfi.v, '/6/2[sel]');
+    assert.equal(body[0].fields_jsonb.text.v, 'selected');
+    assert.equal(body[0].fields_jsonb.note.v, 'alternative interpretation');
+    assert.equal(body[0].fields_jsonb.note.t, EXPLICIT_HLC);
+  });
+
+  it('preserves quote identity fields when applying a partial Android HTTP context edit', async () => {
+    const fetchMock = mockFetch(async (url, opts = {}) => {
+      if (!opts.method) {
+        assert.equal(url, `${TEST_SERVER}/replicas/quote`);
+        return new Response(JSON.stringify([
+          {
+            replica_id: 'quote:quote-identity',
+            fields_jsonb: {
+              bookHash: { v: 'book-hash-1', t: '001905a2fcb00-00000001-visible', s: 'visible' },
+              cfi: { v: '/6/4[quote]', t: '001905a2fcb00-00000001-visible', s: 'visible' },
+              text: { v: 'quoted text', t: '001905a2fcb00-00000001-visible', s: 'visible' },
+              contextBefore: { v: 'before', t: '001905a2fcb00-00000001-visible', s: 'visible' },
+            },
+          },
+        ]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    const { updateReplicaViaHttp, TABLE_REPLICA_MAP } = await import('../sync-dev-inject-http.mjs');
+
+    await updateReplicaViaHttp(
+      TEST_SERVER,
+      'quote',
+      [{ id: 'quote-identity', context_before: 'new before' }],
+      { fieldMap: TABLE_REPLICA_MAP.quotes.fields, hlcTimestamp: 1719500000000 },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[1].arguments[1].body);
+    assert.equal(body[0].fields_jsonb.bookHash.v, 'book-hash-1');
+    assert.equal(body[0].fields_jsonb.cfi.v, '/6/4[quote]');
+    assert.equal(body[0].fields_jsonb.text.v, 'quoted text');
+    assert.equal(body[0].fields_jsonb.contextBefore.v, 'new before');
+    assert.equal(body[0].fields_jsonb.contextBefore.t, EXPLICIT_HLC);
+  });
+
   it('should send updated rows via PUT /replicas/:kind with JSON body', async () => {
     const fetchMock = mockFetch(async () => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -513,8 +619,8 @@ describe('updateReplicaViaHttp', () => {
     assert.equal(result.target, 'android-http');
     assert.equal(result.table, 'dictionary-entry');
 
-    assert.equal(fetchMock.mock.calls.length, 1);
-    const [url, opts] = fetchMock.mock.calls[0].arguments;
+    assert.equal(fetchMock.mock.calls.length, 2);
+    const [url, opts] = fetchMock.mock.calls[1].arguments;
     assert.equal(url, `${TEST_SERVER}/replicas/dictionary-entry`);
     assert.equal(opts.method, 'PUT');
     assert.equal(opts.headers['Content-Type'], 'application/json');
@@ -537,7 +643,8 @@ describe('updateReplicaViaHttp', () => {
       { fieldMap: MINIMAL_FIELDS, hlcTimestamp: 1719500000000 },
     );
 
-    const body = JSON.parse(fetchMock.mock.calls[0].arguments[1].body);
+    const putCall = fetchMock.mock.calls.find((call) => call.arguments[1]?.method === 'PUT');
+    const body = JSON.parse(putCall.arguments[1].body);
     assert.equal(body[0].updated_at_ts, EXPLICIT_HLC);
     assert.equal(body[0].fields_jsonb.term.t, EXPLICIT_HLC);
   });
@@ -553,7 +660,8 @@ describe('updateReplicaViaHttp', () => {
       { fieldMap: MINIMAL_FIELDS, hlcTimestamp: EXPLICIT_HLC },
     );
 
-    const body = JSON.parse(fetchMock.mock.calls[0].arguments[1].body);
+    const putCall = fetchMock.mock.calls.find((call) => call.arguments[1]?.method === 'PUT');
+    const body = JSON.parse(putCall.arguments[1].body);
     assert.equal(body[0].updated_at_ts, EXPLICIT_HLC);
     assert.equal(body[0].fields_jsonb.term.t, EXPLICIT_HLC);
   });

@@ -282,6 +282,7 @@ function sqliteFallbackFromReplicas(kind, capture, replicas) {
     source: 'http-replica-fallback',
     fallbackFor: 'android-sqlite3',
     originalError: capture.error,
+    unavailableEvidence: ['android.sqlite3'],
     tables: replicaKinds.map((replicaKind, index) => {
       const replica = fallbackReplicas[index];
       return {
@@ -290,9 +291,19 @@ function sqliteFallbackFromReplicas(kind, capture, replicas) {
         hlcMin: replica.hlcMin,
         hlcMax: replica.hlcMax,
         deletedCount: deletedCountFromReplica(replica),
+        rows: replica.rows,
       };
     }),
   };
+}
+
+function unavailableEvidenceFromSqlite(sqlite) {
+  const evidence = new Set();
+  for (const capture of Object.values(sqlite)) {
+    for (const item of capture?.unavailableEvidence ?? []) evidence.add(item);
+    if (!capture?.available && androidSqliteUnavailable(capture)) evidence.add('android.sqlite3');
+  }
+  return [...evidence].sort();
 }
 
 /**
@@ -318,7 +329,7 @@ async function queryReplicaKind(url, kind, fetchJson) {
     }
     tombstoneCount = rows.filter((r) => r.deleted_at_ts || r.deleted).length;
   }
-  return { kind, reachable: true, rowCount, hlcMin, hlcMax, tombstoneCount, httpStatus: result.status };
+  return { kind, reachable: true, rowCount, hlcMin, hlcMax, tombstoneCount, httpStatus: result.status, rows };
 }
 
 export async function captureDesktopState({ dataRoot, bookHash }) {
@@ -520,6 +531,7 @@ export async function captureAndroidState({ packageName, serverUrl, runAdb = def
 
   const sqliteStatuses = Object.values(sqlite).map((c) => (c.available ? 'pass' : 'warn'));
   const replicaStatuses = Object.values(replicas).map((r) => (r.reachable ? 'pass' : 'warn'));
+  const unavailableEvidence = unavailableEvidenceFromSqlite(sqlite);
 
   return {
     target: 'android',
@@ -545,6 +557,7 @@ export async function captureAndroidState({ packageName, serverUrl, runAdb = def
     ...(semanticDelete ? { semanticDeleteEvidence: semanticDelete } : {}),
     sqlite,
     replicas,
+    unavailableEvidence,
     errors,
   };
 }

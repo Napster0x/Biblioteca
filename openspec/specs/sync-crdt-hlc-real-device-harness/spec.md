@@ -764,6 +764,186 @@ Tests MUST fail before production code changes, proving each gap exists.
 
 ---
 
+### Requirement: A1 — HLC Counter Preserved Through Rust↔JS Serialization
+
+The `visible_repo.rs` serialization path MUST preserve the full HLC tuple `(physical, counter, nodeId)` of `ReplicaRow.updated_at_ts` through JSON. `to_js_datetime()` or any helper MUST NOT convert HLC to JavaScript Date (truncates counter to zero). The Rust HLC gate MUST compare `(physical, counter)` as a total order.
+
+**Implementation note (fix-phase4-merge-layer-ab):** The actual fix was on the JS side — `rowToReplica()` in `sync-execute.mjs` used `hlcMillis()` for `maxTimestamp` selection, which truncated the counter. Replaced with `hlcGt()` (full HLC comparator: ms→counter→deviceId). The Rust side was correct (no `to_js_datetime()` truncation exists).
+
+#### Scenario: ReplicaRow JSON round-trip preserves counter
+
+- GIVEN a `ReplicaRow` with `updated_at_ts = "2026-07-06T12:00:00.000Z#1000"` (counter=1000)
+- WHEN the row is serialized to JSON via `serde_json` and deserialized back to `ReplicaRow`
+- THEN the deserialized `updated_at_ts` MUST contain `#1000`
+- AND the counter MUST NOT be truncated to `#0`
+
+#### Scenario: HLC gate accepts counter-different concurrent edits
+
+- GIVEN `_replicas.updated_at_ts = "2026-07-06T12:00:00.000Z#1"` and incoming row same ms with `#2`
+- WHEN the Rust HLC gate compares `incoming > existing`
+- THEN the incoming row is ACCEPTED (counter#2 > counter#1)
+- AND the row MUST NOT be falsely skipped as equal-or-older
+
+**Files affected:**
+- `apps/readest-app/scripts/sync-execute.mjs` — `rowToReplica()` maxTimestamp comparator, `hlcGt()` function
+- `apps/readest-app/scripts/__tests__/sync-execute.test.mjs` — unit tests for A1
+
+### Requirement: A2 — Book Metadata Merge Uses HLC Ordering
+
+`mergeRemoteBookMetadata()` in `sync-execute.mjs` MUST compare `updatedAt` values using HLC-aware total ordering. When `updatedAt` is a Unix millisecond (integer), the system MUST additionally consider a deterministic secondary field (e.g., `book.hash`) as tiebreaker to prevent arrival-order wins.
+
+#### Scenario: Higher HLC title wins over later arrival
+
+- GIVEN Android sets `L.title = "Android Title"` at HLC=14 and Desktop sets `L.title = "Desktop Title"` at HLC=9
+- WHEN `mergeRemoteBookMetadata()` compares the two
+- THEN the resolved title is `"Android Title"` (HLC=14 > 9)
+- AND the book that arrived later MUST NOT win by arrival order
+
+#### Scenario: Equal timestamps use deterministic tiebreaker
+
+- GIVEN both devices set title at same `updatedAt` millisecond
+- WHEN `mergeRemoteBookMetadata()` compares equal timestamps
+- THEN the system uses a secondary field (e.g., `book.hash`) as tiebreaker
+- AND the winner is deterministic across repeated runs
+
+**Files affected:**
+- `apps/readest-app/scripts/sync-execute.mjs` — `mergeRemoteBookMetadata()` tiebreaker logic
+- `apps/readest-app/scripts/__tests__/sync-execute.test.mjs` — unit tests for A2
+
+### Requirement: Phase 4 Failure-domain Classification
+
+The harness MUST classify each non-pass by the failing claim, not by global Android `sqlite3` availability. Missing `sqlite3` MUST be recorded as unavailable evidence only.
+
+#### Scenario: Missing sqlite3 does not contaminate product failures
+- GIVEN Android HTTP/config evidence is available and `sqlite3` is unavailable
+- WHEN a Phase 4 assertion observes convergence divergence
+- THEN `failureDomain` MUST be `product` or `harness`, not `environment`
+- AND unavailable evidence lists `android.sqlite3`.
+
+#### Scenario: Environment only for blocking prerequisites
+- GIVEN app process, ADB, forward, or HTTP health blocks execution
+- WHEN no substitute evidence can prove the case outcome
+- THEN `failureDomain` MAY be `environment` with the blocking prerequisite named.
+
+### Requirement: Android Substitute Evidence Completeness
+
+When Android `sqlite3` is unavailable, the report MUST include sufficient HTTP/config substitute evidence for cases 22a, 22c, 24, 25, and 26, or cap the verdict at `WARN` with explicit gaps.
+
+#### Scenario: HTTP/config evidence substitutes for sqlite3
+- GIVEN Android rows cannot be read with `sqlite3`
+- WHEN HTTP replica, manifest, or `config.json` evidence proves the expected state
+- THEN the case MAY report `PASS`
+- AND the report cites each substitute path and the unavailable SQLite path.
+
+#### Scenario: Insufficient substitute evidence is visible
+- GIVEN required Android evidence is absent or incomplete
+- WHEN the case is evaluated
+- THEN the verdict MUST be `WARN` or `FAIL` per observed outcome
+- AND missing evidence MUST be listed per claim.
+
+### Requirement: Cases 21a–21d Deterministic Same-field Resolution
+
+Cases 21a–21d MUST converge deterministically by full HLC ordering, including nodeId tiebreaker, or report a visible conflict with evidence.
+
+#### Scenario: Newer HLC wins same-field edit
+- GIVEN both devices edit the same field before sync
+- WHEN one edit has a higher HLC tuple
+- THEN both devices MUST converge to that value
+- AND evidence includes before/after values and HLC tuples.
+
+#### Scenario: Equal HLC uses deterministic tiebreaker
+- GIVEN physical time and counter are equal but nodeIds differ
+- WHEN case 21d is repeated
+- THEN every run MUST choose the same winner
+- OR report `FAIL` with conflicting winners and nodeIds.
+
+### Requirement: REQ-PC-3 — Cases 22a and 22c Delete Convergence Verdict
+
+Cases 22a and 22c MUST report `PASS` when both devices agree the entity is in deleted (tombstoned) state, regardless of `replica_id` divergence. `replica_id` mismatches between independently-created entities SHALL NOT block a PASS verdict — they are expected under concurrent creation. The harness MUST verify delete-state convergence (tombstone presence, deleted timestamp) NOT replica-level identity match. HLC evidence proving delete > edit ordering SHALL independently produce PASS.
+(Previously: Cases 22a and 22c required PASS only with proven HLC winner ordering; replica_id divergence was flagged as WARN/FAIL.)
+
+#### Scenario: Delete wins on both devices, replica_ids differ — PASS
+
+- GIVEN Desktop has deleted entity `D(replica_id=A, deleted_at=HLC=15)` and Android has deleted same-semantic-key entity `D(replica_id=B, deleted_at=HLC=15)`
+- WHEN harness evaluates Case 22a or 22c
+- THEN verdict MUST be `PASS`
+- AND `replica_id` divergence is noted as expected, NOT as failure evidence
+
+#### Scenario: Delete wins but delete proofs absent — WARN
+
+- GIVEN both devices agree entity is tombstoned
+- WHEN `deleted_at` timestamps or HLC ordering cannot be confirmed
+- THEN verdict MUST be `WARN`, not `PASS`
+- AND evidence gaps list missing `_replicas` or tombstone timestamps
+
+#### Scenario: One device live, one tombstoned — FAIL
+
+- GIVEN Desktop has live entity and Android has tombstoned same entity
+- WHEN delete-wins assertion runs
+- THEN verdict MUST be `FAIL` (divergent state)
+- AND diagnosis cites HLC ordering conflict
+
+### Requirement: REQ-PC-4 — Cases 24 Same-CFI Coexistence Verdict
+
+Case 24 MUST report `PASS` when two distinct annotations (`different note` values, different `replica_id`s) coexist on both devices at the same CFI range. Multi-annotation coexistence is CORRECT CRDT behavior (concurrent creates, different semantic keys due to different `text` values), NOT an "expected-invalid" condition. The harness SHALL accept count >= 2 with distinct `note` values and matching `book_hash` + `cfi` as valid convergence. Verdict SHALL NOT be downgraded due to annotation count > 1 at the same range.
+(Previously: Case 24 was grouped under "Expected-invalid Evidence" with Cases 25/26; coexistence was not explicitly classified as valid CRDT PASS behavior.)
+
+#### Scenario: Two annotations coexist at same CFI, both devices — PASS
+
+- GIVEN Desktop has 2 annotations `(note="Idea A", note="Idea B")` at same `book_hash+cfi`, and Android also has both annotations with matching `replica_id`s
+- WHEN harness evaluates Case 24
+- THEN verdict MUST be `PASS`
+- AND evidence confirms both annotations present on both devices
+
+#### Scenario: Annotations count < 2 on either device — FAIL
+
+- GIVEN Desktop has 2 annotations at CFI range X but Android has only 1
+- WHEN Case 24 assertion runs
+- THEN verdict MUST be `FAIL` (incomplete convergence)
+- AND diagnosis names the missing annotation
+
+#### Scenario: Coexistence verified but config.json missing — WARN
+
+- GIVEN annotation rows present on both devices
+- WHEN `config.json` booknotes evidence is unavailable
+- THEN verdict capped at `WARN`
+- AND evidence gap lists missing config.json for highlight claims
+
+### Requirement: Cases 24, 25, and 26 Expected-invalid Evidence
+
+Cases 25 and 26 MUST continue to distinguish expected invalid/conflict behavior from harness/product failure using BookNote/config evidence. Case 24 is EXCLUDED from "expected-invalid" classification — multi-annotation coexistence at same CFI is valid CRDT convergence (see REQ-PC-4).
+(Previously: Cases 24, 25, and 26 were grouped together under a single expected-invalid evidence requirement. Case 24 is now separately classified as valid CRDT behavior.)
+
+#### Scenario: Case 24 proves annotation coexistence (separated from invalid classification)
+
+- GIVEN two annotations share range but have distinct identities
+- WHEN both survive with two BookNotes on both devices
+- THEN verdict MUST be `PASS` per REQ-PC-4
+- AND the case SHALL NOT appear under "expected-invalid" classification
+
+#### Scenario: Cases 25 and 26 classify invalid highlight behavior
+
+- GIVEN type mutation or cross-type pointer input is injected
+- WHEN config evidence shows rejection, unresolved marking, correction, drift, or silent acceptance
+- THEN the report MUST classify expected invalid/conflict versus product failure
+- AND Cases 25/26 remain discover-phase with WARN-as-pass acceptance
+
+### Requirement: Phase 4 Real-device Reliability Rerun
+
+The bounded Phase 4 real-device rerun MUST achieve at least 80% `PASS` over executable cases, or provide justified per-case classification.
+
+#### Scenario: Reliability threshold passes
+- GIVEN executable Phase 4 cases are rerun on real devices
+- WHEN `PASS / executable >= 80%`
+- THEN the report MUST state `PASS` with numerator, denominator, and cases.
+
+#### Scenario: Below threshold remains actionable
+- GIVEN success is below 80%
+- WHEN the report is generated
+- THEN it MUST be non-pass with per-case verdict, `failureDomain`, evidence gaps, and unavailable evidence.
+
+---
+
 ## Phase 3: Light Conflicts — Concurrent Convergence
 
 > **Phase:** 3 — Capa 3 (Ocasional) — Conflictos ligeros y convergencia concurrente
@@ -834,6 +1014,11 @@ Define the **PASS/FAIL/WARN criteria** for sync cases 15–20 (light conflicts, 
 | **Immutable fields** | `text` (selected text), `color`, `style` |
 | **Editable by HLC** | `note` (the user's note/comment) — field-level HLC merge |
 | **Evidence required** | Desktop `Readest/annotations.db` → `annotations` table + `_replicas` HLC + Android replica state |
+
+> **Implementation (resolve_semantic_id):** `resolve_semantic_id` in `visible_repo.rs` enforces this 3-field composite key via the SQL WHERE clause `book_hash = ?1 AND cfi = ?2 AND text = ?4 AND deleted_at IS NULL AND id != ?3`. Previously it used a 2-field key (`book_hash + cfi`), causing different annotations sharing the same CFI range to be falsely deduped.
+>
+> - **Distinct annotations on same CFI survive dedup:** GIVEN two annotation replicas with same `book_hash` and `cfi` but different `text` values → WHEN `resolve_semantic_id` executes for `"annotation"` kind → THEN the 3-field key returns `None` (no match) → AND both annotations survive in the app table.
+> - **Identical annotations still dedup correctly:** GIVEN two annotation replicas with same `book_hash`, `cfi`, AND `text` → WHEN `resolve_semantic_id` executes for `"annotation"` kind → THEN the 3-field key finds the existing row → AND returns the canonical `replica_id` → correct dedup preserved.
 
 #### 1.5 Range / Highlight Identity
 
@@ -1214,8 +1399,556 @@ Each case execution MUST produce a structured report:
 
 ---
 
+## Phase 4: Real Conflicts — Conflictos Reales
+
+> **Phase:** 4 — Capa 4 (Conflictos Reales) — Conflictos reales
+> **Cases:** 21–26
+> **Source:** `casos_sync.md` §12.1–12.6, §13.3–13.4, §14.5–14.7, §15.6–15.7
+
+### Purpose
+
+Define **PASS/FAIL/WARN criteria** for sync cases 21–26, which test true concurrent conflict: same-field edit, edit-vs-delete resolution, concurrent creation dedup, annotation coexistence on same range, highlight type integrity, and highlight group pointer validation. This phase establishes:
+
+- **Same-field edit resolution** by HLC LWW with deterministic nodeId tiebreak.
+- **Edit-vs-delete resolution** by entity-level HLC comparison.
+- **Concurrent creation dedup** across books, dictionary entries, quotes from same range, and quotes from different books.
+- **Annotation coexistence** — two distinct annotations on the same range both survive.
+- **Highlight type integrity** — mutation of semantic highlight group type MUST be rejected.
+- **Highlight group pointer validation** — cross-type pointers between highlight and entity MUST be detected as invalid.
+
+### §1 Execution Matrix
+
+#### 1.1 Phase 4 Variant Strategy
+
+Phase 4 uses a reduced variant set. O→M and M→O are redundant with Phase 2/3 and SHALL NOT be re-executed:
+
+| Variant | Label | Description | Purpose |
+|---------|-------|-------------|---------|
+| Concurrent A/B | `O⇄M` | Both devices act BEFORE syncing. Then bidirectional sync. | Real concurrent conflict. Tests LWW by HLC, edit-vs-delete, dedup under race. |
+| Isolated repetition | `R-n` | Each run in isolation — clean state, no state leakage. Repeat 5× per sub-case. | Proves determinism and >80% reliability threshold. |
+
+#### 1.2 Evidence Requirements per Run
+
+Each run MUST produce an evidence bundle with all Phase 3 §2.2 items plus:
+
+| Evidence item | Required for | Without → max verdict |
+|---------------|-------------|----------------------|
+| Pre-sync snapshots (both devices) | All cases | WARN |
+| Post-sync snapshots (both devices) | All cases | FAIL (unverifiable) |
+| `_replicas` per-field HLC timestamps | Cases 21, 22 | WARN |
+| `config.json` → `booknotes[]` | Cases 23, 24, 25, 26 | WARN |
+| Sync trigger evidence (attempted/applied per kind) | All cases | WARN |
+| Operation log with HLC timestamps | All cases | WARN |
+| Full HLC tuple (physical, counter, nodeId) | Case 21d | WARN (if tiebreak not triggered) |
+
+### §2 Case Specifications
+
+#### 2.1 Case 21: Same-field Edit (Editar mismo campo)
+
+**Source:** `casos_sync.md` §13.3, §13.4
+
+These cases test LWW by HLC for the same editable field on the same semantic entity. The entity MUST remain a single logical row; the field value MUST converge to the newer HLC.
+
+##### 2.1.1 R-P4.21.a — Both edit D.definition
+
+**Given**
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Book `L` + `H_D` → `D(term="abismo", definition="deep hole")` |
+| Android | Same `L`, same `H_D` → `D(term="abismo", definition="deep hole")`, converged |
+
+**When**
+
+Both edit `D.definition` concurrently before syncing (O⇄M). Desktop sets `"profound void"` (HLC=10). Android sets `"very deep chasm"` (HLC=11). Then bidirectional sync.
+
+**Then**
+
+| Field | Expected State |
+|-------|----------------|
+| Dictionary entry | EXACTLY ONE for `normalize("abismo")` across both devices |
+| Definition | `"very deep chasm"` (HLC=11 wins). Same on both. |
+| `imagePath` | Unchanged |
+| Highlights | `H_D` preserved, range and color unchanged |
+| Occurrences | All existing occurrences preserved |
+
+**Verdict Criteria**
+
+| Verdict | Condition |
+|---------|-----------|
+| **PASS** | One dictionary entry. Definition converged to newer-HLC value. `_replicas` evidence proves field-level LWW. Highlight unchanged. |
+| **FAIL** | Duplicate entries (dedup failure). OR definition reverted to stale value. OR data loss. OR highlight detached. |
+| **WARN** | Definition converged but per-field HLC evidence missing. OR transient mismatch between devices. |
+
+##### 2.1.2 R-P4.21.b — Both edit N.note
+
+**Given**
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Book `L` + `H_N` → `N(text="selected", note="original idea")` |
+| Android | Same `L`, `H_N` → `N(text="selected", note="original idea")`, converged |
+
+**When** — Desktop edits `N.note` to `"revised analysis"` (HLC=10). Android edits `N.note` to `"alternative interpretation"` (HLC=12). Both sync O⇄M.
+
+**Then**
+
+| Field | Expected State |
+|-------|----------------|
+| Annotation | EXACTLY ONE for `book_hash\|cfi\|text` key |
+| `note` | `"alternative interpretation"` (HLC=12 wins). `text` immutable. |
+| Highlight | `H_N` preserved, range and color unchanged |
+
+**Verdict Criteria**
+
+| Verdict | Condition |
+|---------|-----------|
+| **PASS** | One annotation. `note` converged to newer-HLC value. `text` unchanged. Field-level HLC evidence. |
+| **FAIL** | Two annotation rows (dedup failure). OR `note` stale. OR `text` overwritten. OR highlight lost. |
+| **WARN** | `note` converged but field-level HLC evidence incomplete. |
+
+##### 2.1.3 R-P4.21.c — Both edit L.title
+
+**Given**
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Book `L(title="Original", hash=XYZ)` |
+| Android | Same book `L(title="Original", hash=XYZ)`, converged |
+
+**When** — Desktop edits `L.title` to `"Desktop Title"` (HLC=9). Android edits `L.title` to `"Android Title"` (HLC=14). Both sync O⇄M.
+
+**Then**
+
+| Field | Expected State |
+|-------|----------------|
+| Book count | EXACTLY ONE library entry for `hash=XYZ` |
+| `title` | `"Android Title"` (HLC=14 wins). Same on both. |
+| Other metadata | Unchanged. `hash`, `sourceTitle`, `format` immutable. |
+
+**Verdict Criteria**
+
+| Verdict | Condition |
+|---------|-----------|
+| **PASS** | One book. Title converged to newer-HLC value. No duplicate. Hash preserved. |
+| **FAIL** | Two entries for same hash. OR title stale. OR hash changed. |
+| **WARN** | Title converged but only book-level (not field-level) HLC available. |
+
+##### 2.1.4 R-P4.21.d — Same field, same HLC time → nodeId tiebreak
+
+**Given**
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Book `L` + `H_D` → `D(term="suerte", definition="chance")`, nodeId=`desktop-node` |
+| Android | Same D, same H_D, nodeId=`android-node`, converged |
+
+**When** — Desktop edits `D.definition` to `"fate"` at HLC=(1000, 1, desktop-node). Android edits `D.definition` to `"luck"` at HLC=(1000, 1, android-node). Both sync O⇄M.
+
+**Then**
+
+| Field | Expected State |
+|-------|----------------|
+| Definition | Converges to ONE value. Winner determined by deterministic nodeId comparison. |
+| Tiebreak rule | HLC (physical, counter, nodeId) produces total order. Same physical+logical → nodeId decides. |
+| Determinism | Repeated R-n execution MUST produce the SAME winner for the same nodeId pair. |
+
+**Verdict Criteria**
+
+| Verdict | Condition |
+|---------|-----------|
+| **PASS** | One definition on both devices. Winner is deterministic (same nodeId wins every R-n run). `_replicas` shows equal HLC timestamps with different nodeIds. |
+| **FAIL** | Non-deterministic winner (changes between runs). OR devices stuck with different definitions. OR duplicate entry. |
+| **WARN** | Tiebreak not triggered (times differed). OR nodeId evidence not recorded. |
+
+**Edge:** Repeated R-n runs MUST produce the same winner. If the winner varies, that is a FAIL.
+
+**Implementation note (fix-phase4-merge-layer-ab):** The `rowToReplica()` maxTimestamp selection previously used `hlcMillis(t) > hlcMillis(max)`, which compared only physical time and ignored the HLC counter. This was replaced with `hlcGt(t, max)` — a full HLC comparator (ms→counter→deviceId). No scenario criteria changed; the A1 fix makes implementation match existing spec.
+
+#### 2.2 Case 22: Edit vs Delete (Editar vs borrar)
+
+**Source:** `casos_sync.md` §14.5, §14.7
+
+These cases test HLC-based resolution when one device deletes an entity and the other edits it concurrently. The entity-level HLC timestamp determines winner.
+
+##### 2.2.1 R-P4.22.a — A deletes D, B edits D.definition
+
+**Given**
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Book `L` + `H_D` → `D(term="valle", definition="valley")` |
+| Android | Same D, converged |
+
+**When** — Desktop deletes D (tombstone HLC=12). Android edits definition to `"gorge"` (HLC=11). Both sync O⇄M.
+
+**Then — delete HLC > edit HLC**
+
+| Field | Expected State |
+|-------|----------------|
+| D entry | TOMBSTONED on both devices |
+| Definition edit | LOST (lower HLC). NOT visible on either device. |
+| Highlight | `H_D` soft-deleted or marked unresolved |
+
+**Verdict Criteria**
+
+| Verdict | Condition |
+|---------|-----------|
+| **PASS** | D tombstoned on both. Edit value NOT visible. `_replicas` evidence proves tombstone HLC > edit HLC. |
+| **FAIL** | Edit value visible (resurrection). OR D live on one device. OR duplicate. |
+| **WARN** | D tombstoned but HLC ordering evidence incomplete. |
+
+**Variant — edit HLC > delete HLC:** Desktop deletes (HLC=10). Android edits (HLC=14). Then D is LIVE with `definition="gorge"`. Tombstone ignored. Apply analogous criteria.
+
+##### 2.2.2 R-P4.22.b — BLOCKED: A deletes C, B edits C
+
+**Source:** `casos_sync.md` §14.6, §13.6
+
+**Status: NOT APPLICABLE**
+
+**Rationale:** Quotes are immutable per §13.6. The `Cite` type has no editable fields (no `note`, no mutable `text`). There is no valid edit operation for quotes. The harness MUST report `BLOCKED` and deduct this sub-case from the success denominator.
+
+##### 2.2.3 R-P4.22.c — A deletes N, B edits N.note
+
+**Given**
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Book `L` + `H_N` → `N(text="selected", note="original")` |
+| Android | Same N, converged |
+
+**When** — Desktop deletes N (tombstone HLC=15). Android edits N.note to `"updated"` (HLC=14). Both sync O⇄M.
+
+**Then — delete HLC > edit HLC**
+
+| Field | Expected State |
+|-------|----------------|
+| N | TOMBSTONED on both. Edit value lost. |
+| Highlight | `H_N` soft-deleted |
+
+**Verdict Criteria**
+
+| Verdict | Condition |
+|---------|-----------|
+| **PASS** | N tombstoned. Edit NOT visible. HLC evidence proves ordering. |
+| **FAIL** | Edit visible (resurrection). OR N still live. OR duplicate. |
+| **WARN** | Tombstoned but HLC evidence incomplete. |
+
+**Variant — edit HLC > delete HLC:** N LIVE with the new note. Tombstone ignored. Apply analogous criteria.
+
+#### 2.3 Case 23: Concurrent Creations (Creaciones concurrentes)
+
+**Source:** `casos_sync.md` §12.1–12.5
+
+Extends Phase 3 concurrent creation to books and cross-book quotes. All use O⇄M + R-n.
+
+##### 2.3.1 R-P4.23.a — Both create L with same ID
+
+**Given**
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Imports book `L(id=A1, hash=XYZ)` |
+| Android | Imports same book `L(id=A1, hash=XYZ)` |
+
+**When** — Both import same book WITH same ID before any sync (O⇄M).
+
+**Then**
+
+| Field | Expected State |
+|-------|----------------|
+| Book count | EXACTLY ONE entry for `hash=XYZ` |
+| `id` | `A1` (same ID, no conflict). Full convergence. |
+
+**Verdict Criteria**
+
+| Verdict | Condition |
+|---------|-----------|
+| **PASS** | One book `hash=XYZ id=A1` on both devices. No duplicate. |
+| **FAIL** | Two books with same hash+id. OR data loss. |
+| **WARN** | One book but `_replicas` shows duplicate entries (resolved late). |
+
+##### 2.3.2 R-P4.23.b — Both create L with same hash, different IDs
+
+**Given**
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Imports `L(id=A1, hash=XYZ)` |
+| Android | Imports `L(id=B1, hash=XYZ)` |
+
+**When** — Both import same EPUB with DIFFERENT IDs before sync (O⇄M).
+
+**Then**
+
+| Field | Expected State |
+|-------|----------------|
+| Book count | EXACTLY ONE visible entry for `hash=XYZ` |
+| `id` | Merged by HLC. Both IDs in `_replicas`. |
+| Metadata | Merged per field by HLC. |
+
+**Verdict Criteria**
+
+| Verdict | Condition |
+|---------|-----------|
+| **PASS** | One book entry on both. No duplicate. `_replicas` holds both IDs with dedup evidence. |
+| **FAIL** | Two separate books for same hash. OR one device has duplicate. |
+| **WARN** | One book but only one ID visible in initial metadata. |
+
+##### 2.3.3 R-P4.23.c — Both create D same term (extends Case 16)
+
+**Given** — Same as Case 16, O⇄M variant:
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Book L + `D1(term="zozobrar")` + `F_D1` + `H_D1` |
+| Android | Book L + `D2(term="zozobrar")` + `F_D2` + `H_D2` |
+
+**When** — Both create same normalized dictionary word before sync (O⇄M).
+
+**Then** — Same as Case 16 outcome:
+- ONE global entry for `normalize("zozobrar")`
+- Both occurrences (F_D1, F_D2) preserved
+- Both highlights (H_D1, H_D2) preserved
+- Definition/imagePath merged by HLC
+
+**Verdict Criteria** — Same as Case 16 PASS/FAIL/WARN.
+
+##### 2.3.4 R-P4.23.d — Both create C same range+book (extends Case 17)
+
+**Given** — Same as Case 17, O⇄M variant:
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Book L + `H_C1(range=100-120)` → `C1(text="...")` |
+| Android | Book L + `H_C2(range=100-120)` → `C2(text="...")` |
+
+**When** — Both create same quote on same book+range before sync (O⇄M).
+
+**Then** — Same as Case 17 outcome:
+- EXACTLY ONE quote. Dedup by `bookHash|cfi|contentHash`.
+- One highlight H_C after convergence.
+
+**Verdict Criteria** — Same as Case 17 PASS/FAIL/WARN.
+
+##### 2.3.5 R-P4.23.e — Both create same text quote, different books
+
+**Given**
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Book L1 + `H_C1(range=R1)` → `C1(text="same")` |
+| Android | Book L2 + `H_C2(range=R2)` → `C2(text="same")` |
+
+**When** — Both create quotes with same text but on DIFFERENT books, before sync (O⇄M).
+
+**Then**
+
+| Field | Expected State |
+|-------|----------------|
+| Quote count | TWO quotes (different `bookHash` → different identity) |
+| Texts | Same text. Different source books. |
+| Highlights | Two highlights: `H_C1→L1`, `H_C2→L2` |
+
+**Verdict Criteria**
+
+| Verdict | Condition |
+|---------|-----------|
+| **PASS** | Two quotes on both devices. Different `bookHash`. Both texts match input. |
+| **FAIL** | Quotes deduped into one (wrong — different books). OR one quote lost. OR text differs. |
+| **WARN** | Two quotes but `bookHash` evidence incomplete. OR transient count mismatch. |
+
+#### 2.4 Case 24: Distinct Annotations Same Range
+
+**Source:** `casos_sync.md` §12.6
+
+**Policy:** Two annotations with different note values on the same CFI range MUST both survive. No silent data loss.
+
+##### 2.4.1 R-P4.24 — N("Idea A") and N("Idea B") on same CFI range
+
+**Given**
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Book L + `H_N1(range=100-120)` → `N1(text="selected", note="Idea A")` |
+| Android | Book L + `H_N2(range=100-120)` → `N2(text="selected", note="Idea B")` |
+
+**When** — Both create distinct annotations on the SAME CFI range before sync (O⇄M).
+
+**Then**
+
+| Field | Expected State |
+|-------|----------------|
+| Annotation count | TWO annotations. Both `N1` and `N2` survive. |
+| Identity rule | Same `book_hash\|cfi\|text` → different annotation IDs = two separate entities. |
+| Highlights | TWO highlights: `H_N1` and `H_N2`. Both in `config.json` booknotes[]. |
+| Coexistence | **No merge, no delete.** Both annotations and both highlights persist. |
+
+**Verdict Criteria**
+
+| Verdict | Condition |
+|---------|-----------|
+| **PASS** | Two annotations with distinct `note` values on both devices. Two highlights in `config.json`. No data loss. |
+| **FAIL** | One annotation overwritten (silent loss). OR one highlight missing. OR notes merged. |
+| **WARN** | Two annotations present but `config.json` missing for one highlight. OR transient count mismatch. |
+
+#### 2.5 Case 25: Highlight Group Mutation
+
+**Source:** `casos_sync.md` §15.6
+
+**Policy:** The semantic type of a highlight MUST NOT be mutated. Correct workflow: delete old, create new.
+
+##### 2.5.1 R-P4.25 — H_N mutated to H_C
+
+**Given**
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Book L + `H_N(range=100-120)` → `N(note="original")` |
+| Android | Book L + `H_C(range=100-120)` → `C(text="quote")` (mutated type) |
+
+**When** — Sync executes (O⇄M). Android's highlight is typed `H_C` (cite) but the original was `H_N` (annotation).
+
+**Then**
+
+| Field | Expected State |
+|-------|----------------|
+| Highlight type | **DISCOVER phase.** System behavior is unknown — this case reveals it. |
+| Expected correct | Merge layer MUST reject type mutation. `H_N` stays annotation. Either `H_C` coexists as separate highlight (C19 rule) or is rejected. |
+| Invalid behavior (FAIL) | `H_N` type drifts to `H_C`. OR one highlight replaces the other (data loss). |
+
+**Verdict Criteria**
+
+| Verdict | Condition |
+|---------|-----------|
+| **PASS** | System preserves type integrity. Either: (a) `H_N` remains annotation, `H_C` is separate; or (b) mutation rejected, `H_N` unchanged. Both devices agree. |
+| **FAIL** | Type drift (`H_N`→`H_C`). OR data loss of one highlight. OR devices disagree on type. |
+| **WARN** | Type preserved but `config.json` evidence incomplete. |
+
+**Note:** MAY require product code fix if merge layer does not enforce type integrity.
+
+> **Harness implementation (fix-phase4-harness-group-c):**
+> - `setupCase25Ref` MUST receive the real annotation entity ID (`annId` from `--note` fixture) for `--booknote-mutate`, NOT a fabricated `booknote-{normalized}-{now}` string.
+> - Before `--booknote-mutate` on `android-http`, the harness MUST seed `config.json` with a `booknotes[]` entry for the target `noteId` if the GET request returns non-2xx (missing config), preventing false-negative failures from absent Android config files.
+
+#### 2.6 Case 26: Highlight Wrong Group Pointer
+
+**Source:** `casos_sync.md` §15.7
+
+**Policy:** A highlight MUST point to the correct entity type. `H_D`→dictionary entry, `H_C`→quote, `H_N`→annotation. Cross-type pointers are invalid.
+
+##### 2.6.1 R-P4.26 — H_D pointing to C (quote entity)
+
+**Given**
+
+| Device | Initial State |
+|--------|---------------|
+| Desktop | Book L + `H_D(range=100-120)` → `D(term="error")` |
+| Android | Same book L — `H_D` with `citeId=C` instead of `dictionaryEntryId=D` |
+
+**When** — Sync executes (O⇄M). Android's highlight is typed `H_D` but points to a quote entity.
+
+**Then**
+
+| Field | Expected State |
+|-------|----------------|
+| Pointer validity | **DISCOVER phase.** System behavior is unknown. |
+| Expected correct | Merge/receive layer MUST detect mismatch and either: reject, mark unresolved, or correct. |
+| Invalid (FAIL) | Highlight accepted with mismatched pointer (type confusion). OR data corruption. |
+
+**Verdict Criteria**
+
+| Verdict | Condition |
+|---------|-----------|
+| **PASS** | System detects cross-type mismatch. Highlight rejected, marked unresolved, or pointer corrected. Both devices agree. No data corruption. |
+| **FAIL** | Cross-type pointer accepted silently. OR data corruption. OR devices diverge on validity. |
+| **WARN** | Mismatch detected but resolution strategy unverifiable. OR one device has invalid pointer while other rejected it. |
+
+**Note:** MAY require product code fix if merge layer does not validate highlight-to-entity pointer types.
+
+> **Harness implementation (fix-phase4-harness-group-c):**
+> - `setupCase26Ref` MUST receive the real entity/highlight ID from the `--dict` fixture result for `--booknote-invalid-ref`, NOT a fabricated `booknote-{normalized}-{now}` string.
+> - Before `--booknote-invalid-ref` on `android-http`, the harness MUST seed `config.json` with a `booknotes[]` entry for the target `noteId` if missing (GET returns non-2xx), before the GET→mutate→PUT cycle.
+
+### §3 Edge Case Policy — Phase 4 Additions
+
+#### 3.1 HLC Tiebreak Determinism
+
+| Rule | Description |
+|------|-------------|
+| Same physical+logical time | When HLC physical time and counter match, `nodeId` produces deterministic total order. |
+| Stable winner | The same nodeId pair MUST produce the same winner across repeated R-n runs. |
+| Evidence | `_replicas` MUST record the full HLC tuple `(physical, counter, nodeId)` for field-level timestamps. |
+
+#### 3.2 Edit-vs-Delete Entity-Level Resolution
+
+| Rule | Description |
+|------|-------------|
+| HLC decides at entity level | The entity's `updatedAt` / `deletedAt` HLC determines winner. Newer HLC wins outright. |
+| Edit beats older delete | Edit HLC > delete HLC → entity stays LIVE, tombstone ignored. |
+| Delete beats older edit | Delete HLC > edit HLC → entity TOMBSTONED, edit lost. |
+| No partial tombstone | Entity is either LIVE or TOMBSTONED. No "half-tombstoned with partial edit" state. |
+| Immutable entities skip | Quotes have no editable fields. Case 22b NOT APPLICABLE. |
+
+#### 3.3 Annotation Coexistence on Same Range
+
+| Rule | Description |
+|------|-------------|
+| Same range, different notes | Both annotations survive. No merge, no delete. |
+| Identity separation | Different annotation IDs = different entities even when `book_hash`, `cfi`, `text` match. |
+| Highlight coexistence | Both annotations get their own highlight in `config.json`. |
+
+#### 3.4 Highlight Type Integrity
+
+| Rule | Description |
+|------|-------------|
+| Type mutation | Changing a highlight's semantic type is NOT a supported operation. |
+| Correct workflow | Delete old highlight, create new with correct type. |
+| Merge layer behavior | **DISCOVER** — existing code may or may not validate type/pointers. |
+| Cross-type pointer | `H_D` with `citeId` instead of `dictionaryEntryId` is invalid. MUST be rejected or marked unresolved. |
+
+### §4 Verification Evidence Matrix
+
+#### 4.1 Evidence Minimums — Phase 4 Additions
+
+| Claim | Minimum Evidence for PASS | Without → max verdict |
+|-------|---------------------------|-----------------------|
+| Field-level HLC (C21) | `_replicas` per-field HLC timestamps + post-sync state | WARN |
+| Tiebreak nodeId (C21d) | `_replicas` full HLC tuple (physical, counter, nodeId) | WARN |
+| Edit-vs-delete ordering (C22) | Tombstone/update HLC timestamps proving winner order | FAIL if wrong; WARN if missing |
+| Annotation coexistence (C24) | Two distinct annotation rows + `config.json` two highlights | WARN |
+| Highlight type integrity (C25) | `config.json` booknotes showing correct types | FAIL if drift; WARN if config missing |
+| Cross-type pointer detection (C26) | Evidence system rejected or detected invalid pointer | FAIL if silent; WARN if unverifiable |
+
+#### 4.2 Verdict Determinism Matrix
+
+Identical to Phase 3 §5.2:
+
+```
+                     Evidence Complete          Evidence Partial        Evidence Missing
+Converged           ───────── PASS ──────       ──────── WARN ─────       ────── WARN ─────
+Diverged            ───────── FAIL ──────       ──────── FAIL ─────       ────── WARN ─────
+Ambiguous counts    ───────── WARN ──────       ──────── WARN ─────       ────── WARN ─────
+```
+
+### §5 Case Coverage Summary
+
+| Case | R-P4 ID | Sub-cases | Variants | DISCOVER needed? | Product fix expected? |
+|------|---------|-----------|----------|------------------|----------------------|
+| 21 — Same-field edit | 21.a–21.d | 4 | O⇄M, R-n | No | No |
+| 22 — Edit vs delete | 22.a, 22.c | 2 active + 1 BLOCKED | O⇄M, R-n | No | No |
+| 23 — Concurrent creations | 23.a–23.e | 5 | O⇄M, R-n | No | No |
+| 24 — Annotations same range | 24 | 1 | O⇄M, R-n | No | No |
+| 25 — Highlight group mutation | 25 | 1 | O⇄M | **Yes** | Possibly |
+| 26 — Wrong group pointer | 26 | 1 | O⇄M | **Yes** | Possibly |
+
+---
+
 ## Change Log
 
 | Date | Change | Author |
 |------|--------|--------|
 | 2026-07-04 | Added Phase 3: Light Conflicts (Cases 15–20) — identity rules, execution matrix, PASS/FAIL/WARN criteria, edge policy, evidence requirements | SDD Archive |
+| 2026-07-05 | Added Phase 4: Real Conflicts (Cases 21–26) — same-field edit (21a-21d), edit-vs-delete (22a/22c, 22b BLOCKED), concurrent creations (23a-23e), annotations same range (24), highlight type integrity DISCOVER (25), cross-type pointer DISCOVER (26) | SDD Archive |
+| 2026-07-06 | Merged fix-phase4-harness-group-c delta: Annotation §1.4 added resolve_semantic_id SQL implementation note + 2 scenarios; Case 25 added harness notes (real annId, config seeding); Case 26 added harness notes (real entity ID, config seeding) | SDD Archive |
+| 2026-07-14 | Merged fix-phase4-real-conflicts-reliability delta: Added 6 requirements — Phase 4 Failure-domain Classification, Android Substitute Evidence Completeness, Cases 21a–21d Deterministic Resolution, Cases 22a/22c Edit-vs-delete Diagnosis, Cases 24/25/26 Expected-invalid Evidence, Phase 4 Real-device Reliability Rerun | SDD Archive |

@@ -1,3 +1,5 @@
+import { toHlc } from './sync-execute.mjs';
+
 /**
  * Execute a sqlite3 CLI command with -json flag for deterministic output.
  * Provides a stable closure over dbPath so callers don't repeat the path.
@@ -74,7 +76,15 @@ function captureTable({ dbPath, tableName, execFileSync }) {
       }
     }
 
-    return { name: tableName, rowCount, columns, hlcMin, hlcMax, deletedCount };
+    let rows;
+    try {
+      const allRows = JSON.parse(sqliteQuery(dbPath, execFileSync, `SELECT * FROM "${tableName}"`));
+      rows = Array.isArray(allRows) ? allRows : [];
+    } catch {
+      rows = [];
+    }
+
+    return { name: tableName, rowCount, columns, hlcMin, hlcMax, deletedCount, rows };
   } catch (error) {
     return {
       name: tableName,
@@ -147,10 +157,10 @@ export function updateRow({ dbPath, execFileSync, table, rowId, idColumn = 'id',
 
   // Bump replica_timestamps for EACH updated field, so the field envelope HLC
   // advances and Android field-level merge accepts the new value.
-  // Example: editing definition -> sets $.definition = T${now}
+  const hlcNow = toHlc(now);
   const fieldNames = Object.keys(updates);
   setClauses.push(
-    `replica_timestamps = CASE WHEN replica_timestamps IS NOT NULL AND replica_timestamps != '' THEN json_set(replica_timestamps, ${fieldNames.map(f => `'$.${f}'`).join(', ')}, ${fieldNames.map(f => sqlLiteral(`T${now}`)).join(', ')}) ELSE json(${sqlLiteral(JSON.stringify(Object.fromEntries(fieldNames.map(f => [f, `T${now}`]))))}) END`,
+    `replica_timestamps = CASE WHEN replica_timestamps IS NOT NULL AND replica_timestamps != '' THEN json_set(replica_timestamps, ${fieldNames.map(f => `'$.${f}'`).join(', ')}, ${fieldNames.map(() => sqlLiteral(hlcNow)).join(', ')}) ELSE json(${sqlLiteral(JSON.stringify(Object.fromEntries(fieldNames.map(f => [f, hlcNow]))))}) END`,
   );
 
   const sql = `UPDATE "${table}" SET ${setClauses.join(', ')} WHERE "${idColumn}" = '${escapeSqlValue(rowId)}'`;
@@ -177,6 +187,7 @@ export function updateRow({ dbPath, execFileSync, table, rowId, idColumn = 'id',
  */
 export function softDeleteRow({ dbPath, execFileSync, table, rowId, idColumn = 'id', timestamp, hlcTimestamp }) {
   const now = timestamp ?? hlcTimestamp ?? Date.now();
+  const hlcDeleted = toHlc(now);
 
   const sql = `
 UPDATE "${table}"
@@ -184,8 +195,8 @@ SET deleted_at = ${sqlLiteral(now)},
     updated_at = ${sqlLiteral(now)},
     replica_timestamps = CASE
       WHEN replica_timestamps IS NOT NULL AND replica_timestamps != ''
-      THEN json_set(replica_timestamps, '$.deleted', ${sqlLiteral(`T${now}`)})
-      ELSE json(${sqlLiteral(JSON.stringify({ deleted: `T${now}` }))})
+      THEN json_set(replica_timestamps, '$.deleted', ${sqlLiteral(hlcDeleted)})
+      ELSE json(${sqlLiteral(JSON.stringify({ deleted: hlcDeleted }))})
     END
 WHERE "${idColumn}" = ${sqlLiteral(rowId)}
   `.trim();

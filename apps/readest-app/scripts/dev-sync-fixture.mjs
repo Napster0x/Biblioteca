@@ -38,6 +38,7 @@ import {
   resolveSemanticHighlightTarget,
 } from './sync-dev-inject-http.mjs';
 import { updateRow, softDeleteRow } from './sync-dev-sqlite.mjs';
+import { toHlc } from './sync-execute.mjs';
 import { createEpubImportDescriptor, importEpubToLibrary } from './prepare-engine.mjs';
 
 /**
@@ -117,7 +118,7 @@ export async function injectDictionary({ target, bookHash, bookTitle, term, defi
     const entryResult = await injectReplicasViaHttp(serverUrl, 'dictionary-entry', [{
       id: entryId, term, display_term: term, language: language || 'es',
       definition: defs[0].definition, enrichment_status: 'completed',
-      replica_timestamps: JSON.stringify({ term: `T${now}`, definition: `T${now}` }),
+      replica_timestamps: JSON.stringify({ term: toHlc(now), definition: toHlc(now) }),
       created_at: now, updated_at: now, deleted_at: null,
     }], entryFields, { hlcTimestamp: now });
     if (!entryResult.ok) return entryResult;
@@ -130,7 +131,7 @@ export async function injectDictionary({ target, bookHash, bookTitle, term, defi
       const occResult = await injectReplicasViaHttp(serverUrl, 'dictionary-occurrence', [{
         id: occId, entry_id: entryId, book_hash: bookHash, book_title: bookTitle || 'Test Book',
         cfi: def.cfi, selected_text: def.selectedText, created_at: now,
-        deleted_at: null, replica_timestamps: JSON.stringify({ selected_text: `T${now}` }),
+        deleted_at: null, replica_timestamps: JSON.stringify({ selected_text: toHlc(now) }),
       }], occFields, { hlcTimestamp: now });
       if (!occResult.ok) return occResult;
     }
@@ -152,7 +153,7 @@ export async function injectDictionary({ target, bookHash, bookTitle, term, defi
     rows: [{
       id: entryId, term, display_term: term, language: language || 'es',
       definition: defs[0].definition, enrichment_status: 'completed',
-      replica_timestamps: JSON.stringify({ term: `T${now}`, definition: `T${now}` }),
+      replica_timestamps: JSON.stringify({ term: toHlc(now), definition: toHlc(now) }),
       created_at: now, updated_at: now, deleted_at: null,
     }],
   });
@@ -172,7 +173,7 @@ export async function injectDictionary({ target, bookHash, bookTitle, term, defi
       rows: [{
         id: occId, entry_id: entryId, book_hash: bookHash, book_title: bookTitle || 'Test Book',
         cfi: def.cfi, selected_text: def.selectedText, created_at: now,
-        deleted_at: null, replica_timestamps: JSON.stringify({ selected_text: `T${now}` }),
+        deleted_at: null, replica_timestamps: JSON.stringify({ selected_text: toHlc(now) }),
       }],
     });
     if (!occResult.ok) return occResult;
@@ -210,7 +211,7 @@ export async function injectQuote({ target, bookHash, bookTitle, text, comment: 
       cfi: cfi || '/6/4[section]!/10/2:0',
       content_hash: contentHash,
       created_at: now, updated_at: now, deleted_at: null,
-      replica_timestamps: JSON.stringify({ text: `T${now}` }),
+      replica_timestamps: JSON.stringify({ text: toHlc(now) }),
     }], fields, { hlcTimestamp: now });
     if (!quoteResult.ok) return quoteResult;
 
@@ -232,7 +233,7 @@ export async function injectQuote({ target, bookHash, bookTitle, text, comment: 
       cfi: cfi || '/6/4[section]!/10/2:0',
       content_hash: contentHash,
       created_at: now, updated_at: now, deleted_at: null,
-      replica_timestamps: JSON.stringify({ text: `T${now}` }),
+      replica_timestamps: JSON.stringify({ text: toHlc(now) }),
     }],
   });
   if (!quoteResult.ok) return quoteResult;
@@ -267,7 +268,7 @@ export async function injectAnnotation({ target, bookHash, bookTitle, text, cfi,
       cfi: cfi || '/6/4[section]!/6/2:0',
       note: text,
       created_at: now, updated_at: now, deleted_at: null,
-      replica_timestamps: JSON.stringify({ text: `T${now}`, note: `T${now}` }),
+      replica_timestamps: JSON.stringify({ text: toHlc(now), note: toHlc(now) }),
     }], fields, { hlcTimestamp: now });
     if (!annResult.ok) return annResult;
 
@@ -288,7 +289,7 @@ export async function injectAnnotation({ target, bookHash, bookTitle, text, cfi,
       cfi: cfi || '/6/4[section]!/6/2:0',
       note: text,	// note field holds the annotation text (matches ANNOTATION_FIELDS.note)
       created_at: now, updated_at: now, deleted_at: null,
-      replica_timestamps: JSON.stringify({ text: `T${now}`, note: `T${now}` }),
+      replica_timestamps: JSON.stringify({ text: toHlc(now), note: toHlc(now) }),
     }],
   });
   if (!annResult.ok) return annResult;
@@ -402,8 +403,14 @@ export function parseFixtureArgs(args = process.argv.slice(2)) {
     else if (args[i] === '--id') opts.semanticDelete = { ...(opts.semanticDelete ?? {}), id: requireValue(args, i++, '--id') };
     else if (args[i] === '--note-id') opts.semanticDelete = { ...(opts.semanticDelete ?? {}), noteId: requireValue(args, i++, '--note-id') };
     else if (args[i] === '--dictionary-entry') opts.semanticDelete = { ...(opts.semanticDelete ?? {}), dictionaryEntryId: requireValue(args, i++, '--dictionary-entry') };
-    else if (args[i] === '--cfi') opts.semanticDelete = { ...(opts.semanticDelete ?? {}), cfi: requireValue(args, i++, '--cfi') };
+    else if (args[i] === '--cfi') {
+      const cfiVal = requireValue(args, i++, '--cfi');
+      opts.cfi = cfiVal;
+      if (opts.semanticDelete) opts.semanticDelete.cfi = cfiVal;
+    }
     else if (args[i] === '--text') opts.semanticDelete = { ...(opts.semanticDelete ?? {}), text: requireValue(args, i++, '--text') };
+    else if (args[i] === '--booknote-mutate') opts.booknoteMutate = requireValue(args, i++, '--booknote-mutate');
+    else if (args[i] === '--booknote-invalid-ref') opts.booknoteInvalidRef = requireValue(args, i++, '--booknote-invalid-ref');
     else if (args[i] === '--book') opts.bookHash = requireValue(args, i++, '--book');
     else if (args[i] === '--import-book') opts.importBookPath = requireValue(args, i++, '--import-book');
     else if (args[i] === '--title') opts.title = requireValue(args, i++, '--title');
@@ -432,13 +439,13 @@ export function parseFixtureArgs(args = process.argv.slice(2)) {
 
 function validateSingleOperation(opts) {
   // --import-book is a parameter modifier for --case15, not an independent operation
-  const operations = [opts.type, opts.edit, opts.delete, opts.deleteBookHash, opts.semanticDelete];
+  const operations = [opts.type, opts.edit, opts.delete, opts.deleteBookHash, opts.semanticDelete, opts.booknoteMutate, opts.booknoteInvalidRef];
   if (opts.importBookPath && !opts.type) {
     operations.push(opts.importBookPath);
   }
   const count = operations.filter(Boolean).length;
   if (count !== 1) {
-    throw new Error('Choose exactly one fixture operation: --dict, --quote, --note, --edit, --delete, --delete-book, --import-book, or --semantic-delete');
+    throw new Error('Choose exactly one fixture operation: --dict, --quote, --note, --edit, --delete, --delete-book, --booknote-mutate, --booknote-invalid-ref, --import-book, or --semantic-delete');
   }
 }
 
@@ -485,6 +492,198 @@ function resolveReplica(table) {
 function sqliteRows({ dbPath, execFileSync, table }) {
   const raw = execFileSync('sqlite3', [dbPath, '-json', `SELECT * FROM "${table}"`], { encoding: 'utf8', stdio: 'pipe' });
   return JSON.parse(raw || '[]');
+}
+
+/**
+ * Pure function — mutate a BookNote's type in a config object.
+ * No side effects (does not touch filesystem).
+ *
+ * @param {object|null} config - Config object with booknotes[] array
+ * @param {string} noteId - BookNote id to mutate
+ * @param {string} newType - New type value ('dictionary' | 'quote' | 'annotation')
+ * @returns {object} Updated config object
+ */
+export function mutateBookNoteInConfig(config, noteId, newType) {
+  const booknotes = (config?.booknotes || []).map((note) =>
+    note.id === noteId ? { ...note, type: newType } : note,
+  );
+  return { ...(config || {}), booknotes };
+}
+
+/**
+ * Pure function — replace a BookNote's valid entity pointer with a cross-type pointer.
+ * No side effects (does not touch filesystem).
+ *
+ * @param {object|null} config - Config object with booknotes[] array
+ * @param {string} noteId - BookNote id to modify
+ * @param {string} targetKind - Entity kind to point to ('dictionary' | 'quote' | 'annotation')
+ * @param {string} wrongEntityId - Entity ID to set in the pointer field
+ * @returns {object} Updated config object
+ */
+export function invalidateBookNoteRefInConfig(config, noteId, targetKind, wrongEntityId) {
+  const booknotes = (config?.booknotes || []).map((note) => {
+    if (note.id !== noteId) return note;
+    const updated = { ...note };
+    delete updated.dictionaryEntryId;
+    delete updated.citeId;
+    delete updated.annotationId;
+    if (targetKind === 'dictionary') {
+      updated.dictionaryEntryId = wrongEntityId;
+    } else if (targetKind === 'quote') {
+      updated.citeId = wrongEntityId;
+    } else if (targetKind === 'annotation') {
+      updated.annotationId = wrongEntityId;
+    }
+    return updated;
+  });
+  return { ...(config || {}), booknotes };
+}
+
+function bookNoteById(config, noteId) {
+  return (config?.booknotes || []).find((note) => note?.id === noteId);
+}
+
+function sameJsonValue(a, b) {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+/**
+ * Inject a BookNote type mutation on the target device.
+ * For desktop: writes to config.json on filesystem.
+ * For android-http: PUTs the config via HTTP.
+ *
+ * @param {'desktop'|'android-http'} target
+ * @param {string} bookHash
+ * @param {string} noteId
+ * @param {string} newType
+ * @param {{resolveDefaults?: Function, putAndroidBookConfig?: Function, execFileSync?: Function, fetch?: Function}} [options]
+ * @returns {Promise<{ok: boolean, action: string, error?: string}>}
+ */
+export async function injectBookNoteMutation(target, bookHash, noteId, newType, options = {}) {
+  if (target === 'android-http') {
+    const serverUrl = resolveAndroidServerUrl(createSyncDevEnvironment(process.env));
+    const fetchFn = options.fetch ?? globalThis.fetch;
+    const putAndroidBookConfigFn = options.putAndroidBookConfig ?? (async (url, hash, config) => {
+      try {
+        const res = await fetchFn(`${url}/books/${hash}/config`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config),
+          signal: AbortSignal.timeout(3000),
+        });
+        if (!res.ok) return { ok: false, error: `PUT config returned ${res.status}` };
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    });
+
+    // Seed config.json if it doesn't exist (Bug 2b fix)
+    let config;
+    const getResult = await fetchFn(`${serverUrl}/books/${bookHash}/config`, { signal: AbortSignal.timeout(3000) });
+    if (!getResult.ok) {
+      config = { booknotes: [{ id: noteId, type: 'annotation', updatedAt: Date.now() }], updatedAt: Date.now() };
+      const seedResult = await putAndroidBookConfigFn(serverUrl, bookHash, config);
+      if (!seedResult.ok) return { ok: false, action: 'booknote-mutate-seed', error: seedResult.error };
+    } else {
+      config = await getResult.json();
+    }
+    const beforeNote = bookNoteById(config, noteId);
+    if (!beforeNote) {
+      return { ok: false, action: 'booknote-mutate-missing-note', error: `BookNote ${noteId} not found in config for ${bookHash}` };
+    }
+    const updated = mutateBookNoteInConfig(config, noteId, newType);
+    const afterNote = bookNoteById(updated, noteId);
+    if (sameJsonValue(beforeNote, afterNote)) {
+      return { ok: false, action: 'booknote-mutate-noop', error: `BookNote ${noteId} mutation did not change config for ${bookHash}` };
+    }
+    const putResult = await putAndroidBookConfigFn(serverUrl, bookHash, updated);
+    if (!putResult.ok) return { ok: false, action: 'booknote-mutate-put', error: putResult.error };
+    return { ok: true, action: 'booknote-mutate-android', noteId, changed: true };
+  }
+
+  // Desktop: filesystem
+  const defaults = (options.resolveDefaults ?? resolveDefaults)('desktop', 'dictionary_entries');
+  const configPath = join(defaults.dataRoot, 'Readest', 'Books', bookHash, 'config.json');
+  if (!existsSync(configPath)) return { ok: false, action: 'booknote-mutate', error: `config.json not found: ${configPath}` };
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  const beforeNote = bookNoteById(config, noteId);
+  if (!beforeNote) return { ok: false, action: 'booknote-mutate-missing-note', error: `BookNote ${noteId} not found in config: ${configPath}` };
+  const updated = mutateBookNoteInConfig(config, noteId, newType);
+  const afterNote = bookNoteById(updated, noteId);
+  if (sameJsonValue(beforeNote, afterNote)) return { ok: false, action: 'booknote-mutate-noop', error: `BookNote ${noteId} mutation did not change config: ${configPath}` };
+  writeFileSync(configPath, `${JSON.stringify(updated, null, 2)}\n`, 'utf8');
+  return { ok: true, action: 'booknote-mutate-desktop', noteId, changed: true };
+}
+
+/**
+ * Inject an invalid BookNote reference (cross-type pointer) on the target device.
+ * For desktop: writes to config.json on filesystem.
+ * For android-http: PUTs the config via HTTP.
+ *
+ * @param {'desktop'|'android-http'} target
+ * @param {string} bookHash
+ * @param {string} noteId
+ * @param {string} targetKind - Entity kind to point to ('dictionary' | 'quote' | 'annotation')
+ * @param {string} wrongEntityId - The entity ID for the wrong type
+ * @param {{resolveDefaults?: Function, putAndroidBookConfig?: Function, fetch?: Function}} [options]
+ * @returns {Promise<{ok: boolean, action: string, error?: string}>}
+ */
+export async function injectInvalidBookNoteRef(target, bookHash, noteId, targetKind, wrongEntityId, options = {}) {
+  if (target === 'android-http') {
+    const serverUrl = resolveAndroidServerUrl(createSyncDevEnvironment(process.env));
+    const fetchFn = options.fetch ?? globalThis.fetch;
+    const putAndroidBookConfigFn = options.putAndroidBookConfig ?? (async (url, hash, config) => {
+      try {
+        const res = await fetchFn(`${url}/books/${hash}/config`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config),
+          signal: AbortSignal.timeout(3000),
+        });
+        if (!res.ok) return { ok: false, error: `PUT config returned ${res.status}` };
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    });
+
+    // Seed config.json if it doesn't exist (Bug 2b fix)
+    let config;
+    const getResult = await fetchFn(`${serverUrl}/books/${bookHash}/config`, { signal: AbortSignal.timeout(3000) });
+    if (!getResult.ok) {
+      config = { booknotes: [{ id: noteId, type: 'annotation', updatedAt: Date.now() }], updatedAt: Date.now() };
+      const seedResult = await putAndroidBookConfigFn(serverUrl, bookHash, config);
+      if (!seedResult.ok) return { ok: false, action: 'booknote-invalid-ref-seed', error: seedResult.error };
+    } else {
+      config = await getResult.json();
+    }
+    const beforeNote = bookNoteById(config, noteId);
+    if (!beforeNote) {
+      return { ok: false, action: 'booknote-invalid-ref-missing-note', error: `BookNote ${noteId} not found in config for ${bookHash}` };
+    }
+    const updated = invalidateBookNoteRefInConfig(config, noteId, targetKind, wrongEntityId);
+    const afterNote = bookNoteById(updated, noteId);
+    if (sameJsonValue(beforeNote, afterNote)) {
+      return { ok: false, action: 'booknote-invalid-ref-noop', error: `BookNote ${noteId} invalid-ref mutation did not change config for ${bookHash}` };
+    }
+    const putResult = await putAndroidBookConfigFn(serverUrl, bookHash, updated);
+    if (!putResult.ok) return { ok: false, action: 'booknote-invalid-ref-put', error: putResult.error };
+    return { ok: true, action: 'booknote-invalid-ref-android', noteId, changed: true };
+  }
+
+  // Desktop: filesystem
+  const defaults = (options.resolveDefaults ?? resolveDefaults)('desktop', 'dictionary_entries');
+  const configPath = join(defaults.dataRoot, 'Readest', 'Books', bookHash, 'config.json');
+  if (!existsSync(configPath)) return { ok: false, action: 'booknote-invalid-ref', error: `config.json not found: ${configPath}` };
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  const beforeNote = bookNoteById(config, noteId);
+  if (!beforeNote) return { ok: false, action: 'booknote-invalid-ref-missing-note', error: `BookNote ${noteId} not found in config: ${configPath}` };
+  const updated = invalidateBookNoteRefInConfig(config, noteId, targetKind, wrongEntityId);
+  const afterNote = bookNoteById(updated, noteId);
+  if (sameJsonValue(beforeNote, afterNote)) return { ok: false, action: 'booknote-invalid-ref-noop', error: `BookNote ${noteId} invalid-ref mutation did not change config: ${configPath}` };
+  writeFileSync(configPath, `${JSON.stringify(updated, null, 2)}\n`, 'utf8');
+  return { ok: true, action: 'booknote-invalid-ref-desktop', noteId, changed: true };
 }
 
 export async function deleteSemanticHighlightOnDesktop(target, options = {}) {
@@ -552,7 +751,13 @@ export async function dispatchFixture(opts, deps = {}) {
         );
       }
       const defaults = resolveDefaultsFn(opts.target, 'dictionary_entries');
-      return updateBookFn(opts.edit.rowId, normalizeBookUpdates(opts.edit.updates), { dataRoot: defaults.dataRoot });
+      return updateBookFn(
+        opts.edit.rowId,
+        normalizeBookUpdates(opts.edit.updates),
+        opts.hlcTimestamp === undefined
+          ? { dataRoot: defaults.dataRoot }
+          : { dataRoot: defaults.dataRoot, now: opts.hlcTimestamp },
+      );
     }
     if (opts.target === 'android-http') {
       const replica = resolveReplica(opts.edit.table);
@@ -679,6 +884,26 @@ export async function dispatchFixture(opts, deps = {}) {
     return importBookViaHttpFn(resolveAndroidServerUrlFn(), descriptor, { now: opts.hlcTimestamp, reimport: true });
   }
 
+  // ── BookNote mutation (Case 25) ──────────────────────────────────────
+  if (opts.booknoteMutate) {
+    const parts = opts.booknoteMutate.split(':');
+    if (parts.length < 3) throw new Error('--booknote-mutate expects bookHash:noteId:newType');
+    const [mutateBookHash, mutateNoteId, mutateNewType] = parts;
+    return injectBookNoteMutation(opts.target, mutateBookHash, mutateNoteId, mutateNewType, {
+      resolveDefaults: resolveDefaultsFn,
+    });
+  }
+
+  // ── Invalid BookNote ref (Case 26) ────────────────────────────────────
+  if (opts.booknoteInvalidRef) {
+    const parts = opts.booknoteInvalidRef.split(':');
+    if (parts.length < 4) throw new Error('--booknote-invalid-ref expects bookHash:noteId:targetKind:wrongEntityId');
+    const [invalidBookHash, invalidNoteId, invalidTargetKind, invalidWrongEntityId] = parts;
+    return injectInvalidBookNoteRef(opts.target, invalidBookHash, invalidNoteId, invalidTargetKind, invalidWrongEntityId, {
+      resolveDefaults: resolveDefaultsFn,
+    });
+  }
+
   if (opts.semanticDelete) {
     const target = semanticTargetFromOpts(opts);
     if (!target.bookHash) throw new Error('--semantic-delete requires --book <hash>');
@@ -703,6 +928,7 @@ export async function dispatchFixture(opts, deps = {}) {
         term: opts.type === 'case16' ? opts.case16Term : opts.term,
         definition: opts.definition,
         language: opts.language,
+        cfi: opts.cfi,
         overrideTimestamp: opts.hlcTimestamp,
         hlcTimestamp: opts.hlcTimestamp,
       });
@@ -712,6 +938,7 @@ export async function dispatchFixture(opts, deps = {}) {
         target: opts.target, bookHash: opts.bookHash,
         text: opts.type === 'case17' ? opts.case17Text : opts.text,
         comment: opts.comment,
+        cfi: opts.cfi,
         overrideTimestamp: opts.hlcTimestamp,
         hlcTimestamp: opts.hlcTimestamp,
       });
@@ -719,11 +946,12 @@ export async function dispatchFixture(opts, deps = {}) {
       return injectAnnotationFn({
         target: opts.target, bookHash: opts.bookHash,
         text: opts.text,
+        cfi: opts.cfi,
         overrideTimestamp: opts.hlcTimestamp,
         hlcTimestamp: opts.hlcTimestamp,
       });
     default:
-      throw new Error('Unknown fixture type. Use --dict, --quote, --note, --case15, --case16, or --case17.');
+      throw new Error('Unknown fixture type. Use --dict, --quote, --note, --case15, --case16, --case17, --booknote-mutate, or --booknote-invalid-ref.');
   }
 }
 

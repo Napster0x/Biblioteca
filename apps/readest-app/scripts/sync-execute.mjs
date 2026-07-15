@@ -7,6 +7,7 @@ import {
   writeReplicaMetadata,
   newerOrEqualReplicaExists,
   ensureReplicaTables,
+  normalizeTerm,
 } from './sync-filter-standalone.mjs';
 
 const require = createRequire(import.meta.url);
@@ -183,6 +184,33 @@ function hlcMillis(hlc) {
   return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
+export function hlcGt(a, b) {
+  const segA = String(a ?? '').split('-');
+  const segB = String(b ?? '').split('-');
+
+  const msA = Number.parseInt(segA[0], 16);
+  const msB = Number.parseInt(segB[0], 16);
+  if (!Number.isFinite(msA) && !Number.isFinite(msB)) {
+    // Both unparseable (e.g. harness "T100") — fall back to string comparison
+    return String(a) > String(b);
+  }
+  if (!Number.isFinite(msA)) return false;
+  if (!Number.isFinite(msB)) return true;
+  if (msA !== msB) return msA > msB;
+
+  const counterA = Number.parseInt(segA[1], 16);
+  const counterB = Number.parseInt(segB[1], 16);
+  if (!Number.isFinite(counterA) && !Number.isFinite(counterB)) {
+    return String(segA[2] ?? '') > String(segB[2] ?? '');
+  }
+  if (!Number.isFinite(counterA)) return false;
+  if (!Number.isFinite(counterB)) return true;
+  if (counterA !== counterB) return counterA > counterB;
+
+  // Tiebreaker: deviceId string comparison
+  return String(segA[2] ?? '') > String(segB[2] ?? '');
+}
+
 function replicaTimestampJson(row) {
   const entries = Object.entries(row.fields_jsonb ?? {}).map(([key, envelope]) => [key, envelope?.t ?? row.updated_at_ts]);
   return JSON.stringify(Object.fromEntries(entries));
@@ -249,6 +277,85 @@ export function upsertReplicaRow(dbPath, kind, row) {
   return true;
 }
 
+// ── Desktop merge bypass: resolve semantic identity ────────────────────────
+
+/**
+ * Find the canonical replica_id for an incoming row by semantic content.
+ *
+ * Mirrors Rust `resolve_semantic_id()` in `visible_repo.rs`.
+ *
+ * - dictionary-entry: matches by normalized(term) + language, NOT deleted, different id
+ * - quote: matches by bookHash + contentHash, NOT deleted, different id
+ * - annotation: matches by bookHash + cfi + text, NOT deleted, different id
+ * - dictionary-occurrence: always returns null (each occurrence is a distinct event)
+ *
+ * @returns {string|null} canonical replica_id (e.g., "dictionary-entry:abc123") or null
+ */
+export function resolveSemanticId(row, kind, dbPath) {
+  const itemId = replicaVisibleId(row, kind);
+  const fields = row.fields_jsonb ?? {};
+
+  if (kind === 'dictionary-entry') {
+    const termRaw = fieldValue(row, 'term');
+    const normalized = normalizeTerm(termRaw ?? '');
+    if (!normalized) return null;
+    const lang = fieldValue(row, 'language') ?? '';
+    const rows = readSqliteJson(dbPath,
+      `SELECT id FROM dictionary_entries WHERE LOWER(term) = ${sqlValue(normalized)} AND IFNULL(language,'') = IFNULL(${sqlValue(lang)},'') AND deleted_at IS NULL AND id != ${sqlValue(itemId)} LIMIT 1`);
+    if (rows.length > 0 && rows[0].id) return `dictionary-entry:${rows[0].id}`;
+    return null;
+  }
+
+  if (kind === 'quote') {
+    const bookHash = fieldValue(row, 'bookHash');
+    const contentHash = fieldValue(row, 'contentHash');
+    if (!bookHash || !contentHash) return null;
+    const rows = readSqliteJson(dbPath,
+      `SELECT id FROM quotes WHERE book_hash = ${sqlValue(bookHash)} AND content_hash = ${sqlValue(contentHash)} AND deleted_at IS NULL AND id != ${sqlValue(itemId)} LIMIT 1`);
+    if (rows.length > 0 && rows[0].id) return `quote:${rows[0].id}`;
+    return null;
+  }
+
+  if (kind === 'annotation') {
+    const bookHash = fieldValue(row, 'bookHash');
+    const cfi = fieldValue(row, 'cfi');
+    const text = fieldValue(row, 'text');
+    if (!bookHash || !cfi) return null;
+    const textSql = text !== null && text !== undefined ? ` AND text = ${sqlValue(text)}` : ` AND text = ${sqlValue(null)}`;
+    const rows = readSqliteJson(dbPath,
+      `SELECT id FROM annotations WHERE book_hash = ${sqlValue(bookHash)} AND cfi = ${sqlValue(cfi)}${textSql} AND deleted_at IS NULL AND id != ${sqlValue(itemId)} LIMIT 1`);
+    if (rows.length > 0 && rows[0].id) return `annotation:${rows[0].id}`;
+    return null;
+  }
+
+  // dictionary-occurrence and unknown kinds: no semantic dedup
+  return null;
+}
+
+/**
+ * Merge incoming fields_jsonb into existing fields_jsonb using per-field HLC
+ * comparison. Fields absent in incoming are preserved from existing. Fields
+ * present in incoming overwrite existing ONLY when incoming HLC > existing HLC.
+ *
+ * Mirrors Rust `merge_fields_jsonb()` in `visible_repo.rs`.
+ *
+ * @param {object} existing - existing fields_jsonb object (or empty object {})
+ * @param {object} incoming - incoming fields_jsonb object
+ * @returns {object} merged fields_jsonb (new object, inputs not mutated)
+ */
+export function mergeReplicaFields(existing, incoming) {
+  const merged = { ...existing };
+  for (const [key, incomingEnv] of Object.entries(incoming)) {
+    const existingEnv = merged[key];
+    const incomingT = incomingEnv?.t ?? '';
+    const shouldOverwrite = !existingEnv || hlcGt(incomingT, existingEnv?.t ?? '');
+    if (shouldOverwrite) {
+      merged[key] = incomingEnv;
+    }
+  }
+  return merged;
+}
+
 function desktopReplicaDbPath(dataRoot, kind) {
   const { join } = require('node:path');
   const readestDir = join(dataRoot, 'Readest');
@@ -257,17 +364,97 @@ function desktopReplicaDbPath(dataRoot, kind) {
   return join(readestDir, 'dictionary.db');
 }
 
-function applyReplicaRowsToDesktop(kind, rows, dbPath) {
-  let applied = 0;
-  for (const row of rows) {
-    if (upsertReplicaRow(dbPath, kind, row)) applied++;
+export async function applyReplicaRowsToDesktop(kind, rows, dbPath) {
+  if (!rows || rows.length === 0) return 0;
+
+  // Harness environment: write directly to SQLite with full CRDT merge.
+  // Must replicate the Rust push() pipeline:
+  //   resolve_semantic_id → HLC gate → merge_fields_jsonb → upsert.
+  // Without this merge, INSERT OR REPLACE blindly overwrites fields
+  // causing the desktop harness to lose data from previous sync rounds.
+  if (process.env.BIBLIOTECA_DEV_SYNC_HARNESS === '1') {
+    ensureReplicaTables(dbPath, kind);
+    let applied = 0;
+    for (const row of rows) {
+      const originalReplicaId = row.replica_id;
+
+      // Step 1: resolve semantic identity
+      const canonicalId = resolveSemanticId(row, kind, dbPath);
+      const isSemanticRemap = canonicalId !== null && canonicalId !== row.replica_id;
+      if (canonicalId) {
+        row.replica_id = canonicalId;
+      }
+
+      // Step 2: read existing _replicas entry for HLC gate and existing fields
+      const existingRows = readSqliteJson(dbPath,
+        `SELECT fields_jsonb, updated_at_ts FROM _replicas WHERE replica_id = ${sqlValue(row.replica_id)} LIMIT 1`);
+
+      let existingFields = {};
+      if (existingRows.length > 0) {
+        const existingHlc = existingRows[0].updated_at_ts;
+
+        // HLC gate (matches Rust push() logic):
+        // - Skip if existing HLC is strictly higher
+        // - Skip if equal HLC and not a semantic remap (no-op)
+        if (hlcGt(existingHlc, row.updated_at_ts)) continue;
+        if (!isSemanticRemap && existingHlc === row.updated_at_ts) continue;
+
+        try { existingFields = JSON.parse(existingRows[0].fields_jsonb); } catch (_) {}
+      }
+
+      // Step 3: merge fields (per-field HLC comparison)
+      row.fields_jsonb = mergeReplicaFields(existingFields, row.fields_jsonb);
+
+      // Step 4: write to app table (uses merged fields via fieldValue)
+      if (!upsertVisibleRow(dbPath, kind, row)) continue;
+
+      // Step 5: write to _replicas metadata table
+      writeReplicaMetadata(dbPath, row);
+      applied++;
+    }
+    return applied;
   }
-  return applied;
+
+  // Production: route through the desktop's local sync server so the full
+  // CRDT merge pipeline (semantic remap, HLC gate, per-field merge,
+  // app-table sync) is applied via visible_repo.rs::push(). In production,
+  // the local sync server and the caller use the same data directory
+  // (Tauri's app_data_dir), so there is no path mismatch.
+  const desktopServerUrl = process.env.BIBLIOTECA_DESKTOP_SYNC_URL || 'http://localhost:7878';
+  try {
+    const resp = await fetch(`${desktopServerUrl}/replicas/${kind}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rows),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${text}`);
+    }
+    const result = await resp.json();
+    return typeof result.count === 'number' ? result.count : rows.length;
+  } catch (err) {
+    // Fall back to direct SQLite if the sync server is not available.
+    console.error(`applyReplicaRowsToDesktop(${kind}): sync server unavailable, falling back to SQLite: ${err.message}`);
+    let applied = 0;
+    for (const row of rows) {
+      if (upsertReplicaRow(dbPath, kind, row)) applied++;
+    }
+    return applied;
+  }
 }
 
 export function toHlc(value) {
   if (typeof value === 'string' && /^[0-9a-f]+-[0-9a-f]+-[A-Za-z0-9_-]+$/i.test(value)) {
     return value;
+  }
+  // Harness generates timestamps as T<millis> (e.g., T1783984749748).
+  // Parse decimal after stripping the T prefix to produce proper HLC hex.
+  if (typeof value === 'string' && /^T\d+$/.test(value)) {
+    const millis = parseInt(value.slice(1), 10);
+    if (Number.isFinite(millis) && millis >= 0) {
+      return `${millis.toString(16).padStart(13, '0')}-00000000-visible`;
+    }
   }
   const numeric = typeof value === 'number' ? value : Number(value);
   const millis = Number.isFinite(numeric) ? numeric : Date.parse(String(value || Date.now()));
@@ -348,9 +535,13 @@ export function mergeRemoteBookMetadata(localLibrary, remoteIndexBooks) {
     const remoteUpdatedAtMillis = localBookMaxMillis(remoteBook);
     if (remoteUpdatedAtMillis <= 0) continue;
 
+    // When timestamps are equal, use book.hash as deterministic tiebreaker.
+    // For the same book (same hash), this preserves the existing book (local wins).
     const localIndex = indexByHash.get(hash);
     const localBook = localIndex === undefined ? { hash } : library[localIndex];
-    if (remoteUpdatedAtMillis <= localBookMaxMillis(localBook)) continue;
+    const localMax = localBookMaxMillis(localBook);
+    if (remoteUpdatedAtMillis < localMax) continue;
+    if (remoteUpdatedAtMillis === localMax && hash <= (localBook.hash ?? '')) continue;
 
     const mergedBook = { ...localBook, ...remoteBook, hash, deletedAt: null };
     if (localIndex === undefined) {
@@ -431,7 +622,7 @@ export function rowToReplica(row, kind, fieldMap, fallbackUpdatedAt) {
   for (const [replicaField, column] of Object.entries(fieldMap)) {
     fields[replicaField] = {
       v: row[column] ?? null,
-      t: timestamps[replicaField] ?? fallbackTimestamp,
+      t: toHlc(timestamps[replicaField] ?? fallbackTimestamp),
       s: 'visible',
     };
   }
@@ -450,7 +641,7 @@ export function rowToReplica(row, kind, fieldMap, fallbackUpdatedAt) {
   const deleted_at_ts = row.deleted_at ? (timestamps.__deleted ?? toHlc(row.deleted_at)) : null;
   if (deleted_at_ts) allTimestamps.push(deleted_at_ts);
 
-  const maxTimestamp = allTimestamps.reduce((max, t) => hlcMillis(t) > hlcMillis(max) ? t : max);
+  const maxTimestamp = allTimestamps.reduce((max, t) => hlcGt(t, max) ? t : max);
 
   return {
     user_id: 'visible',
@@ -602,9 +793,34 @@ export async function pushBooks(transport, localLibrary, remoteBooks, booksDir) 
   return { sent, updated, tombstonesPushed };
 }
 
+// ── Progress reporting (for fire-and-forget UI mode) ──────────────────
+const SYNC_RUN_ID = process.env.BIBLIOTECA_SYNC_RUN_ID;
+const PROGRESS_DIR = '/tmp/biblioteca-dev-sync';
+
+function writeProgress(progress, phase) {
+  if (!SYNC_RUN_ID) return;
+  try {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    fs.mkdirSync(PROGRESS_DIR, { recursive: true });
+    const file = path.join(PROGRESS_DIR, `progress-${SYNC_RUN_ID}.json`);
+    fs.writeFileSync(file, JSON.stringify({
+      runId: SYNC_RUN_ID,
+      progress,
+      phase,
+      timestamp: new Date().toISOString(),
+      ok: true,
+    }));
+  } catch {
+    /* best-effort — sync continues even if progress tracking fails */
+  }
+}
+
 async function main() {
   requireDevHarness(process.env, 'sync-execute');
   const env = createSyncDevEnvironment();
+
+  writeProgress(5, 'init');
 
   // Use Node's fetch (18+) to call Android server
   const baseUrl = env.android.serverUrl;
@@ -663,6 +879,8 @@ async function main() {
     const dataRoot = env.desktop.dataRoot;
     const dictionaryRows = dictionaryRowsToReplicas(readDictionaryRows(join(dataRoot, 'Readest', 'dictionary.db')));
 
+    writeProgress(15, 'push-dict-entries');
+
     const dictDbPath = desktopReplicaDbPath(dataRoot, 'dictionary-entry');
     ensureReplicaTables(dictDbPath, 'dictionary-entry');
     const filteredEntries = filterUnchangedReplicas(dictDbPath, dictionaryRows.entries, 'dictionary-entry');
@@ -671,12 +889,16 @@ async function main() {
       for (const row of filteredEntries) writeReplicaMetadata(dictDbPath, row);
     }
 
+    writeProgress(20, 'push-dict-occurrences');
+
     const filteredOccurrences = filterUnchangedReplicas(dictDbPath, dictionaryRows.occurrences, 'dictionary-occurrence');
     await putReplicas(baseUrl, 'dictionary-occurrence', DICTIONARY_OCCURRENCE_ENDPOINT, filteredOccurrences, replicas);
     if (filteredOccurrences.length > 0) {
       ensureReplicaTables(dictDbPath, 'dictionary-occurrence');
       for (const row of filteredOccurrences) writeReplicaMetadata(dictDbPath, row);
     }
+
+    writeProgress(25, 'push-quotes');
 
     const quoteRows = readQuoteRows(join(dataRoot, 'Readest', 'citas.db')).map(
       (row) => rowToReplica(row, 'quote', QUOTE_FIELDS, row.updated_at ?? row.created_at),
@@ -689,6 +911,8 @@ async function main() {
       for (const row of filteredQuotes) writeReplicaMetadata(quoteDbPath, row);
     }
 
+    writeProgress(30, 'push-annotations');
+
     const annotationRows = readAnnotationRows(join(dataRoot, 'Readest', 'annotations.db')).map(
       (row) => rowToReplica(row, 'annotation', ANNOTATION_FIELDS, row.updated_at ?? row.created_at),
     );
@@ -700,13 +924,20 @@ async function main() {
       for (const row of filteredAnnotations) writeReplicaMetadata(annotationDbPath, row);
     }
 
+    writeProgress(40, 'push-complete');
+
+    let pullStep = 0;
     for (const [kind, endpoint] of REPLICA_PULL_ORDER) {
+      pullStep++;
+      writeProgress(40 + pullStep * 10, `pull-${kind}`);
       const rows = await getReplicas(baseUrl, kind, endpoint, replicas);
       const dbPath = desktopReplicaDbPath(env.desktop.dataRoot, kind);
       const filtered = filterUnchangedReplicas(dbPath, rows, kind);
       replicas[kind].pulled = filtered.length;
-      replicas[kind].appliedToDesktop = applyReplicaRowsToDesktop(kind, filtered, dbPath);
+      replicas[kind].appliedToDesktop = await applyReplicaRowsToDesktop(kind, filtered, dbPath);
     }
+
+  writeProgress(80, 'merge-books');
 
   // Read local library
   const { readFileSync, existsSync } = await import('node:fs');
@@ -737,16 +968,21 @@ async function main() {
   sent = pushResult.sent;
   evidence.tombstonesPushed = pushResult.tombstonesPushed;
 
+  writeProgress(95, 'push-books');
+
   // Pull new books
   for (const [hash, book] of remoteBooks) {
     if (book.deletedAt) continue;
     if (localLibrary.some(b => b.hash === hash)) continue;
-    received++;
+      received++;
     console.log(`Received: ${hash} (${book.title})`);
   }
 
+    writeProgress(100, 'complete');
+
     console.log(JSON.stringify({ ok: true, sent, received, tombstonesPushed: pushResult.tombstonesPushed, replicas, evidence }));
   } catch (err) {
+    writeProgress(-1, 'error');
     console.log(JSON.stringify({
       ok: false,
       error: err instanceof Error ? err.message : String(err),

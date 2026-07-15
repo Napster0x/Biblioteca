@@ -212,7 +212,7 @@ export function deleteBook(bookHash, options = {}) {
  *
  * @param {string} bookHash
  * @param {Record<string, unknown>} updates
- * @param {{dataRoot?: string}} [options]
+ * @param {{dataRoot?: string, now?: (() => Date|string|number)|Date|string|number}} [options]
  * @returns {{ok: true, bookHash: string, action: 'updated'|'not-found'}}
  */
 export function updateBook(bookHash, updates, options = {}) {
@@ -224,11 +224,18 @@ export function updateBook(bookHash, updates, options = {}) {
   }
 
   let found = false;
-  const now = new Date().toISOString();
+  const nowValue = typeof options.now === 'function' ? options.now() : options.now;
+  const updatedAt = nowValue instanceof Date
+    ? nowValue.toISOString()
+    : typeof nowValue === 'number'
+      ? new Date(nowValue).toISOString()
+      : typeof nowValue === 'string'
+        ? nowValue
+        : undefined;
   const updatedLibrary = library.map((book) => {
     if (book?.hash !== bookHash && book?.bookHash !== bookHash) return book;
     found = true;
-    const next = { ...book, updatedAt: now };
+    const next = updatedAt === undefined ? { ...book } : { ...book, updatedAt };
     for (const [field, value] of Object.entries(updates)) {
       if (field === 'metadata' && value && typeof value === 'object' && !Array.isArray(value)) {
         next.metadata = { ...(next.metadata ?? {}), ...value };

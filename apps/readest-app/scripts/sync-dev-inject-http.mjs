@@ -11,6 +11,7 @@
 
 import {
   rowToReplica,
+  toHlc,
   ENTRY_FIELDS,
   OCCURRENCE_FIELDS,
   QUOTE_FIELDS,
@@ -44,6 +45,59 @@ export function resolveAndroidServerUrl(env) {
 
 function fieldMapForKind(kind, options = {}) {
   return options.fieldMap ?? options.fields ?? TABLE_REPLICA_MAP[kind]?.fields;
+}
+
+function replicaFieldEnvelope(row, replicaField, column) {
+  const fields = row?.fields_jsonb;
+  if (!fields || typeof fields !== 'object') return null;
+  return fields[replicaField] ?? fields[column] ?? null;
+}
+
+function replicaFieldValue(row, replicaField, column) {
+  if (row?.[column] !== undefined) return row[column];
+  if (row?.[replicaField] !== undefined) return row[replicaField];
+  const envelope = replicaFieldEnvelope(row, replicaField, column);
+  return envelope && Object.hasOwn(envelope, 'v') ? envelope.v : undefined;
+}
+
+function replicaFieldTimestamp(row, replicaField, column) {
+  const envelope = replicaFieldEnvelope(row, replicaField, column);
+  return envelope?.t;
+}
+
+function replicaLocalId(row, kind) {
+  const direct = row?.id ?? replicaFieldValue(row, 'id', 'id');
+  if (direct) return String(direct);
+  const replicaId = row?.replica_id ?? row?.replicaId;
+  if (typeof replicaId === 'string') {
+    const prefix = `${kind}:`;
+    return replicaId.startsWith(prefix) ? replicaId.slice(prefix.length) : replicaId.slice(replicaId.indexOf(':') + 1);
+  }
+  return replicaId ? String(replicaId) : undefined;
+}
+
+function mergePartialReplicaRow(updateRow, existingRow, kind, fieldMap, timestamp) {
+  if (!existingRow) return updateRow;
+  const merged = { id: updateRow.id ?? replicaLocalId(existingRow, kind) };
+  const timestamps = {};
+  for (const [replicaField, column] of Object.entries(fieldMap ?? {})) {
+    if (Object.hasOwn(updateRow, column)) {
+      merged[column] = updateRow[column];
+      timestamps[replicaField] = toHlc(timestamp);
+      continue;
+    }
+    if (Object.hasOwn(updateRow, replicaField)) {
+      merged[column] = updateRow[replicaField];
+      timestamps[replicaField] = toHlc(timestamp);
+      continue;
+    }
+    const existingValue = replicaFieldValue(existingRow, replicaField, column);
+    if (existingValue !== undefined) merged[column] = existingValue;
+    const existingTimestamp = replicaFieldTimestamp(existingRow, replicaField, column);
+    if (existingTimestamp) timestamps[replicaField] = toHlc(existingTimestamp);
+  }
+  if (Object.keys(timestamps).length > 0) merged.replica_timestamps = JSON.stringify(timestamps);
+  return merged;
 }
 
 async function putJson(serverUrl, path, body, table, inserted) {
@@ -418,7 +472,12 @@ export async function updateReplicaViaHttp(serverUrl, kind, rows, options = {}) 
 
   const fieldMap = fieldMapForKind(kind, options);
   const now = options.hlcTimestamp ?? options.hlc ?? Date.now();
-  const replicas = rows.map((row) => rowToReplica(row, kind, fieldMap, now));
+  const existingResult = await getReplicasViaHttp(serverUrl, kind);
+  const existingRows = existingResult.ok ? existingResult.rows : [];
+  const replicas = rows.map((row) => {
+    const existingRow = existingRows.find((candidate) => replicaLocalId(candidate, kind) === String(row.id));
+    return rowToReplica(mergePartialReplicaRow(row, existingRow, kind, fieldMap, now), kind, fieldMap, now);
+  });
   return putJson(serverUrl, `/replicas/${kind}`, replicas, kind, rows.length);
 }
 

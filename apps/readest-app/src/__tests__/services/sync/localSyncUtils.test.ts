@@ -167,6 +167,16 @@ function makeQuoteRow(id: string, hlc: Hlc): ReplicaRow {
   };
 }
 
+function parseRowsJson(value: unknown): ReplicaRow[] {
+  expect(typeof value).toBe('string');
+  return JSON.parse(value as string) as ReplicaRow[];
+}
+
+function parseRowJson(value: unknown): ReplicaRow {
+  expect(typeof value).toBe('string');
+  return JSON.parse(value as string) as ReplicaRow;
+}
+
 /** Create a mock SyncTransport that returns specific rows and records pushes. */
 function createMockTransport(
   overrides: Partial<SyncTransport> = {},
@@ -751,7 +761,7 @@ describe('localSyncUtils', () => {
         if (cmd === 'filter_unchanged_replicas') {
           order.push('invoke:filter');
           // Return original rows so push proceeds
-          return args.rows_json as ReplicaRow[];
+          return parseRowsJson(args.rows_json);
         }
         return undefined;
       });
@@ -825,7 +835,7 @@ describe('localSyncUtils', () => {
 
       mockInvoke.mockImplementation(async (cmd: string, args: Record<string, unknown>) => {
         if (cmd === 'filter_unchanged_replicas') {
-          const rows = args.rows_json as ReplicaRow[];
+          const rows = parseRowsJson(args.rows_json);
           return rows.filter((r) => r.replica_id !== 'annotation:removed');
         }
         return undefined;
@@ -857,18 +867,103 @@ describe('localSyncUtils', () => {
 
       await mod.runSyncCycle(transport, ['annotation'], PEER_ID);
 
-      expect(mockInvoke).toHaveBeenCalledWith(
-        'write_replica_metadata',
-        expect.objectContaining({
-          row_json: expect.objectContaining({ replica_id: 'annotation:meta-1' }),
-        }),
+      expect(
+        mockInvoke.mock.calls.some(
+          ([cmd, args]) =>
+            cmd === 'write_replica_metadata' &&
+            parseRowJson((args as Record<string, unknown>).row_json).replica_id ===
+              'annotation:meta-1',
+        ),
+      ).toBe(true);
+      expect(
+        mockInvoke.mock.calls.some(
+          ([cmd, args]) =>
+            cmd === 'write_replica_metadata' &&
+            parseRowJson((args as Record<string, unknown>).row_json).replica_id ===
+              'annotation:meta-2',
+        ),
+      ).toBe(true);
+    });
+
+    it('applies pulled rows before writing local replica metadata for them', async () => {
+      mockAppDataDir.mockResolvedValue('/tmp/test-readest-pull-metadata');
+
+      const order: string[] = [];
+      const remoteRow = makeAnnotationRow('remote-meta-1', HLC_C);
+      mockInvoke.mockImplementation(async (cmd: string, args: Record<string, unknown>) => {
+        if (cmd === 'filter_unchanged_replicas') {
+          return parseRowsJson(args.rows_json);
+        }
+        if (cmd === 'write_replica_metadata') {
+          order.push(`write:${parseRowJson(args.row_json).replica_id}`);
+        }
+        return undefined;
+      });
+      mockAnotacionesStore.applyRemoteAnnotation.mockImplementationOnce((row: ReplicaRow) => {
+        order.push(`apply:${row.replica_id}`);
+      });
+
+      const transport = createMockTransport({
+        kind: 'usb',
+        pull: vi.fn().mockResolvedValue([remoteRow]),
+      });
+
+      await mod.runSyncCycle(transport, ['annotation'], PEER_ID);
+
+      expect(mockAnotacionesStore.applyRemoteAnnotation).toHaveBeenCalledWith(remoteRow);
+      expect(order).toEqual(['apply:annotation:remote-meta-1', 'write:annotation:remote-meta-1']);
+      expect(
+        mockInvoke.mock.calls.some(
+          ([cmd, args]) =>
+            cmd === 'write_replica_metadata' &&
+            parseRowJson((args as Record<string, unknown>).row_json).replica_id ===
+              'annotation:remote-meta-1',
+        ),
+      ).toBe(true);
+    });
+
+    it('does not re-push a previously pulled visible row once metadata is recorded', async () => {
+      mockAppDataDir.mockResolvedValue('/tmp/test-readest-pull-idempotence');
+
+      const remoteRow = makeAnnotationRow('remote-idempotent', HLC_C);
+      const recordedReplicaIds = new Set<string>();
+      mockInvoke.mockImplementation(async (cmd: string, args: Record<string, unknown>) => {
+        if (cmd === 'filter_unchanged_replicas') {
+          return parseRowsJson(args.rows_json).filter(
+            (row) => !recordedReplicaIds.has(row.replica_id),
+          );
+        }
+        if (cmd === 'write_replica_metadata') {
+          recordedReplicaIds.add(parseRowJson(args.row_json).replica_id);
+        }
+        return undefined;
+      });
+
+      const firstTransport = createMockTransport({
+        kind: 'usb',
+        pull: vi.fn().mockResolvedValue([remoteRow]),
+      });
+
+      await mod.runSyncCycle(firstTransport, ['annotation'], PEER_ID);
+
+      const seedProvider = vi.fn<VisibleSeedProvider>().mockResolvedValue([remoteRow]);
+      const secondTransport = createMockTransport({
+        kind: 'usb',
+        pull: vi.fn().mockResolvedValue([]),
+      });
+
+      const secondResult = await mod.runSyncCycle(
+        secondTransport,
+        ['annotation'],
+        PEER_ID,
+        undefined,
+        seedProvider,
       );
-      expect(mockInvoke).toHaveBeenCalledWith(
-        'write_replica_metadata',
-        expect.objectContaining({
-          row_json: expect.objectContaining({ replica_id: 'annotation:meta-2' }),
-        }),
-      );
+
+      expect(mockAnotacionesStore.applyRemoteAnnotation).toHaveBeenCalledWith(remoteRow);
+      expect(recordedReplicaIds.has('annotation:remote-idempotent')).toBe(true);
+      expect(secondResult.kinds.annotation?.pushed).toBe(0);
+      expect(secondTransport.push).not.toHaveBeenCalled();
     });
 
     it('does not call write_replica_metadata when transport.push throws', async () => {
@@ -1046,6 +1141,29 @@ describe('localSyncUtils', () => {
       expect(seedProvider).toHaveBeenCalledWith('annotation', 'test-dev');
       expect(mockGetAllAnnotations).not.toHaveBeenCalled();
       expect(transport.push).toHaveBeenCalledTimes(1);
+      expect(transport.pushedRows).toEqual([visibleSeedRow]);
+      expect(result.kinds['annotation']!.pushed).toBe(1);
+    });
+
+    it('forces USB visible seed when caller does not provide peerId', async () => {
+      mockSettingsState.settings.lastSyncedAtReplicas = {
+        annotation: HLC_A,
+      };
+      const visibleSeedRow = makeAnnotationRow('usb-button-visible-seed', HLC_B);
+      const seedProvider = vi.fn<VisibleSeedProvider>().mockResolvedValue([visibleSeedRow]);
+      const transport = createMockTransport({ kind: 'usb' });
+
+      const result = await mod.runSyncCycle(
+        transport,
+        ['annotation'],
+        undefined,
+        undefined,
+        seedProvider,
+      );
+
+      expect(seedProvider).toHaveBeenCalledWith('annotation', 'test-dev');
+      expect(transport.pull).toHaveBeenCalledWith('annotation', undefined);
+      expect(transport.push).toHaveBeenCalledWith('annotation', [visibleSeedRow]);
       expect(transport.pushedRows).toEqual([visibleSeedRow]);
       expect(result.kinds['annotation']!.pushed).toBe(1);
     });
@@ -1327,7 +1445,7 @@ describe('localSyncUtils', () => {
           filterCallCount++;
           if (filterCallCount <= CASO8_KINDS.length) {
             // First pass (one per kind): return all rows → they pass filter
-            return args.rows_json as ReplicaRow[];
+            return parseRowsJson(args.rows_json);
           }
           // Subsequent calls: all rows are "already tracked" → empty
           return [];
@@ -1379,7 +1497,7 @@ describe('localSyncUtils', () => {
       // returns ALL rows (no dedup), write_replica_metadata is a no-op.
       mockInvoke.mockImplementation(async (cmd: string, args: Record<string, unknown>) => {
         if (cmd === 'filter_unchanged_replicas') {
-          return args.rows_json as ReplicaRow[]; // Always return all
+          return parseRowsJson(args.rows_json); // Always return all
         }
         return undefined; // No metadata written
       });

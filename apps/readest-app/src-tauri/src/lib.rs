@@ -274,6 +274,7 @@ const USB_ONLY_LOCAL_SYNC_COMMANDS: &[&str] = &[
     "list_usb_devices_detailed",
     "list_forward_rules",
     "setup_usb_tunnel",
+    "discover_usb_device",
 ];
 
 /// Start the embedded HTTP server for peer-to-peer sync.
@@ -526,6 +527,22 @@ struct AdbForwardRule {
     remote: String,
 }
 
+/// Result of a USB device discovery attempt.
+///
+/// `found` is true when a device in "device" state was detected and its
+/// HTTP health endpoint responded. `health_ok` distinguishes between
+/// "device seen but health check failed" and "device seen and healthy".
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveredUsbDevice {
+    found: bool,
+    serial: Option<String>,
+    model: Option<String>,
+    health_ok: bool,
+    health_detail: Option<String>,
+    error: Option<String>,
+}
+
 /// Parse the output of `adb devices` into a list of device serial numbers.
 ///
 /// Input format (example):
@@ -753,6 +770,189 @@ fn setup_usb_tunnel(serial: String, port: u16) -> Result<String, String> {
     Ok(format!("Tunnel set up for {} on port {}", serial, port))
 }
 
+/// Discover a USB-connected Android device running the sync server.
+///
+/// Combined flow — matches the pattern from `scripts/dev-sync-doctor.mjs`:
+/// 1. List ADB devices (`adb devices -l`)
+/// 2. Pick the first device in "device" state
+/// 3. Ensure port 7878 is forwarded → create the tunnel if missing
+/// 4. HTTP GET `http://localhost:7878/health` (2s timeout)
+/// 5. Return structured result the frontend can render
+///
+/// Returns `found: false` when no device is connected or the health
+/// check fails — the caller polls periodically until success.
+#[tauri::command]
+async fn discover_usb_device() -> DiscoveredUsbDevice {
+    let adb = match resolve_adb() {
+        Some(p) => p,
+        None => {
+            return DiscoveredUsbDevice {
+                found: false,
+                serial: None,
+                model: None,
+                health_ok: false,
+                health_detail: None,
+                error: Some("adb not found".into()),
+            };
+        }
+    };
+
+    // ── Step 1: List devices ──────────────────────────────────────
+    let devices_output = match std::process::Command::new(&adb)
+        .args(["devices", "-l"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            return DiscoveredUsbDevice {
+                found: false,
+                serial: None,
+                model: None,
+                health_ok: false,
+                health_detail: None,
+                error: Some(format!("adb devices failed: {e}")),
+            };
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&devices_output.stdout);
+    let detailed: Vec<UsbDeviceStatus> = parse_adb_devices_detailed(&stdout);
+
+    // Only consider devices in "device" (authorized) state — unauthorized
+    // or offline devices can't service health checks.
+    let target = match detailed
+        .iter()
+        .find(|d| d.state == AdbDeviceState::Device)
+    {
+        Some(d) => d.clone(),
+        None => {
+            return DiscoveredUsbDevice {
+                found: false,
+                serial: None,
+                model: None,
+                health_ok: false,
+                health_detail: None,
+                error: Some(
+                    if detailed.is_empty() {
+                        "no USB device connected".into()
+                    } else {
+                        "no authorized USB device found".into()
+                    },
+                ),
+            };
+        }
+    };
+
+    // ── Step 2: Ensure port forward ───────────────────────────────
+    let sync_port: u16 = 7878;
+
+    // Check existing forward rules
+    let forward_check = std::process::Command::new(&adb)
+        .args(build_list_forward_rules_args(&target.serial))
+        .output();
+
+    let forward_exists = forward_check.as_ref().is_ok_and(|o| {
+        o.status.success()
+            && !parse_adb_forward_list(
+                &String::from_utf8_lossy(&o.stdout),
+                &target.serial,
+                sync_port,
+            )
+            .is_empty()
+    });
+
+    if !forward_exists {
+        // Set up the tunnel
+        if let Err(e) = std::process::Command::new(&adb)
+            .args(build_setup_usb_tunnel_args(&target.serial, sync_port))
+            .output()
+        {
+            return DiscoveredUsbDevice {
+                found: false,
+                serial: Some(target.serial),
+                model: target.model,
+                health_ok: false,
+                health_detail: None,
+                error: Some(format!("adb forward failed: {e}")),
+            };
+        }
+    }
+
+    // ── Step 3: Health check via HTTP ─────────────────────────────
+    let health_url = format!("http://localhost:{sync_port}/health");
+
+    match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    {
+        Ok(client) => match client.get(&health_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                // Try to parse version info from the JSON body for logging
+                let version_info = resp.json::<serde_json::Value>().await.ok();
+                let detail = version_info
+                    .as_ref()
+                    .and_then(|v| v.get("serverVersion").or(v.get("server_version")))
+                    .and_then(|v| v.as_str())
+                    .map(|s| format!("server version {s}"))
+                    .unwrap_or_else(|| "version unknown".into());
+
+                log::info!(
+                    "[local-sync] USB device {} ({}) health OK — {detail}",
+                    target.serial,
+                    target.model.as_deref().unwrap_or("unknown model"),
+                );
+
+                DiscoveredUsbDevice {
+                    found: true,
+                    serial: Some(target.serial),
+                    model: target.model,
+                    health_ok: true,
+                    health_detail: Some(detail),
+                    error: None,
+                }
+            }
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                DiscoveredUsbDevice {
+                    found: false,
+                    serial: Some(target.serial),
+                    model: target.model,
+                    health_ok: false,
+                    health_detail: Some(format!("/health returned HTTP {status}")),
+                    error: Some(format!("/health returned HTTP {status}")),
+                }
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                let detail = if msg.contains("Connection refused") || msg.contains("econnrefused") {
+                    "port refused".to_string()
+                } else if msg.contains("timeout") || msg.contains("timed out") {
+                    "timed out".to_string()
+                } else {
+                    msg
+                };
+
+                DiscoveredUsbDevice {
+                    found: false,
+                    serial: Some(target.serial),
+                    model: target.model,
+                    health_ok: false,
+                    health_detail: Some(detail.clone()),
+                    error: Some(detail),
+                }
+            }
+        },
+        Err(e) => DiscoveredUsbDevice {
+            found: false,
+            serial: Some(target.serial),
+            model: target.model,
+            health_ok: false,
+            health_detail: None,
+            error: Some(format!("HTTP client init failed: {e}")),
+        },
+    }
+}
+
 /// Return this device's primary non-loopback IPv4 address.
 ///
 /// Falls back to "127.0.0.1" if no non-loopback interface is found
@@ -798,6 +998,7 @@ pub fn run() {
             list_usb_devices_detailed,
             list_forward_rules,
             setup_usb_tunnel,
+            discover_usb_device,
             // Sync dedup commands (PR #1 — harness-code-path-unification)
             sync_commands::normalize_term,
             sync_commands::compute_semantic_key,

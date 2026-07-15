@@ -459,6 +459,57 @@ describe('captureAndroidState — manifest.data', () => {
     assert.equal(state.sqlite.quotes.source, 'http-replica-fallback');
   });
 
+  it('records sqlite3 as unavailable evidence while preserving HTTP row payloads and BookConfig evidence', async () => {
+    const sqliteUnavailableRunAdb = (args) => {
+      const cmd = args.join(' ');
+      if (cmd.includes('sqlite3')) return { ok: false, stdout: '', message: 'sqlite3: inaccessible or not found' };
+      if (cmd.includes('test -e ')) return { ok: true, stdout: '' };
+      if (cmd.includes('find ')) return { ok: true, stdout: 'book-1\n' };
+      if (cmd.includes('cat ')) return { ok: true, stdout: '{"ok":true}' };
+      return { ok: true, stdout: '' };
+    };
+    const dictionaryRow = {
+      replica_id: 'dictionary-entry:entry-1',
+      hlc: '0019f25860c00-00000002-android',
+      deleted: false,
+      fields_jsonb: { definition: { v: 'fallback definition', hlc: '0019f25860c00-00000002-android' } },
+    };
+    const deletedOccurrenceRow = {
+      replica_id: 'dictionary-occurrence:occ-1',
+      deleted_at_ts: '0019f25860c00-00000003-android',
+      fields_jsonb: { dictionaryEntryId: { v: 'entry-1' } },
+    };
+    const fallbackFetch = (url) => {
+      if (url.endsWith('/books/index')) return Promise.resolve({ ok: true, status: 200, data: [{ hash: 'book-1', title: 'Android Book' }] });
+      if (url.endsWith('/books/manifest')) return Promise.resolve({ ok: true, status: 200, data: { books: [{ hash: 'book-1' }] } });
+      if (url.endsWith('/books/book-1/config')) {
+        return Promise.resolve({ ok: true, status: 200, data: { booknotes: [{ id: 'note-1', dictionaryEntryId: 'entry-1' }] } });
+      }
+      if (url.endsWith('/replicas/dictionary-entry')) return Promise.resolve({ ok: true, status: 200, data: [dictionaryRow] });
+      if (url.endsWith('/replicas/dictionary-occurrence')) return Promise.resolve({ ok: true, status: 200, data: [deletedOccurrenceRow] });
+      if (url.includes('/replicas/')) return Promise.resolve({ ok: true, status: 200, data: [] });
+      return Promise.resolve({ ok: false, status: 404, error: 'not found' });
+    };
+
+    const state = await captureAndroidState({
+      packageName: PKG,
+      serverUrl: 'http://localhost:7878',
+      runAdb: sqliteUnavailableRunAdb,
+      fetchJson: fallbackFetch,
+      bookHash: 'book-1',
+    });
+
+    assert.deepEqual(state.unavailableEvidence, ['android.sqlite3']);
+    assert.deepEqual(state.sqlite.dictionary.unavailableEvidence, ['android.sqlite3']);
+    assert.deepEqual(state.sqlite.dictionary.tables, [
+      { name: 'dictionary-entry', rowCount: 1, hlcMin: '0019f25860c00-00000002-android', hlcMax: '0019f25860c00-00000002-android', deletedCount: 0, rows: [dictionaryRow] },
+      { name: 'dictionary-occurrence', rowCount: 1, hlcMin: undefined, hlcMax: undefined, deletedCount: 1, rows: [deletedOccurrenceRow] },
+    ]);
+    assert.equal(state.manifest.data.books[0].hash, 'book-1');
+    assert.deepEqual(state.bookIndex.facts, [{ hash: 'book-1', title: 'Android Book', author: undefined, updatedAt: undefined, deletedAt: undefined }]);
+    assert.deepEqual(state.bookConfig.booknotes, [{ id: 'note-1', dictionaryEntryId: 'entry-1' }]);
+  });
+
   it('keeps Android row-level capture as WARN when sqlite3 and required HTTP replica evidence are unavailable', async () => {
     const sqliteUnavailableRunAdb = (args) => {
       const cmd = args.join(' ');
@@ -484,6 +535,7 @@ describe('captureAndroidState — manifest.data', () => {
     });
 
     assert.equal(state.status, 'warn');
+    assert.deepEqual(state.unavailableEvidence, ['android.sqlite3']);
     assert.equal(state.sqlite.dictionary.available, false);
     assert.equal(state.sqlite.dictionary.status, 'warn');
     assert.match(state.sqlite.dictionary.error, /sqlite3: inaccessible or not found/);

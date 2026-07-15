@@ -1722,5 +1722,10 @@
   "Delete selected": "Borrar seleccionados",
   "Initializing quotes…": "Inicializando citas…",
   "Could not open Citas": "No se pudo abrir Citas",
-  "Quote: {{text}}": "Cita: {{text}}"
+  "Quote: {{text}}": "Cita: {{text}}",
+  "Sync": "Sincronización",
+  "USB Sync": "Sincronización USB",
+  "USB Sync maintenance": "Mantenimiento de sincronización USB",
+  "In development": "En desarrollo",
+  "USB Sync is temporarily in maintenance while we prepare a more stable experience.": "La sincronización USB está temporalmente en mantenimiento mientras preparamos una experiencia más estable."
 }
